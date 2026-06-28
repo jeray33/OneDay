@@ -6,6 +6,8 @@ struct StackedClusterView: View {
     var width: CGFloat
     var namespace: Namespace.ID
     var onSelect: (PhotoItem) -> Void
+    var borderScale: CGFloat = 1.0
+    var frameColor: (PhotoItem) -> Color = { _ in Theme.frame }
 
     @State private var expanded = false
 
@@ -58,7 +60,10 @@ struct StackedClusterView: View {
     }
 
     private func framed(_ item: PhotoItem) -> some View {
-        PhotoFrameView(item: item, width: cardSize.width, border: 7, ratioOverride: cardRatio)
+        PhotoFrameView(item: item, width: cardSize.width,
+                       border: max((7 * borderScale).rounded(), 0),
+                       ratioOverride: cardRatio,
+                       borderColor: frameColor(item))
             .matchedTransitionSource(id: item.id, in: namespace)
     }
 }

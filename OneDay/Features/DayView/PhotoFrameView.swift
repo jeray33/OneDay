@@ -9,6 +9,7 @@ struct PhotoFrameView: View {
     var kenBurns: Bool = false
     var favorite: Bool = false
     var ratioOverride: CGFloat? = nil
+    var borderColor: Color = Theme.frame
 
     private var ratio: CGFloat {
         min(max(ratioOverride ?? item.aspectRatio, 0.55), 1.85)
@@ -24,7 +25,7 @@ struct PhotoFrameView: View {
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }
             .padding(border)
-            .background(Theme.frame)
+            .background(borderColor)
             .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 4)
     }
 

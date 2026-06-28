@@ -10,7 +10,8 @@ enum MagazineLayoutEngine {
     private static let momentDistance: CLLocationDistance = 300
 
     static func compose(_ items: [PhotoItem],
-                        similar: ((PhotoItem, PhotoItem) -> Bool)? = nil) -> [MagazineSection] {
+                        similar: ((PhotoItem, PhotoItem) -> Bool)? = nil,
+                        enabled: Set<BlockTemplate> = []) -> [MagazineSection] {
         let sorted = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         let grouped = Dictionary(grouping: sorted) { TimeBand.band(for: $0.creationDate) }
         let sim: (PhotoItem, PhotoItem) -> Bool = similar ?? { isBurstPair($0, $1) }
@@ -34,7 +35,68 @@ enum MagazineLayoutEngine {
                 blocks: blocks
             ))
         }
+        // Apply user-selected template filter (skip when all templates enabled)
+        if !enabled.isEmpty {
+            for i in sections.indices {
+                sections[i].blocks = applyEnabledFilter(sections[i].blocks, enabled: enabled)
+            }
+        }
         return sections
+    }
+
+    // MARK: - Template filter
+
+    /// Converts blocks whose template is not in `enabled` into smaller enabled alternatives.
+    private static func applyEnabledFilter(_ blocks: [MagazineBlock],
+                                            enabled: Set<BlockTemplate>) -> [MagazineBlock] {
+        var out: [MagazineBlock] = []
+        for block in blocks {
+            // quote and single are always kept (single is the terminal fallback)
+            if block.template == .quote || block.template == .single
+                || enabled.contains(block.template) {
+                out.append(block)
+            } else {
+                let sub = decompose(block, enabled: enabled)
+                out.append(contentsOf: applyEnabledFilter(sub, enabled: enabled))
+            }
+        }
+        return out
+    }
+
+    /// Splits a disabled-template block into simpler blocks.
+    private static func decompose(_ block: MagazineBlock,
+                                   enabled: Set<BlockTemplate>) -> [MagazineBlock] {
+        switch block.template {
+        case .duo:
+            // duo → two singles
+            return block.items.map { MagazineBlock(template: .single, items: [$0]) }
+        case .trio, .collage:
+            if enabled.contains(.duo), block.items.count >= 2 {
+                var result = [MagazineBlock(template: .duo, items: Array(block.items.prefix(2)))]
+                result += block.items.dropFirst(2).map { MagazineBlock(template: .single, items: [$0]) }
+                return result
+            }
+            return block.items.map { MagazineBlock(template: .single, items: [$0]) }
+        case .stack:
+            if enabled.contains(.duo) {
+                var result: [MagazineBlock] = []
+                var i = 0
+                while i < block.items.count {
+                    if i + 1 < block.items.count {
+                        result.append(MagazineBlock(template: .duo,
+                                                    items: [block.items[i], block.items[i + 1]]))
+                        i += 2
+                    } else {
+                        result.append(MagazineBlock(template: .single, items: [block.items[i]]))
+                        i += 1
+                    }
+                }
+                return result
+            }
+            return block.items.map { MagazineBlock(template: .single, items: [$0]) }
+        default:
+            return [block]
+        }
     }
 
     // MARK: - Moments
@@ -93,23 +155,41 @@ enum MagazineLayoutEngine {
         while index < run.count {
             let remaining = run.count - index
             if remaining >= 3 && s % 5 == 2 {
-                blocks.append(MagazineBlock(template: .trio, items: Array(run[index..<index + 3])))
+                // Landscape-heavy groups look bad in equal-width trio → use collage instead
+                let window = Array(run[index..<index + 3])
+                if avgRatio(window) >= 1.0 {
+                    blocks.append(MagazineBlock(template: .collage, items: window))
+                } else {
+                    blocks.append(MagazineBlock(template: .trio, items: window))
+                }
                 index += 3
             } else if remaining >= 3 && s % 3 != 0 {
                 let n = (remaining >= 4 && s % 2 == 0) ? 4 : 3
-                blocks.append(MagazineBlock(template: .collage, items: Array(run[index..<index + n])))
+                let window = Array(run[index..<index + n])
+                // Portrait-heavy groups of 3 → trio reads better than collage
+                if n == 3 && avgRatio(window) < 0.85 {
+                    blocks.append(MagazineBlock(template: .trio, items: window))
+                } else {
+                    blocks.append(MagazineBlock(template: .collage, items: window))
+                }
                 index += n
             } else if remaining >= 2 && s % 2 == 0 {
                 blocks.append(MagazineBlock(template: .duo, items: Array(run[index..<index + 2])))
                 index += 2
             } else {
-                let template: BlockTemplate = (s % 4 == 0) ? .hero : .single
-                blocks.append(MagazineBlock(template: template, items: [run[index]]))
+                blocks.append(MagazineBlock(template: .single, items: [run[index]]))
                 index += 1
             }
             s += 1
         }
         return blocks
+    }
+
+    /// Average clamped aspect ratio for a group of items.
+    private static func avgRatio(_ items: [PhotoItem]) -> CGFloat {
+        guard !items.isEmpty else { return 1.0 }
+        let sum = items.reduce(CGFloat(0)) { $0 + min(max($1.aspectRatio, 0.55), 1.85) }
+        return sum / CGFloat(items.count)
     }
 
     // MARK: - Helpers

@@ -136,14 +136,129 @@ struct DayMagazineView: View {
         }
     }
 
+    private var selectableTemplates: [BlockTemplate] {
+        BlockTemplate.allCases.filter { $0.isSelectable }
+    }
+    private var allTemplatesEnabled: Bool {
+        selectableTemplates.allSatisfy { model.enabledTemplates.contains($0) }
+    }
+
+    /// Builds a labeled submenu that works like a Picker but reliably shows SF Symbols icons.
+    @ViewBuilder
+    private func animPicker<T: CaseIterable & Identifiable & Equatable>(
+        _ title: String, icon: String,
+        binding: Binding<T>,
+        labelOf: @escaping (T) -> String
+    ) -> some View where T.AllCases: RandomAccessCollection {
+        Menu {
+            ForEach(Array(T.allCases)) { opt in
+                Button { binding.wrappedValue = opt } label: {
+                    if binding.wrappedValue == opt {
+                        Label(labelOf(opt), systemImage: "checkmark")
+                    } else {
+                        Text(labelOf(opt))
+                    }
+                }
+            }
+        } label: {
+            Label(title, systemImage: icon)
+        }
+    }
+
     private var menuButton: some View {
         Menu {
-            Picker("背景色", selection: Binding(
-                get: { model.background },
-                set: { model.background = $0 }
-            )) {
-                ForEach(PageBackground.allCases) { option in
-                    Label(option.label, systemImage: option.icon).tag(option)
+            Menu("背景") {
+                Picker("", selection: Binding(
+                    get: { model.background },
+                    set: { model.background = $0 }
+                )) {
+                    ForEach(PageBackground.allCases) { option in
+                        Label(option.label, systemImage: option.icon).tag(option)
+                    }
+                }
+            }
+            Menu("布局") {
+                Toggle("全选", isOn: Binding(
+                    get: { allTemplatesEnabled },
+                    set: { on in
+                        model.enabledTemplates = on
+                            ? Set(selectableTemplates)
+                            : [.single]
+                    }
+                ))
+                Divider()
+                ForEach(selectableTemplates, id: \.self) { t in
+                    Toggle(t.label, isOn: Binding(
+                        get: { model.enabledTemplates.contains(t) },
+                        set: { on in
+                            if on {
+                                model.enabledTemplates.insert(t)
+                            } else if model.enabledTemplates.count > 1 {
+                                model.enabledTemplates.remove(t)
+                            }
+                        }
+                    ))
+                }
+            }
+            Menu("白边") {
+                Picker("宽度", selection: Binding(
+                    get: { model.borderWidth },
+                    set: { model.borderWidth = $0 }
+                )) {
+                    ForEach(PhotoBorderWidth.allCases) { w in
+                        Text(w.label).tag(w)
+                    }
+                }
+                Picker("颜色", selection: Binding(
+                    get: { model.borderStyle },
+                    set: { model.borderStyle = $0 }
+                )) {
+                    ForEach(PhotoBorderStyle.allCases) { s in
+                        Label(s.label, systemImage: s.icon).tag(s)
+                    }
+                }
+            }
+            Menu("动效") {
+                Section("入场") {
+                    animPicker("缩放幅度", icon: "arrow.up.left.and.arrow.down.right",
+                               binding: Binding(get: { model.scrollScale },    set: { model.scrollScale = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("运动距离", icon: "arrow.up.and.down",
+                               binding: Binding(get: { model.scrollMovement }, set: { model.scrollMovement = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("旋转角度", icon: "rotate.right",
+                               binding: Binding(get: { model.scrollRotation }, set: { model.scrollRotation = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("模糊半径", icon: "camera.filters",
+                               binding: Binding(get: { model.scrollBlur },     set: { model.scrollBlur = $0 }),
+                               labelOf: { $0.label })
+                }
+                Section("节奏") {
+                    animPicker("弹簧曲线", icon: "waveform",
+                               binding: Binding(get: { model.scrollSpring },   set: { model.scrollSpring = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("时差层次", icon: "stopwatch",
+                               binding: Binding(get: { model.scrollStagger },  set: { model.scrollStagger = $0 }),
+                               labelOf: { $0.label })
+                }
+                Section("消失") {
+                    animPicker("淡出透明", icon: "eye.slash",
+                               binding: Binding(get: { model.scrollFade },     set: { model.scrollFade = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("速度差",  icon: "arrow.up.arrow.down",
+                               binding: Binding(get: { model.scrollParallax }, set: { model.scrollParallax = $0 }),
+                               labelOf: { $0.label })
+                }
+                Section("立体") {
+                    animPicker("X轴倒住", icon: "square.3.layers.3d.top.filled",
+                               binding: Binding(get: { model.scrollTiltX },    set: { model.scrollTiltX = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("Y轴倒住", icon: "square.3.layers.3d.middle.filled",
+                               binding: Binding(get: { model.scrollTiltY },    set: { model.scrollTiltY = $0 }),
+                               labelOf: { $0.label })
+                    animPicker("角度递减", icon: "arrow.down.right.and.arrow.up.left",
+                               binding: Binding(get: { model.scrollTiltDecay }, set: { model.scrollTiltDecay = $0 }),
+                               labelOf: { $0.label })
                 }
             }
             Button {
@@ -173,6 +288,8 @@ struct DayMagazineView: View {
             block: block,
             width: contentWidth,
             namespace: previewNamespace,
+            config: model.layoutConfig,
+            frameColor: { model.frameColor(for: $0) },
             isFavorite: { model.isFavorite($0) },
             onSelect: { open($0) },
             onAction: { action, item in
@@ -180,10 +297,48 @@ struct DayMagazineView: View {
             }
         )
         .frame(maxWidth: .infinity)
-        .scrollTransition { content, phase in
-            content
-                .opacity(phase.isIdentity ? 1 : 0)
-                .offset(y: phase.isIdentity ? 0 : 30)
+        .scrollTransition(.animated(model.scrollSpring.animation)) { content, phase in
+            let sc  = model.scrollScale.value
+            let mv  = model.scrollMovement.value
+            let rot = model.scrollRotation.value
+            let fa  = model.scrollFade.offScreenOpacity
+            let blr = CGFloat(model.scrollBlur.radius)
+            let baseY: CGFloat = phase == .bottomTrailing ?  mv :
+                                  phase == .topLeading     ? -mv * 0.64 : 0
+            return content
+                .opacity(phase.isIdentity ? 1 : fa)
+                .scaleEffect(
+                    phase == .topLeading     ? (1.0 - sc) :
+                    phase == .bottomTrailing ? (1.0 + sc) : 1.0
+                )
+                .rotationEffect(.degrees(
+                    phase == .topLeading     ?  rot :
+                    phase == .bottomTrailing ? -rot : 0
+                ))
+                .offset(y: baseY)
+                .blur(radius: phase == .bottomTrailing ? blr * CGFloat(phase.value) : 0)
+        }
+        // Continuous 3D tilt + parallax driven by live scroll position.
+        // phase.value: -1 (top) → 0 (center) → +1 (bottom).
+        .scrollTransition(.interactive) { content, phase in
+            // -- Parallax lag (above center only) --
+            let par    = model.scrollParallax.factor
+            let pv     = min(0.0, phase.value)
+            let parY   = CGFloat(-pv) * par
+
+            // -- 3D perspective tilt --
+            let xDeg   = CGFloat(model.scrollTiltX.degrees)
+            let yDeg   = CGFloat(model.scrollTiltY.degrees)
+            let decay  = model.scrollTiltDecay.power
+            let v      = phase.value
+            // Apply decay curve: sign preserved, magnitude adjusted by power
+            let absV   = abs(v)
+            let signV  = v >= 0 ? 1.0 : -1.0
+            let eV     = CGFloat(signV * pow(absV, decay))
+            return content
+                .rotation3DEffect(.degrees(eV * xDeg), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(eV * yDeg), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .offset(y: parY)
         }
         .overlay(alignment: .topTrailing) {
             if model.isDragEnabled {
