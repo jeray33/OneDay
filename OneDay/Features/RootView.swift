@@ -47,11 +47,10 @@ struct RootView: View {
 
             case .day:
                 if let dayModel {
-                    DayMagazineView(
+                    DayPagedStackView(
                         model: dayModel,
                         dateNamespace: dateNamespace,
                         dateIsSource: false,
-                        contentRevealed: true,
                         onClose: { goHome() },
                         onReroll: { pickDay() },
                         prevDate: previousDate(for: dayModel.date),

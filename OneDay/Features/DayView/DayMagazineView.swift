@@ -13,6 +13,8 @@ struct DayMagazineView: View {
     var onPrevDay: (() -> Void)? = nil
     var onNextDay: (() -> Void)? = nil
     var navLoading: Bool = false
+    var scrollEdgesBinding: Binding<ContentScrollEdges>? = nil
+    var scrollDisabled: Bool = false
 
     @Namespace private var previewNamespace
 
@@ -29,36 +31,52 @@ struct DayMagazineView: View {
     var body: some View {
         GeometryReader { geo in
             let contentWidth = geo.size.width - 40
+            let viewportHeight = geo.size.height
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 96) {
+                    VStack(spacing: model.sectionTintActive ? 0 : 96) {
                         Color.clear.frame(height: 0).id("scroll_top")
-                        masthead
+                            .background(
+                                GeometryReader { g in
+                                    Color.clear.preference(
+                                        key: ScrollEdgeKey.self,
+                                        value: ScrollEdgesPayload(
+                                            topY: g.frame(in: .named("dayScroll")).minY,
+                                            bottomY: nil,
+                                            viewport: nil))
+                                }
+                            )
 
                         ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
-                            VStack(alignment: .leading, spacing: 56) {
-                                sectionHeader(section)
-                                ForEach(section.blocks) { block in
-                                    blockRow(block, contentWidth: contentWidth)
-                                }
-                            }
-                            .reveal(shouldRevealContent, delay: 0.42 + Double(sIdx) * 0.14)
+                            sectionView(section, index: sIdx, contentWidth: contentWidth)
                         }
 
-                        footer.reveal(shouldRevealContent, delay: 0.72)
+                        Color.clear.frame(height: 1).id("scroll_bottom")
+                            .background(
+                                GeometryReader { g in
+                                    Color.clear.preference(
+                                        key: ScrollEdgeKey.self,
+                                        value: ScrollEdgesPayload(
+                                            topY: nil,
+                                            bottomY: g.frame(in: .named("dayScroll")).minY,
+                                            viewport: viewportHeight))
+                                }
+                            )
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 24)
+                    .padding(.top, topSafeAreaInset() + 24)
+                    .padding(.bottom, 24)
                 }
-                .scrollDisabled(activeDragBlock != nil)
+                .scrollDisabled(activeDragBlock != nil || scrollDisabled)
                 .background(model.pageBackgroundColor.ignoresSafeArea())
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
+                .animation(.easeInOut(duration: 0.35), value: model.sectionTintEnabled)
                 .coordinateSpace(name: "dayScroll")
                 .onChange(of: model.instanceID) {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
                 .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
+                .onPreferenceChange(ScrollEdgeKey.self) { updateScrollEdges($0) }
                 .overlay(alignment: .top) { topOverlay(proxy: proxy) }
             }
         }
@@ -102,8 +120,7 @@ struct DayMagazineView: View {
     @ViewBuilder
     private func topOverlay(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 10) {
-            closeButton
-            if model.routeStops.count >= 2 {
+            if model.routeStops.count >= 2 && model.showLocationBar {
                 let stops = model.routeStops.map {
                     RouteSelectorView.Stop(id: $0.id, name: $0.name)
                 }
@@ -122,18 +139,8 @@ struct DayMagazineView: View {
             menuButton
         }
         .padding(.horizontal, 16)
-        //.padding(.top, 8)
+        .padding(.top, topSafeAreaInset() + 4)
         .revealFade(shouldRevealContent, delay: 0.32)
-    }
-
-    private var closeButton: some View {
-        Button(action: onClose) {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Theme.ink)
-                .frame(width: 38, height: 38)
-                .background(.ultraThinMaterial, in: Circle())
-        }
     }
 
     private var selectableTemplates: [BlockTemplate] {
@@ -146,7 +153,7 @@ struct DayMagazineView: View {
     /// Builds a labeled submenu that works like a Picker but reliably shows SF Symbols icons.
     @ViewBuilder
     private func animPicker<T: CaseIterable & Identifiable & Equatable>(
-        _ title: String, icon: String,
+        _ title: String, icon: String? = nil,
         binding: Binding<T>,
         labelOf: @escaping (T) -> String
     ) -> some View where T.AllCases: RandomAccessCollection {
@@ -161,7 +168,11 @@ struct DayMagazineView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: icon)
+            if let icon {
+                Label(title, systemImage: icon)
+            } else {
+                Text(title)
+            }
         }
     }
 
@@ -175,6 +186,13 @@ struct DayMagazineView: View {
                     ForEach(PageBackground.allCases) { option in
                         Label(option.label, systemImage: option.icon).tag(option)
                     }
+                }
+                if model.background == .dominant || model.background == .vibrant {
+                    Divider()
+                    Toggle("分段配色", isOn: Binding(
+                        get: { model.sectionTintEnabled },
+                        set: { model.sectionTintEnabled = $0 }
+                    ))
                 }
             }
             Menu("布局") {
@@ -261,6 +279,16 @@ struct DayMagazineView: View {
                                labelOf: { $0.label })
                 }
             }
+            animPicker("翻页模式",
+                       binding: Binding(get: { model.pageFlipMode }, set: { model.pageFlipMode = $0 }),
+                       labelOf: { $0.label })
+            animPicker("封面日期字体",
+                       binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
+                       labelOf: { $0.label })
+            Toggle("地点工具条", isOn: Binding(
+                get: { model.showLocationBar },
+                set: { model.showLocationBar = $0 }
+            ))
             Button {
                 model.isDragEnabled.toggle()
             } label: {
@@ -380,6 +408,23 @@ struct DayMagazineView: View {
         activeSegmentID = sid
     }
 
+    private func updateScrollEdges(_ payload: ScrollEdgesPayload) {
+        // The two sentinels emit separately; accumulate into stable state.
+        var edges = scrollEdgesBinding?.wrappedValue ?? ContentScrollEdges()
+        if let topY = payload.topY {
+            // Top sentinel is at scroll origin (y=0) when the scroll is pinned
+            // to the top; small epsilon for floating-point jitter.
+            edges.atTop = topY >= -1
+        }
+        if let bottomY = payload.bottomY, let viewport = payload.viewport {
+            // Bottom sentinel enters the viewport when its minY <= viewport.
+            edges.atBottom = bottomY <= viewport + 1
+        }
+        if let binding = scrollEdgesBinding, binding.wrappedValue != edges {
+            binding.wrappedValue = edges
+        }
+    }
+
     private func canvasGesture(for block: MagazineBlock) -> some Gesture {
         LongPressGesture(minimumDuration: 0.22)
             .sequenced(before: DragGesture())
@@ -405,116 +450,138 @@ struct DayMagazineView: View {
 
     // MARK: Sections
 
-    private var masthead: some View {
-        VStack(spacing: 14) {
-            BigDateView(date: model.date)
-                .matchedGeometryEffect(id: "flowDate", in: dateNamespace, isSource: dateIsSource)
-
-            VStack(spacing: 14) {
-                if let caption = DateText.relativeCaption(model.date) {
-                    Text(caption)
-                        .font(Theme.serif(22, weight: .semibold))
-                        .tracking(3)
-                        .foregroundStyle(Theme.accent)
-                }
-                metaLine
-                if model.hasRoute {
-                    DayMapPatch(locations: model.routeLocations, kilometers: model.travelKilometers)
-                        .padding(.top, 10)
+    @ViewBuilder
+    private func sectionView(_ section: MagazineSection, index: Int, contentWidth: CGFloat) -> some View {
+        let rows = sectionRows(section)
+        if !rows.isEmpty {
+            let tint = model.sectionTintActive
+            VStack(alignment: .leading, spacing: 0) {
+                sectionHeader(section)
+                ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                    rowView(row, contentWidth: contentWidth)
+                        .padding(.top, rowTopSpacing(index: idx, rows: rows))
                 }
             }
-            .reveal(shouldRevealContent, delay: 0.22)
+            .padding(.horizontal, 20)
+            .padding(.top, tint ? 40 : 0)
+            .padding(.bottom, tint ? 120 : 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint ? model.sectionBackgroundColor(section) : Color.clear)
+            .environment(\.colorScheme, tint ? model.sectionColorScheme(section) : model.pageColorScheme)
+            .reveal(shouldRevealContent, delay: 0.42 + Double(index) * 0.14)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 36)
-        .padding(.bottom, 6)
-    }
-
-    private var metaLine: some View {
-        let places = model.headerPlaces.prefix(2).joined(separator: " · ")
-        var parts: [String] = []
-        if model.photoCount > 0 { parts.append("\(model.photoCount) 张照片") }
-        if model.videoCount > 0 { parts.append("\(model.videoCount) 段视频") }
-        return VStack(spacing: 4) {
-            Rectangle().fill(Theme.ink.opacity(0.25)).frame(width: 40, height: 1)
-            Text(parts.joined(separator: " · "))
-                .font(Theme.serif(13))
-                .foregroundStyle(.secondary)
-            if !places.isEmpty {
-                Text(places)
-                    .font(Theme.serif(13, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-            }
-        }
-        .padding(.top, 4)
     }
 
     private func sectionHeader(_ section: MagazineSection) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(section.title)
-                .font(Theme.serif(26, weight: .bold))
-                .foregroundStyle(Theme.ink)
-            if let place = section.placeName {
-                Text(place)
-                    .font(Theme.serif(13))
-                    .foregroundStyle(Theme.accent)
-            }
-            Spacer()
-            Text(section.timeText)
-                .font(Theme.serif(12))
-                .foregroundStyle(.secondary)
+        // When the day moves across distinct places, the headline is the place
+        // name; otherwise it's the uppercase-English time-of-day band.
+        let showPlace = model.hasRoute
+        let title = showPlace ? (section.placeName ?? section.band.englishTitle)
+                              : section.band.englishTitle
+        return Text(title)
+            .font(model.coverDateFont.font(56))
+            .foregroundStyle(Theme.ink)
+            .lineLimit(1)
+            .minimumScaleFactor(0.4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: SectionRow, contentWidth: CGFloat) -> some View {
+        switch row {
+        case .label(let text):
+            Text(text)
+                .font(Theme.serif(13))
+                .foregroundStyle(Theme.ink.opacity(0.7))
+        case .block(let block):
+            blockRow(block, contentWidth: contentWidth)
         }
     }
 
-    private var footer: some View {
-        VStack(spacing: 22) {
-            HStack {
-                Button { onPrevDay?() } label: {
-                    Text(prevDate.map { "← \(Self.navDateText($0))" } ?? "← 无上一次")
-                        .font(Theme.serif(16, weight: .medium))
-                        .foregroundStyle(navLoading || prevDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
-                }
-                .disabled(navLoading || prevDate == nil)
-                Spacer()
-                Button { onNextDay?() } label: {
-                    Text(nextDate.map { "\(Self.navDateText($0)) →" } ?? "无下一次 →")
-                        .font(Theme.serif(16, weight: .medium))
-                        .foregroundStyle(navLoading || nextDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
-                }
-                .disabled(navLoading || nextDate == nil)
-            }
-            .padding(.horizontal, 6)
-            .overlay {
-                if navLoading {
-                    ProgressView().scaleEffect(0.7).tint(Theme.ink)
-                }
-            }
-
-            Rectangle().fill(Theme.ink.opacity(0.15)).frame(width: 50, height: 1)
-            Button(action: onReroll) {
-                Label("再来一天", systemImage: "shuffle")
-                    .font(Theme.serif(16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 26)
-                    .frame(height: 52)
-                    .background(Capsule().fill(Theme.ink))
-            }
-            Text("摇一摇，换一天")
-                .font(Theme.serif(12))
-                .foregroundStyle(.tertiary)
+    private func rowTopSpacing(index: Int, rows: [SectionRow]) -> CGFloat {
+        let row = rows[index]
+        if index == 0 {
+            if case .label = row { return 6 }
+            return 24
         }
-        .padding(.top, 24)
-        .padding(.bottom, 40)
+        switch (rows[index - 1], row) {
+        case (_, .label):       return 80   // start of a new time segment
+        case (.label, .block):  return 12   // photo tucked under its time label
+        case (.block, .block):  return 56
+        }
+    }
+
+    /// Builds the ordered rows for a section: time-segment labels interleaved
+    /// with photo blocks. A section spanning ≤ 2h gets one label under the
+    /// title; a longer section is split into clock-aligned 2-hour segments,
+    /// each labelled above its first photo with that segment's actual span.
+    private func sectionRows(_ section: MagazineSection) -> [SectionRow] {
+        let blocks = section.blocks.filter { $0.template != .quote }
+        guard !blocks.isEmpty else { return [] }
+        let allDates = blocks.flatMap(\.items).compactMap(\.creationDate).sorted()
+        guard let first = allDates.first, let last = allDates.last else {
+            return blocks.map { .block($0) }
+        }
+        if last.timeIntervalSince(first) <= 2 * 3600 {
+            return [.label(timeRangeText(first, last))] + blocks.map { .block($0) }
+        }
+        var rows: [SectionRow] = []
+        var currentBucket: Date?
+        var bucketBlocks: [MagazineBlock] = []
+        func flush() {
+            guard !bucketBlocks.isEmpty else { return }
+            let dates = bucketBlocks.flatMap(\.items).compactMap(\.creationDate).sorted()
+            if let f = dates.first, let l = dates.last {
+                rows.append(.label(timeRangeText(f, l)))
+            }
+            rows.append(contentsOf: bucketBlocks.map { .block($0) })
+            bucketBlocks.removeAll()
+        }
+        for block in blocks {
+            let t = block.items.compactMap(\.creationDate).min() ?? first
+            let bucket = alignedBucket(t)
+            if currentBucket == nil { currentBucket = bucket }
+            if bucket != currentBucket { flush(); currentBucket = bucket }
+            bucketBlocks.append(block)
+        }
+        flush()
+        return rows
+    }
+
+    /// Rounds a date down to a clock-aligned even hour (…14:00, 16:00…).
+    private func alignedBucket(_ date: Date) -> Date {
+        let cal = Calendar.current
+        var c = cal.dateComponents([.year, .month, .day, .hour], from: date)
+        c.hour = ((c.hour ?? 0) / 2) * 2
+        c.minute = 0
+        c.second = 0
+        return cal.date(from: c) ?? date
+    }
+
+    private func timeRangeText(_ start: Date, _ end: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        let s = f.string(from: start), e = f.string(from: end)
+        return s == e ? s : "\(s) - \(e)"
+    }
+
+    private var footer: some View {
+        // The day navigation footer has moved to the back cover. A small spacer
+        // is kept so the bottom sentinel has something to anchor against.
+        Color.clear.frame(height: 24)
     }
 
     private func open(_ item: PhotoItem) {
         model.selected = item
     }
+}
 
-    private static func navDateText(_ date: Date) -> String {
-        let c = DateText.components(date)
-        return "\(c.year).\(c.month).\(c.day)"
-    }
+// MARK: - Section rows
+
+/// A rendered row inside a section: either a time-segment label or a photo block.
+private enum SectionRow {
+    case label(String)
+    case block(MagazineBlock)
 }
 
 // MARK: - Scroll tracking
@@ -523,6 +590,25 @@ private struct BlockPositionKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
         value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// One sentinel emission: either the top sentinel's Y, or the bottom
+/// sentinel's Y plus the viewport height. The two are emitted separately and
+/// merged by `reduce` so the consumer sees the latest of each.
+struct ScrollEdgesPayload: Equatable {
+    var topY: CGFloat?
+    var bottomY: CGFloat?
+    var viewport: CGFloat?
+}
+
+private struct ScrollEdgeKey: PreferenceKey {
+    static var defaultValue: ScrollEdgesPayload = ScrollEdgesPayload()
+    static func reduce(value: inout ScrollEdgesPayload, nextValue: () -> ScrollEdgesPayload) {
+        let next = nextValue()
+        if let t = next.topY { value.topY = t }
+        if let b = next.bottomY { value.bottomY = b }
+        if let v = next.viewport { value.viewport = v }
     }
 }
 

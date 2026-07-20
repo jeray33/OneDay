@@ -68,6 +68,19 @@ enum TimeBand: Int, CaseIterable {
         }
     }
 
+    /// Uppercase English headline used on the photo page when the day stays in
+    /// one place.
+    var englishTitle: String {
+        switch self {
+        case .dawn: return "DAWN"
+        case .morning: return "MORNING"
+        case .noon: return "NOON"
+        case .afternoon: return "AFTERNOON"
+        case .evening: return "EVENING"
+        case .night: return "NIGHT"
+        }
+    }
+
     static func band(for date: Date?) -> TimeBand {
         guard let date else { return .noon }
         let h = Calendar.current.component(.hour, from: date)
@@ -91,4 +104,7 @@ struct MagazineSection: Identifiable {
     var blocks: [MagazineBlock]
 
     var title: String { band.title }
+
+    /// First photo of the section, used as the source for the section's tint.
+    var heroItem: PhotoItem? { blocks.first(where: { !$0.items.isEmpty })?.items.first }
 }

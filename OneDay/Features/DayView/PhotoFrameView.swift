@@ -10,6 +10,8 @@ struct PhotoFrameView: View {
     var favorite: Bool = false
     var ratioOverride: CGFloat? = nil
     var borderColor: Color = Theme.frame
+    /// Polaroid look: a tall white strip along the bottom edge.
+    var polaroid: Bool = false
 
     private var ratio: CGFloat {
         min(max(ratioOverride ?? item.aspectRatio, 0.55), 1.85)
@@ -20,11 +22,18 @@ struct PhotoFrameView: View {
         return CGSize(width: w, height: (w / ratio).rounded())
     }
 
+    /// Bottom edge thickness. Polaroid keeps thin top/sides but a chunky bottom.
+    private var bottomBorder: CGFloat {
+        polaroid ? border + max(imageSize.height * 0.16, 20) : border
+    }
+
     var body: some View {
         PHImageView(asset: item.asset, displaySize: imageSize, fill: true, kenBurns: kenBurns)
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }
-            .padding(border)
+            .padding(.top, border)
+            .padding(.horizontal, border)
+            .padding(.bottom, bottomBorder)
             .background(borderColor)
             .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 4)
     }

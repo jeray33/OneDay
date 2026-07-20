@@ -20,7 +20,8 @@ struct MagazineBlockView: View {
             StackedClusterView(items: block.items, width: width, namespace: namespace,
                                onSelect: onSelect,
                                borderScale: config.borderScale,
-                               frameColor: frameColor)
+                               frameColor: frameColor,
+                               polaroid: polaroid)
         case .quote:   quote
         }
     }
@@ -30,12 +31,15 @@ struct MagazineBlockView: View {
     /// Scales a template's base border pt value by the user-chosen border width level.
     private func b(_ base: CGFloat) -> CGFloat { max((base * config.borderScale).rounded(), 0) }
 
+    private var polaroid: Bool { config.borderStyle.isPolaroid }
+
     private var single: some View {
         let item = block.items[0]
         let photoWidth = (width * config.singleScale).rounded()
         return tappable(item) {
             PhotoFrameView(item: item, width: photoWidth, border: b(9),
-                           favorite: isFavorite(item), borderColor: frameColor(item))
+                           favorite: isFavorite(item), borderColor: frameColor(item),
+                           polaroid: polaroid)
         }
         .frame(maxWidth: .infinity, alignment: singleAlignment)
     }
@@ -71,7 +75,8 @@ struct MagazineBlockView: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                 tappable(item) {
                     PhotoFrameView(item: item, width: frameWidths[i], border: scaledBorder,
-                                   favorite: isFavorite(item), borderColor: frameColor(item))
+                                   favorite: isFavorite(item), borderColor: frameColor(item),
+                                   polaroid: polaroid)
                 }
                 // Cascade stagger: base = clipped bottomTrailing phase (0 at identity, no stuck-offset).
                 // Each photo i amplifies the movement by (1 + i * stagger), so later photos move
@@ -115,7 +120,8 @@ struct MagazineBlockView: View {
         return HStack(alignment: .top, spacing: spacing) {
             tappable(primary) {
                 PhotoFrameView(item: primary, width: bigWidth, border: bigBorder,
-                               favorite: isFavorite(primary), borderColor: frameColor(primary))
+                               favorite: isFavorite(primary), borderColor: frameColor(primary),
+                               polaroid: polaroid)
                     .rotationEffect(.degrees(-1.5))
             }
             VStack(spacing: spacing) {
@@ -125,7 +131,8 @@ struct MagazineBlockView: View {
                     tappable(item) {
                         PhotoFrameView(item: item, width: smallWidth, border: smallBorder,
                                        favorite: isFavorite(item),
-                                       ratioOverride: lockedRatio, borderColor: frameColor(item))
+                                       ratioOverride: lockedRatio, borderColor: frameColor(item),
+                                       polaroid: polaroid)
                             .rotationEffect(.degrees(index.isMultiple(of: 2) ? 1.5 : -1.0))
                     }
                     .scrollTransition { content, phase in

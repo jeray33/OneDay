@@ -8,8 +8,9 @@ struct PhotoPreviewView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
-    @State private var bgColor: Color = Color(white: 0.06)
     @State private var bgOpacity: Double = 0
+    @State private var place: String?
+    @State private var dynamicBg: Color?
     @Environment(\.dismiss) private var dismiss
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID) {
@@ -31,13 +32,13 @@ struct PhotoPreviewView: View {
 
     var body: some View {
         ZStack {
-            bgColor
+            (dynamicBg ?? model.pageBackgroundColor)
                 .ignoresSafeArea()
                 .opacity(bgOpacity * Double(1 - dragProgress))
 
             TabView(selection: $selection) {
                 ForEach(items) { item in
-                    PreviewPageView(item: item, onZoomChanged: { isZoomed = $0 })
+                    PreviewPageView(item: item, model: model, onZoomChanged: { isZoomed = $0 })
                         .tag(item.id)
                 }
             }
@@ -58,17 +59,34 @@ struct PhotoPreviewView: View {
         .onChange(of: selection) {
             isZoomed = false
             dragOffset = .zero
+            place = nil
         }
-        .task(id: selection) { await updateBackground() }
+        .task(id: selection) {
+            await updatePlace()
+            await updateDynamicBackground()
+        }
     }
 
-    private func updateBackground() async {
+    private func updateDynamicBackground() async {
         guard let item = currentItem else { return }
-        if let image = await ImageLoader.shared.thumbnail(asset: item.asset,
-                                                          size: CGSize(width: 40, height: 40)),
-           let tone = image.deepTone() {
-            withAnimation(.easeInOut(duration: 0.4)) { bgColor = Color(uiColor: tone) }
-        }
+        let color = await model.photoDerivedBackground(for: item)
+        withAnimation(.easeInOut(duration: 0.45)) { dynamicBg = color }
+    }
+
+    private func updatePlace() async {
+        guard let location = currentItem?.location else { place = nil; return }
+        place = await LocationResolver.shared.name(for: location)
+    }
+
+    private var captionLine1: String? { place }
+
+    private var captionLine2: String? {
+        guard let item = currentItem else { return nil }
+        let date = item.creationDate ?? Date()
+        let c = DateText.components(date)
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return "\(c.year).\(c.month).\(c.day) \(DateText.weekday(date)) \(f.string(from: date))"
     }
 
     private func close() {
@@ -104,11 +122,13 @@ struct PhotoPreviewView: View {
     }
 
     private var topBar: some View {
-        HStack {
+        HStack(spacing: 10) {
             Button { close() } label: {
                 icon("xmark")
             }
-            Spacer()
+            Spacer(minLength: 4)
+            captionBlock
+            Spacer(minLength: 4)
             if let item = currentItem {
                 Button {
                     Task { await model.toggleFavorite(item) }
@@ -143,6 +163,29 @@ struct PhotoPreviewView: View {
         .offset(y: isZoomed ? -14 : 0)
         .opacity(isZoomed ? 0 : Double(max(0, 1 - dragProgress * 2)))
         .animation(.easeInOut(duration: 0.22), value: isZoomed)
+    }
+
+    private var captionColor: Color {
+        model.pageColorScheme == .dark ? .white : Color(white: 0.15)
+    }
+
+    private var captionBlock: some View {
+        VStack(spacing: 1) {
+            if let line1 = captionLine1, !line1.isEmpty {
+                Text(line1)
+                    .font(Theme.serif(14, weight: .semibold))
+                    .foregroundStyle(captionColor)
+                    .lineLimit(1)
+            }
+            if let line2 = captionLine2, !line2.isEmpty {
+                Text(line2)
+                    .font(Theme.serif(11))
+                    .foregroundStyle(captionColor.opacity(0.8))
+                    .lineLimit(1)
+            }
+        }
+        .multilineTextAlignment(.center)
+        .shadow(color: .black.opacity(model.pageColorScheme == .dark ? 0.5 : 0.12), radius: 3, x: 0, y: 1)
     }
 
     private func icon(_ name: String) -> some View {

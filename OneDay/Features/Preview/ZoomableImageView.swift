@@ -17,9 +17,9 @@ struct ZoomableImageView: UIViewRepresentable {
     let displaySize: CGSize
     var sideBorder: CGFloat = 8
     var topBorder: CGFloat = 8
+    /// Thickness of the bottom border strip (tall for Polaroid).
     var captionHeight: CGFloat = 0
-    var captionLine1: String?
-    var captionLine2: String?
+    var cardColor: Color = .white
     var onZoomChanged: (Bool) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ZoomScrollView {
@@ -40,7 +40,7 @@ struct ZoomableImageView: UIViewRepresentable {
         scrollView.addSubview(container)
 
         let card = context.coordinator.card
-        card.backgroundColor = .white
+        card.backgroundColor = UIColor(cardColor)
         container.addSubview(card)
 
         let imageView = context.coordinator.imageView
@@ -48,11 +48,6 @@ struct ZoomableImageView: UIViewRepresentable {
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
         card.addSubview(imageView)
-
-        let caption = context.coordinator.captionLabel
-        caption.numberOfLines = 2
-        caption.textAlignment = .center
-        card.addSubview(caption)
 
         scrollView.onLayout = { [weak scrollView] in
             guard let scrollView else { return }
@@ -81,7 +76,6 @@ struct ZoomableImageView: UIViewRepresentable {
         let container = UIView()
         let card = UIView()
         let imageView = UIImageView()
-        let captionLabel = UILabel()
         var displaySize: CGSize = .zero
         var sideBorder: CGFloat = 8
         var topBorder: CGFloat = 8
@@ -98,8 +92,7 @@ struct ZoomableImageView: UIViewRepresentable {
             sideBorder = view.sideBorder
             topBorder = view.topBorder
             captionHeight = view.captionHeight
-            captionLabel.attributedText = Self.captionText(line1: view.captionLine1,
-                                                           line2: view.captionLine2)
+            card.backgroundColor = UIColor(view.cardColor)
         }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { container }
@@ -122,10 +115,6 @@ struct ZoomableImageView: UIViewRepresentable {
             imageView.frame = CGRect(x: sideBorder, y: topBorder,
                                      width: displaySize.width - sideBorder * 2,
                                      height: max(imageH, 0))
-            captionLabel.frame = CGRect(x: sideBorder,
-                                        y: topBorder + max(imageH, 0),
-                                        width: displaySize.width - sideBorder * 2,
-                                        height: captionHeight)
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -154,39 +143,6 @@ struct ZoomableImageView: UIViewRepresentable {
                                            width: w, height: h),
                                 animated: true)
             }
-        }
-
-        private static func captionText(line1: String?, line2: String?) -> NSAttributedString? {
-            let serif = { (size: CGFloat, weight: UIFont.Weight) -> UIFont in
-                let base = UIFont.systemFont(ofSize: size, weight: weight)
-                if let d = base.fontDescriptor.withDesign(.serif) {
-                    return UIFont(descriptor: d, size: size)
-                }
-                return base
-            }
-            let result = NSMutableAttributedString()
-            let para = NSMutableParagraphStyle()
-            para.alignment = .center
-            para.lineSpacing = 2
-
-            if let line1, !line1.isEmpty {
-                result.append(NSAttributedString(string: line1, attributes: [
-                    .font: serif(13, .semibold),
-                    .foregroundColor: UIColor(white: 0.18, alpha: 1),
-                    .paragraphStyle: para,
-                    .kern: 0.5
-                ]))
-            }
-            if let line2, !line2.isEmpty {
-                if result.length > 0 { result.append(NSAttributedString(string: "\n")) }
-                result.append(NSAttributedString(string: line2, attributes: [
-                    .font: serif(11, .regular),
-                    .foregroundColor: UIColor(white: 0.45, alpha: 1),
-                    .paragraphStyle: para,
-                    .kern: 0.5
-                ]))
-            }
-            return result.length > 0 ? result : nil
         }
     }
 }

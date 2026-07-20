@@ -44,6 +44,40 @@ enum MagazineLayoutEngine {
         return sections
     }
 
+    /// Place-based composition: one section per ordered place group. Photos
+    /// within a place are laid out with the same block heuristics but are never
+    /// re-split by time band. Used when the day moves across distinct places.
+    static func composeByPlace(groups: [(name: String?, items: [PhotoItem])],
+                               similar: ((PhotoItem, PhotoItem) -> Bool)? = nil,
+                               enabled: Set<BlockTemplate> = []) -> [MagazineSection] {
+        let sim: (PhotoItem, PhotoItem) -> Bool = similar ?? { isBurstPair($0, $1) }
+        var sections: [MagazineSection] = []
+        for group in groups {
+            let sorted = group.items.sorted {
+                ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
+            }
+            guard !sorted.isEmpty else { continue }
+            var blocks: [MagazineBlock] = []
+            for (index, moment) in splitMoments(sorted).enumerated() {
+                blocks.append(contentsOf: makeBlocks(moment, seed: index, similar: sim))
+            }
+            let anchor = sorted.first(where: { $0.location != nil })?.location
+            sections.append(MagazineSection(
+                band: TimeBand.band(for: sorted.first?.creationDate),
+                timeText: timeRange(sorted),
+                placeName: group.name,
+                anchorLocation: anchor,
+                blocks: blocks
+            ))
+        }
+        if !enabled.isEmpty {
+            for i in sections.indices {
+                sections[i].blocks = applyEnabledFilter(sections[i].blocks, enabled: enabled)
+            }
+        }
+        return sections
+    }
+
     // MARK: - Template filter
 
     /// Converts blocks whose template is not in `enabled` into smaller enabled alternatives.

@@ -35,9 +35,16 @@ final class DayViewModel {
     private static let scrollTiltXKey    = "OneDay.scrollTiltX"
     private static let scrollTiltYKey    = "OneDay.scrollTiltY"
     private static let scrollTiltDecayKey = "OneDay.scrollTiltDecay"
+    private static let pageFlipModeKey   = "OneDay.pageFlipMode"
+    private static let coverDateFontKey  = "OneDay.coverDateFont"
+    private static let sectionTintKey    = "OneDay.sectionTint"
+    private static let locationBarKey    = "OneDay.locationBar"
 
     var background: PageBackground {
-        didSet { UserDefaults.standard.set(background.rawValue, forKey: Self.backgroundKey) }
+        didSet {
+            UserDefaults.standard.set(background.rawValue, forKey: Self.backgroundKey)
+            Task { await computeSectionTints() }
+        }
     }
     var borderWidth: PhotoBorderWidth {
         didSet { UserDefaults.standard.set(borderWidth.rawValue, forKey: Self.borderWidthKey) }
@@ -88,6 +95,48 @@ final class DayViewModel {
     var scrollTiltDecay: ScrollTiltDecay {
         didSet { UserDefaults.standard.set(scrollTiltDecay.rawValue, forKey: Self.scrollTiltDecayKey) }
     }
+    var pageFlipMode: PageFlipMode {
+        didSet { UserDefaults.standard.set(pageFlipMode.rawValue, forKey: Self.pageFlipModeKey) }
+    }
+    var coverDateFont: CoverDateFont {
+        didSet { UserDefaults.standard.set(coverDateFont.rawValue, forKey: Self.coverDateFontKey) }
+    }
+    /// When on (and background is a photo-derived color), each headline section
+    /// gets its own tint pulled from that section's photos.
+    var sectionTintEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(sectionTintEnabled, forKey: Self.sectionTintKey)
+            Task { await computeSectionTints() }
+        }
+    }
+    /// Whether the location toolbar at the top of the photo page is shown.
+    var showLocationBar: Bool {
+        didSet { UserDefaults.standard.set(showLocationBar, forKey: Self.locationBarKey) }
+    }
+    // MARK: Cover / back cover state
+    private(set) var coverPhotos: [PhotoItem] = []
+    private(set) var personStickers: [PersonSticker] = []
+    private(set) var coverBackgroundColor: Color = Color(white: 0.96)
+    private var coverBackgroundIsDark = false
+    private(set) var backCoverBackgroundColor: Color = Color(white: 0.12)
+    private var backCoverIsDark = true
+
+    var coverColorScheme: ColorScheme {
+        coverBackgroundIsDark ? .dark : .light
+    }
+    var backCoverColorScheme: ColorScheme {
+        backCoverIsDark ? .dark : .light
+    }
+
+    /// Editorial summary for the back cover.
+    var backCoverSummary: BackCoverSummary {
+        BackCoverSummary(
+            photoCount: photoCount,
+            videoCount: videoCount,
+            kilometers: travelKilometers,
+            places: headerPlaces
+        )
+    }
     private var photoFrameColors: [String: Color] = [:]
     private(set) var warmColor: Color    = Color(red: 0.93, green: 0.78, blue: 0.62)
     private(set) var dominantColor: Color = Color(white: 0.5)
@@ -135,6 +184,10 @@ final class DayViewModel {
         self.scrollTiltX    = ScrollTiltX(rawValue:          UserDefaults.standard.string(forKey: Self.scrollTiltXKey)    ?? "") ?? .none
         self.scrollTiltY    = ScrollTiltY(rawValue:          UserDefaults.standard.string(forKey: Self.scrollTiltYKey)    ?? "") ?? .none
         self.scrollTiltDecay = ScrollTiltDecay(rawValue:     UserDefaults.standard.string(forKey: Self.scrollTiltDecayKey) ?? "") ?? .linear
+        self.pageFlipMode = PageFlipMode(rawValue:           UserDefaults.standard.string(forKey: Self.pageFlipModeKey)   ?? "") ?? .snapParallax
+        self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
+        self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
+        self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
         // Enabled templates must be loaded before composing sections
         let rawTpl = UserDefaults.standard.string(forKey: Self.enabledTemplatesKey) ?? ""
         let loadedTpl = Set(rawTpl.split(separator: ",").compactMap { BlockTemplate(rawValue: String($0)) })
@@ -156,18 +209,73 @@ final class DayViewModel {
         return c
     }
 
-    /// Recomputes sections using the current enabledTemplates (no Vision grouping).
+    /// Vision similarity distances between consecutive items, populated by
+    /// `applyVisionGrouping`. Kept so sections can be rebuilt (template toggles,
+    /// place/time switch) without recomputing Vision.
+    private var visionDistances: [String: Float] = [:]
+
+    private func visionSimilar(_ a: PhotoItem, _ b: PhotoItem) -> Bool {
+        let gap = abs((a.creationDate ?? .distantPast)
+            .timeIntervalSince(b.creationDate ?? .distantPast))
+        guard gap <= 8 * 60 else { return false }
+        if let d = visionDistances["\(a.id)|\(b.id)"] { return d < 0.62 }
+        return false
+    }
+
+    /// Ordered place groups covering every item. Located items define the stop
+    /// boundaries; non-located items attach to the current stop chronologically
+    /// so nothing is dropped.
+    private func placeGroups() -> [(name: String?, items: [PhotoItem])] {
+        let stops = routeStops
+        guard !stops.isEmpty else { return [] }
+        var stopOfItem: [String: Int] = [:]
+        for (i, stop) in stops.enumerated() {
+            for id in stop.itemIDs { stopOfItem[id] = i }
+        }
+        var groups: [[PhotoItem]] = Array(repeating: [], count: stops.count)
+        var current = 0
+        for item in allItems {
+            if let idx = stopOfItem[item.id] { current = idx }
+            groups[current].append(item)
+        }
+        return zip(stops, groups).map { ($0.name, $1) }
+    }
+
+    /// Rebuilds `sections` choosing place-based grouping when the day spans
+    /// multiple places, otherwise the default time-band grouping.
+    private func rebuildSections(animated: Bool = true) {
+        let similar: ((PhotoItem, PhotoItem) -> Bool)? =
+            visionDistances.isEmpty ? nil : { [weak self] a, b in
+                self?.visionSimilar(a, b) ?? false
+            }
+        let newSections: [MagazineSection]
+        if hasRoute {
+            newSections = MagazineLayoutEngine.composeByPlace(
+                groups: placeGroups(), similar: similar, enabled: enabledTemplates)
+        } else {
+            newSections = MagazineLayoutEngine.compose(
+                allItems, similar: similar, enabled: enabledTemplates)
+        }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.4)) { sections = newSections }
+        } else {
+            sections = newSections
+        }
+        Task { await computeSectionTints() }
+    }
+
+    /// Recomposes sections using the current enabledTemplates.
     private func recompose() {
-        let newSections = MagazineLayoutEngine.compose(allItems, enabled: enabledTemplates)
-        withAnimation(.easeInOut(duration: 0.35)) { sections = newSections }
+        rebuildSections(animated: true)
     }
 
     /// Returns the frame color for a photo based on the current border style.
     func frameColor(for item: PhotoItem) -> Color {
         switch borderStyle {
-        case .white:   return Theme.frame
-        case .black:   return .black
-        case .colored: return photoFrameColors[item.id] ?? Theme.frame
+        case .white:    return Theme.frame
+        case .black:    return .black
+        case .colored:  return photoFrameColors[item.id] ?? Theme.frame
+        case .polaroid: return Theme.frame
         }
     }
 
@@ -176,9 +284,13 @@ final class DayViewModel {
     func prepare() async {
         await computeWarmColor()
         await applyVisionGrouping()
-        await resolvePlaces()
         await resolveSegmentNames()
+        rebuildSections()
+        await resolvePlaces()
         if borderStyle == .colored { await computeFrameColors() }
+        await computeCoverPhotos()
+        await computeCoverBackgroundColor()
+        await computePersonStickers()
     }
 
     /// Extracts a vivid-but-soft tint color from each photo’s thumbnail for use as a frame.
@@ -235,6 +347,162 @@ final class DayViewModel {
         }
     }
 
+    // MARK: Cover
+
+    /// Picks the 2 sharpest/best-composed non-video photos for the cover.
+    private func computeCoverPhotos() async {
+        let photos = allItems.filter { !$0.isVideo }
+        guard !photos.isEmpty else { coverPhotos = []; return }
+        if photos.count <= 2 { coverPhotos = photos; return }
+        let ranked = await PhotoSharpnessRanker.shared.rank(photos, top: 2)
+        coverPhotos = ranked
+    }
+
+    /// Cover & back-cover backgrounds (method B: hue rotation off the hero
+    /// photo). The photo page keeps the hero's own hue (dominant/vibrant); the
+    /// cover shifts +30° (analogous, kept light & vivid) and the back cover
+    /// shifts +180° (complementary, a deeper editorial tone). The rotations
+    /// guarantee both differ from the page's main hue.
+    private func computeCoverBackgroundColor() async {
+        guard let hero = coverPhotos.first,
+              let image = await ImageLoader.shared.thumbnail(
+                asset: hero.asset, size: CGSize(width: 48, height: 48)),
+              let base = image.averageColor else {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                coverBackgroundColor = warmColor
+                coverBackgroundIsDark = false
+                backCoverBackgroundColor = Color(white: 0.12)
+                backCoverIsDark = true
+            }
+            return
+        }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+
+        // Cover: analogous +30°, light and vivid.
+        let (cover, coverDark) = rotatedColor(
+            baseHue: h, baseSat: s, baseBri: b,
+            hueShift: 30.0 / 360.0, satFloor: 0.62, satScale: 2.3,
+            briScale: 1.06, briRange: 0.60...0.92)
+        // Back cover: complementary +180°, deeper.
+        let (back, backDark) = rotatedColor(
+            baseHue: h, baseSat: s, baseBri: b,
+            hueShift: 0.5, satFloor: 0.5, satScale: 2.0,
+            briScale: 0.82, briRange: 0.28...0.60)
+
+        withAnimation(.easeInOut(duration: 0.3)) {
+            coverBackgroundColor = cover
+            coverBackgroundIsDark = coverDark
+            backCoverBackgroundColor = back
+            backCoverIsDark = backDark
+        }
+    }
+
+    /// Builds an HSB color with the hue rotated by `hueShift` (0...1 turns) and
+    /// saturation/brightness pushed into an editorial range.
+    private func rotatedColor(baseHue h: CGFloat, baseSat s: CGFloat, baseBri b: CGFloat,
+                              hueShift: CGFloat, satFloor: CGFloat, satScale: CGFloat,
+                              briScale: CGFloat, briRange: ClosedRange<CGFloat>) -> (Color, Bool) {
+        var hue = (h + hueShift).truncatingRemainder(dividingBy: 1)
+        if hue < 0 { hue += 1 }
+        let sat = max(min(s * satScale, 0.92), satFloor)
+        let bri = min(max(b * briScale, briRange.lowerBound), briRange.upperBound)
+        let color = UIColor(hue: hue, saturation: sat, brightness: bri, alpha: 1)
+        return (Color(uiColor: color), bri < 0.5)
+    }
+
+    /// Extracts up to 2 distinct person stickers (transparent foreground + white outline).
+    private func computePersonStickers() async {
+        let photos = allItems.filter { !$0.isVideo }
+        guard !photos.isEmpty else { personStickers = []; return }
+        // Scan the cover photos first (most likely to contain the day's people),
+        // then the rest chronologically.
+        let coverIDs = Set(coverPhotos.map(\.id))
+        let ordered = coverPhotos + photos.filter { !coverIDs.contains($0.id) }
+        let stickers = await PersonStickerExtractor.shared.extract(from: ordered, max: 2)
+        personStickers = stickers
+    }
+
+    /// True when at least one located photo/video exists (map is worth showing).
+    var hasAnyLocation: Bool { !routeLocations.isEmpty }
+
+    /// Background color derived from a specific photo, matching the current
+    /// `background` setting. Returns nil for non-photo backgrounds (paper/dark/
+    /// warm) so the caller keeps the static `pageBackgroundColor`. Used by the
+    /// preview to track the currently viewed photo's dominant/vibrant tint.
+    func photoDerivedBackground(for item: PhotoItem) async -> Color? {
+        guard background == .dominant || background == .vibrant else { return nil }
+        guard let image = await ImageLoader.shared.thumbnail(
+                asset: item.asset, size: CGSize(width: 48, height: 48)),
+              let base = image.averageColor else { return nil }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        switch background {
+        case .dominant:
+            let dominant = UIColor(hue: h, saturation: min(s, 0.6),
+                                   brightness: max(min(b, 0.92), 0.18), alpha: 1)
+            return Color(uiColor: dominant)
+        case .vibrant:
+            let vSat = max(min(s * 2.5, 0.95), 0.75)
+            let vBri = max(min(b, 0.90), 0.52)
+            return Color(uiColor: UIColor(hue: h, saturation: vSat, brightness: vBri, alpha: 1))
+        default:
+            return nil
+        }
+    }
+
+    // MARK: Per-section tint
+
+    /// Average color of each section's hero photo, keyed by photo id (stable
+    /// across section rebuilds).
+    private var photoAverageColors: [String: UIColor] = [:]
+
+    /// True when per-section tinting should be applied.
+    var sectionTintActive: Bool {
+        sectionTintEnabled && (background == .dominant || background == .vibrant)
+    }
+
+    /// Loads the average color of each section's hero photo so `sectionBackgroundColor`
+    /// can resolve synchronously.
+    private func computeSectionTints() async {
+        guard sectionTintActive else { return }
+        for section in sections {
+            guard let hero = section.heroItem, photoAverageColors[hero.id] == nil else { continue }
+            if let image = await ImageLoader.shared.thumbnail(
+                    asset: hero.asset, size: CGSize(width: 48, height: 48)),
+               let base = image.averageColor {
+                photoAverageColors[hero.id] = base
+            }
+        }
+    }
+
+    /// Derives a tint from a base color using the current photo-background mode.
+    private func tint(from base: UIColor) -> (Color, Bool) {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        switch background {
+        case .vibrant:
+            let vSat = max(min(s * 2.5, 0.95), 0.75)
+            let vBri = max(min(b, 0.90), 0.52)
+            return (Color(uiColor: UIColor(hue: h, saturation: vSat, brightness: vBri, alpha: 1)), vBri < 0.5)
+        default: // .dominant
+            let bri = max(min(b, 0.92), 0.18)
+            return (Color(uiColor: UIColor(hue: h, saturation: min(s, 0.6), brightness: bri, alpha: 1)), bri < 0.5)
+        }
+    }
+
+    func sectionBackgroundColor(_ section: MagazineSection) -> Color {
+        guard sectionTintActive, let hero = section.heroItem,
+              let base = photoAverageColors[hero.id] else { return pageBackgroundColor }
+        return tint(from: base).0
+    }
+
+    func sectionColorScheme(_ section: MagazineSection) -> ColorScheme {
+        guard sectionTintActive, let hero = section.heroItem,
+              let base = photoAverageColors[hero.id] else { return pageColorScheme }
+        return tint(from: base).1 ? .dark : .light
+    }
+
     private func applyVisionGrouping() async {
         guard allItems.count > 1 else { return }
         await VisionSimilarity.shared.warmUp(Array(allItems.prefix(150)))
@@ -247,18 +515,8 @@ final class DayViewModel {
                 distances["\(a.id)|\(b.id)"] = d
             }
         }
-
-        let similar: (PhotoItem, PhotoItem) -> Bool = { a, b in
-            // Time proximity gate so look-alike but unrelated scenes aren't merged.
-            let gap = abs((a.creationDate ?? .distantPast)
-                .timeIntervalSince(b.creationDate ?? .distantPast))
-            guard gap <= 8 * 60 else { return false }
-            if let d = distances["\(a.id)|\(b.id)"] { return d < 0.62 }
-            return false
-        }
-
-        let newSections = MagazineLayoutEngine.compose(allItems, similar: similar, enabled: enabledTemplates)
-        withAnimation(.easeInOut(duration: 0.4)) { sections = newSections }
+        visionDistances = distances
+        rebuildSections()
     }
 
     // MARK: Route
@@ -443,6 +701,8 @@ final class DayViewModel {
     }
 
     func resolvePlaces() async {
+        // In place mode each section already carries its stop's resolved name.
+        guard !hasRoute else { return }
         for index in sections.indices {
             guard let location = sections[index].anchorLocation else { continue }
             if let name = await LocationResolver.shared.name(for: location) {
@@ -475,5 +735,21 @@ final class DayViewModel {
             }
             sections[index].blocks.removeAll { $0.items.isEmpty }
         }
+    }
+}
+
+// MARK: - Back cover summary
+
+struct BackCoverSummary: Equatable {
+    let photoCount: Int
+    let videoCount: Int
+    let kilometers: Double
+    let places: [String]
+
+    var hasRoute: Bool { kilometers >= 0.05 }
+    var distanceText: String {
+        if kilometers >= 1 { return String(format: "%.1f 公里", kilometers) }
+        if kilometers >= 0.05 { return String(format: "%.0f 米", kilometers * 1000) }
+        return "未远行"
     }
 }

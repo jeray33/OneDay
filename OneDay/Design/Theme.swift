@@ -42,24 +42,29 @@ enum PhotoBorderWidth: String, CaseIterable, Identifiable {
 }
 
 enum PhotoBorderStyle: String, CaseIterable, Identifiable {
-    case white   = "white"
-    case black   = "black"
-    case colored = "colored"
+    case white    = "white"
+    case black    = "black"
+    case colored  = "colored"
+    case polaroid = "polaroid"
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .white:   return "白边"
-        case .black:   return "黑边"
-        case .colored: return "彩边"
+        case .white:    return "白边"
+        case .black:    return "黑边"
+        case .colored:  return "彩边"
+        case .polaroid: return "拍立得"
         }
     }
     var icon: String {
         switch self {
-        case .white:   return "rectangle.portrait"
-        case .black:   return "rectangle.portrait.fill"
-        case .colored: return "paintpalette"
+        case .white:    return "rectangle.portrait"
+        case .black:    return "rectangle.portrait.fill"
+        case .colored:  return "paintpalette"
+        case .polaroid: return "rectangle.portrait.bottomhalf.filled"
         }
     }
+    /// Whether this style uses the tall bottom edge (Polaroid look).
+    var isPolaroid: Bool { self == .polaroid }
 }
 
 enum PageBackground: String, CaseIterable, Identifiable {
@@ -360,6 +365,50 @@ enum ScrollSpring: String, CaseIterable, Identifiable {
     }
 }
 
+/// Three-layer page flip transition style for the cover/content/back stack.
+enum PageFlipMode: String, CaseIterable, Identifiable {
+    /// C: drag follows finger, snap-to-page on release, lower layer scales/fades in from a fixed start.
+    case snapParallax = "snap"
+    /// B: fully continuous drag, lower layer tracks finger linearly (more physical, harder to tune).
+    case freePhysics = "free"
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .snapParallax: return "层叠吸附"
+        case .freePhysics:  return "全跟手物理"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .snapParallax: return "rectangle.stack"
+        case .freePhysics:  return "rectangle.stack.fill"
+        }
+    }
+}
+
+/// Display font for the cover's big date. Both are heavy, poster-like faces.
+enum CoverDateFont: String, CaseIterable, Identifiable {
+    case impact
+    case markerFelt
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .impact:     return "Impact"
+        case .markerFelt: return "Marker Felt"
+        }
+    }
+    var icon: String { "textformat" }
+    private var fontName: String {
+        switch self {
+        case .impact:     return "Impact"
+        case .markerFelt: return "MarkerFelt-Wide"
+        }
+    }
+    func font(_ size: CGFloat) -> Font {
+        .custom(fontName, size: size)
+    }
+}
+
 enum DateText {
     static let weekdaySymbols = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
@@ -373,6 +422,18 @@ enum DateText {
         return (c.year ?? 0, c.month ?? 0, c.day ?? 0)
     }
 
+    /// Cover top caption, e.g. "2 年前的一天".
+    static func coverCaption(_ date: Date) -> String? {
+        guard let rel = relativeCaption(date) else { return "今天的一天" }
+        return "\(rel)的一天"
+    }
+
+    /// Big date rendered with dot separators, e.g. "2024.03.31".
+    static func dottedDate(_ date: Date) -> String {
+        let c = components(date)
+        return String(format: "%04d.%02d.%02d", c.year, c.month, c.day)
+    }
+
     /// Relative distance from `date` to now: years, else months, else days.
     static func relativeCaption(_ date: Date) -> String? {
         let now = Date()
@@ -381,5 +442,15 @@ enum DateText {
         if let months = parts.month, months >= 1 { return "\(months) 个月前" }
         if let days = parts.day, days >= 1 { return "\(days) 天前" }
         return nil
+    }
+
+    /// A longer, editorial caption for the back cover: combines relative distance
+    /// with weekday for a "this very day" feel.
+    static func backCoverCaption(_ date: Date) -> String {
+        let wd = weekday(date)
+        if let rel = relativeCaption(date) {
+            return "那个 \(rel) 的\(wd)"
+        }
+        return "那个\(wd)"
     }
 }
