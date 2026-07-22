@@ -145,8 +145,11 @@ final class DayViewModel {
     private(set) var warmColor: Color    = Color(red: 0.93, green: 0.78, blue: 0.62)
     private(set) var dominantColor: Color = Color(white: 0.5)
     private(set) var vibrantColor: Color  = Color(white: 0.5)
+    private(set) var brightColor: Color   = Color(white: 0.95)
+    private(set) var bright2Color: Color  = Color(white: 1.0)
     private var dominantIsDark = false
     private var vibrantIsDark  = false
+    // bright modes are always light, so no isDark flag is needed.
 
     var pageBackgroundColor: Color {
         switch background {
@@ -155,6 +158,8 @@ final class DayViewModel {
         case .warm:     return warmColor
         case .dominant: return dominantColor
         case .vibrant:  return vibrantColor
+        case .bright:   return brightColor
+        case .bright2:  return bright2Color
         }
     }
 
@@ -163,8 +168,26 @@ final class DayViewModel {
         case .dark:     return .dark
         case .dominant: return dominantIsDark ? .dark : .light
         case .vibrant:  return vibrantIsDark  ? .dark : .light
+        case .bright:   return .light
+        case .bright2:  return .light
         default:        return .light
         }
+    }
+
+    /// Creates a bright, airy tint from a photo hue: high fixed brightness with
+    /// a moderate saturation so the color stays light and readable. (明快1)
+    private func brightTint(h: CGFloat, s: CGFloat) -> (Color, Bool) {
+        let sat = max(min(s * 1.25, 0.58), 0.42)
+        let color = UIColor(hue: h, saturation: sat, brightness: 0.95, alpha: 1)
+        return (Color(uiColor: color), false)
+    }
+
+    /// Even lighter, near-white wash: full brightness with a low saturation so
+    /// the page reads as a faint pastel. (明快2)
+    private func bright2Tint(h: CGFloat, s: CGFloat) -> (Color, Bool) {
+        let sat = max(min(s, 0.3), 0.2)
+        let color = UIColor(hue: h, saturation: sat, brightness: 1.0, alpha: 1)
+        return (Color(uiColor: color), false)
     }
 
     init(date: Date, items: [PhotoItem]) {
@@ -343,10 +366,17 @@ final class DayViewModel {
         let vibrant = UIColor(hue: h, saturation: vSat, brightness: vBri, alpha: 1)
         let vIsDark = vBri < 0.5
 
+        // Bright: airy, light tint with a fixed high brightness and moderate saturation.
+        let (bright, _) = brightTint(h: h, s: s)
+        // Bright2: near-white pastel wash, full brightness with low saturation.
+        let (bright2, _) = bright2Tint(h: h, s: s)
+
         withAnimation(.easeInOut(duration: 0.3)) {
             warmColor     = Color(uiColor: warm)
             dominantColor = Color(uiColor: dominant)
             vibrantColor  = Color(uiColor: vibrant)
+            brightColor   = bright
+            bright2Color  = bright2
             dominantIsDark = isDark
             vibrantIsDark  = vIsDark
         }
@@ -436,7 +466,7 @@ final class DayViewModel {
     /// warm) so the caller keeps the static `pageBackgroundColor`. Used by the
     /// preview to track the currently viewed photo's dominant/vibrant tint.
     func photoDerivedBackground(for item: PhotoItem) async -> Color? {
-        guard background == .dominant || background == .vibrant else { return nil }
+        guard background == .dominant || background == .vibrant || background == .bright || background == .bright2 else { return nil }
         guard let image = await ImageLoader.shared.thumbnail(
                 asset: item.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else { return nil }
@@ -451,6 +481,10 @@ final class DayViewModel {
             let vSat = max(min(s * 2.5, 0.95), 0.75)
             let vBri = max(min(b, 0.90), 0.52)
             return Color(uiColor: UIColor(hue: h, saturation: vSat, brightness: vBri, alpha: 1))
+        case .bright:
+            return brightTint(h: h, s: s).0
+        case .bright2:
+            return bright2Tint(h: h, s: s).0
         default:
             return nil
         }
@@ -461,10 +495,13 @@ final class DayViewModel {
     /// Average color of each section's hero photo, keyed by photo id (stable
     /// across section rebuilds).
     private var photoAverageColors: [String: UIColor] = [:]
+    /// Pre-computed hue for each section in `.bright`/`.bright2` mode, with
+    /// adjacent hue collision avoidance so segments remain distinct.
+    private var sectionBrightHue: [String: CGFloat] = [:]
 
     /// True when per-section tinting should be applied.
     var sectionTintActive: Bool {
-        sectionTintEnabled && (background == .dominant || background == .vibrant)
+        sectionTintEnabled && (background == .dominant || background == .vibrant || background == .bright || background == .bright2)
     }
 
     /// Loads the average color of each section's hero photo so `sectionBackgroundColor`
@@ -479,6 +516,32 @@ final class DayViewModel {
                 photoAverageColors[hero.id] = base
             }
         }
+        await computeBrightSectionHues()
+    }
+
+    /// Computes hue-adjusted tints for the `.bright`/`.bright2` backgrounds so
+    /// that adjacent sections do not land on nearly the same color.
+    private func computeBrightSectionHues() async {
+        guard background == .bright || background == .bright2 else { return }
+        sectionBrightHue.removeAll()
+        var previousHue: CGFloat? = nil
+        let hueThreshold: CGFloat = 1.0 / 12.0  // 30°
+        for section in sections {
+            guard let hero = section.heroItem,
+                  let base = photoAverageColors[hero.id] else { continue }
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            if let prev = previousHue {
+                var distance = abs(h - prev)
+                distance = min(distance, 1 - distance)
+                if distance < hueThreshold {
+                    h = (prev + hueThreshold + 0.02).truncatingRemainder(dividingBy: 1)
+                    if h < 0 { h += 1 }
+                }
+            }
+            sectionBrightHue[hero.id] = h
+            previousHue = h
+        }
     }
 
     /// Derives a tint from a base color using the current photo-background mode.
@@ -490,6 +553,10 @@ final class DayViewModel {
             let vSat = max(min(s * 2.5, 0.95), 0.75)
             let vBri = max(min(b, 0.90), 0.52)
             return (Color(uiColor: UIColor(hue: h, saturation: vSat, brightness: vBri, alpha: 1)), vBri < 0.5)
+        case .bright:
+            return brightTint(h: h, s: s)
+        case .bright2:
+            return bright2Tint(h: h, s: s)
         default: // .dominant
             let bri = max(min(b, 0.92), 0.18)
             return (Color(uiColor: UIColor(hue: h, saturation: min(s, 0.6), brightness: bri, alpha: 1)), bri < 0.5)
@@ -497,14 +564,25 @@ final class DayViewModel {
     }
 
     func sectionBackgroundColor(_ section: MagazineSection) -> Color {
-        guard sectionTintActive, let hero = section.heroItem,
-              let base = photoAverageColors[hero.id] else { return pageBackgroundColor }
+        guard sectionTintActive, let hero = section.heroItem else { return pageBackgroundColor }
+        if background == .bright || background == .bright2 {
+            guard let hue = sectionBrightHue[hero.id] ?? photoAverageColors[hero.id]?.hsbHue else { return pageBackgroundColor }
+            guard let base = photoAverageColors[hero.id] else { return pageBackgroundColor }
+            var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+            if background == .bright2 {
+                return bright2Tint(h: hue, s: s).0
+            }
+            return brightTint(h: hue, s: s).0
+        }
+        guard let base = photoAverageColors[hero.id] else { return pageBackgroundColor }
         return tint(from: base).0
     }
 
     func sectionColorScheme(_ section: MagazineSection) -> ColorScheme {
-        guard sectionTintActive, let hero = section.heroItem,
-              let base = photoAverageColors[hero.id] else { return pageColorScheme }
+        guard sectionTintActive, let hero = section.heroItem else { return pageColorScheme }
+        if background == .bright || background == .bright2 { return .light }
+        guard let base = photoAverageColors[hero.id] else { return pageColorScheme }
         return tint(from: base).1 ? .dark : .light
     }
 
@@ -756,5 +834,16 @@ struct BackCoverSummary: Equatable {
         if kilometers >= 1 { return String(format: "%.1f 公里", kilometers) }
         if kilometers >= 0.05 { return String(format: "%.0f 米", kilometers * 1000) }
         return "未远行"
+    }
+}
+
+// MARK: - HSB helpers
+
+private extension UIColor {
+    /// Returns the hue component of this color, or nil if the color is not in RGB/HSB color space.
+    var hsbHue: CGFloat? {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return nil }
+        return h
     }
 }

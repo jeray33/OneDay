@@ -204,7 +204,7 @@ struct DayMagazineView: View {
                         Label(option.label, systemImage: option.icon).tag(option)
                     }
                 }
-                if model.background == .dominant || model.background == .vibrant {
+                if model.background == .dominant || model.background == .vibrant || model.background == .bright || model.background == .bright2 {
                     Divider()
                     Toggle("分段配色", isOn: Binding(
                         get: { model.sectionTintEnabled },

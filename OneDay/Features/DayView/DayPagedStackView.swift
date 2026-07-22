@@ -41,8 +41,8 @@ struct DayPagedStackView: View {
     private let snapThreshold: CGFloat = 0.2
     // Continuous handoff should feel like one scrolling gesture rather than
     // requiring a second full page drag after reaching the content edge.
-    private let continuousSnapThreshold: CGFloat = 0.06 //越小越容易完成翻页
-    private let continuousDragGain: CGFloat = 1.7 //越大越灵敏、省力；越小越跟手、沉稳
+    private let continuousSnapThreshold: CGFloat = 0.09 //越小越容易完成翻页
+    private let continuousDragGain: CGFloat = 1.45 //越大越灵敏、省力；越小越跟手、沉稳
     private let continuousFlingVelocity: CGFloat = 180
     private let peekGap: CGFloat = 0.06      // beneath-layer peek (fraction of height)
     private let beneathStartScale: CGFloat = 0.92

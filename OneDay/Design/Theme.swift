@@ -68,7 +68,7 @@ enum PhotoBorderStyle: String, CaseIterable, Identifiable {
 }
 
 enum PageBackground: String, CaseIterable, Identifiable {
-    case paper, dark, warm, dominant, vibrant
+    case paper, dark, warm, dominant, vibrant, bright, bright2
     var id: Self { self }
 
     var label: String {
@@ -78,6 +78,8 @@ enum PageBackground: String, CaseIterable, Identifiable {
         case .warm:     return "暖橙"
         case .dominant: return "照片主色"
         case .vibrant:  return "主色·艳丽"
+        case .bright:   return "明快1"
+        case .bright2:  return "明快2"
         }
     }
 
@@ -88,6 +90,8 @@ enum PageBackground: String, CaseIterable, Identifiable {
         case .warm:     return "circle.righthalf.filled"
         case .dominant: return "paintpalette"
         case .vibrant:  return "paintpalette.fill"
+        case .bright:   return "sun.max.fill"
+        case .bright2:  return "sun.haze.fill"
         }
     }
 }
