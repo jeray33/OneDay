@@ -36,6 +36,7 @@ final class DayViewModel {
     private static let scrollTiltYKey    = "OneDay.scrollTiltY"
     private static let scrollTiltDecayKey = "OneDay.scrollTiltDecay"
     private static let pageFlipModeKey   = "OneDay.pageFlipMode"
+    private static let staggeredTopLiftKey = "OneDay.staggeredTopLift"
     private static let coverDateFontKey  = "OneDay.coverDateFont"
     private static let sectionTintKey    = "OneDay.sectionTint"
     private static let locationBarKey    = "OneDay.locationBar"
@@ -97,6 +98,9 @@ final class DayViewModel {
     }
     var pageFlipMode: PageFlipMode {
         didSet { UserDefaults.standard.set(pageFlipMode.rawValue, forKey: Self.pageFlipModeKey) }
+    }
+    var staggeredTopLiftEnabled: Bool {
+        didSet { UserDefaults.standard.set(staggeredTopLiftEnabled, forKey: Self.staggeredTopLiftKey) }
     }
     var coverDateFont: CoverDateFont {
         didSet { UserDefaults.standard.set(coverDateFont.rawValue, forKey: Self.coverDateFontKey) }
@@ -185,6 +189,7 @@ final class DayViewModel {
         self.scrollTiltY    = ScrollTiltY(rawValue:          UserDefaults.standard.string(forKey: Self.scrollTiltYKey)    ?? "") ?? .none
         self.scrollTiltDecay = ScrollTiltDecay(rawValue:     UserDefaults.standard.string(forKey: Self.scrollTiltDecayKey) ?? "") ?? .linear
         self.pageFlipMode = PageFlipMode(rawValue:           UserDefaults.standard.string(forKey: Self.pageFlipModeKey)   ?? "") ?? .snapParallax
+        self.staggeredTopLiftEnabled = UserDefaults.standard.object(forKey: Self.staggeredTopLiftKey) as? Bool ?? true
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true

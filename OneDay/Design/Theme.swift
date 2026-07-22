@@ -371,17 +371,25 @@ enum PageFlipMode: String, CaseIterable, Identifiable {
     case snapParallax = "snap"
     /// B: fully continuous drag, lower layer tracks finger linearly (more physical, harder to tune).
     case freePhysics = "free"
+    /// Rigid physical paging with the departed page resting above-left at a slight angle.
+    case staggeredPhysics = "staggered"
+    /// Staggered physics with same-gesture handoff between content scrolling and page flipping.
+    case continuousStaggered = "continuousStaggered"
     var id: String { rawValue }
     var label: String {
         switch self {
         case .snapParallax: return "层叠吸附"
         case .freePhysics:  return "全跟手物理"
+        case .staggeredPhysics: return "错落物理"
+        case .continuousStaggered: return "连续错落"
         }
     }
     var icon: String {
         switch self {
         case .snapParallax: return "rectangle.stack"
         case .freePhysics:  return "rectangle.stack.fill"
+        case .staggeredPhysics: return "square.2.layers.3d"
+        case .continuousStaggered: return "arrow.up.and.down"
         }
     }
 }

@@ -28,13 +28,22 @@ struct DayPagedStackView: View {
     @State private var current: Layer = .cover
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
+    @State private var pendingLayer: Layer?
+    @State private var flipGeneration = 0
     @State private var flipCancelled = false
+    @State private var continuousHandoffTranslation: CGFloat?
+    @State private var continuousFlipDirection: CGFloat = 0
     @State private var contentEdges = ContentScrollEdges()
 
     // Transition tuning. `activeFade`/`activeShrink` are aligned with the
     // beneath/above start opacity & scale so that when a flip commits (the
     // active layer becomes the adjacent layer) there is no visual jump.
     private let snapThreshold: CGFloat = 0.2
+    // Continuous handoff should feel like one scrolling gesture rather than
+    // requiring a second full page drag after reaching the content edge.
+    private let continuousSnapThreshold: CGFloat = 0.06 //越小越容易完成翻页
+    private let continuousDragGain: CGFloat = 1.7 //越大越灵敏、省力；越小越跟手、沉稳
+    private let continuousFlingVelocity: CGFloat = 180
     private let peekGap: CGFloat = 0.06      // beneath-layer peek (fraction of height)
     private let beneathStartScale: CGFloat = 0.92
     private let beneathStartOpacity: CGFloat = 0.7
@@ -65,7 +74,8 @@ struct DayPagedStackView: View {
                      dateNamespace: dateNamespace,
                      dateIsSource: dateIsSource,
                      onClose: onClose)
-            .offset(y: p.offset)
+            .rotationEffect(.degrees(p.rotation))
+            .offset(x: p.offsetX, y: p.offsetY)
             .scaleEffect(p.scale, anchor: .center)
             .opacity(p.opacity)
             .zIndex(3)
@@ -84,7 +94,8 @@ struct DayPagedStackView: View {
             scrollEdgesBinding: $contentEdges,
             scrollDisabled: current != .content
         )
-        .offset(y: p.offset)
+        .rotationEffect(.degrees(p.rotation))
+        .offset(x: p.offsetX, y: p.offsetY)
         .scaleEffect(p.scale, anchor: .center)
         .opacity(p.opacity)
         .zIndex(2)
@@ -103,7 +114,8 @@ struct DayPagedStackView: View {
             onClose: onClose,
             navLoading: navLoading
         )
-        .offset(y: p.offset)
+        .rotationEffect(.degrees(p.rotation))
+        .offset(x: p.offsetX, y: p.offsetY)
         .scaleEffect(p.scale, anchor: .center)
         .opacity(p.opacity)
         .zIndex(1)
@@ -112,7 +124,9 @@ struct DayPagedStackView: View {
     // MARK: Per-layer transform
 
     private struct LayerTransform {
-        var offset: CGFloat
+        var offsetX: CGFloat = 0
+        var offsetY: CGFloat
+        var rotation: Double = 0
         var scale: CGFloat
         var opacity: Double
     }
@@ -120,19 +134,46 @@ struct DayPagedStackView: View {
     /// Computes the current transform for a given layer based on `current`,
     /// `dragOffset`, and the flip mode.
     private func layerProgress(_ layer: Layer, h: CGFloat) -> LayerTransform {
-        let free = model.pageFlipMode == .freePhysics
+        let staggered = model.pageFlipMode == .staggeredPhysics
+            || model.pageFlipMode == .continuousStaggered
+        let free = model.pageFlipMode == .freePhysics || staggered
         let gap: CGFloat = free ? 0 : peekGap
+        let staggerX: CGFloat = -60
+        let staggerRotation = 3.0 //旋转角度-3.0
+        let staggerTopLift: CGFloat = staggered && model.staggeredTopLiftEnabled ? 10 : 0
 
         if layer == current {
+            // While flipping backward, the page above drops over the current
+            // page. Keep this lower page parked (free mode), or move it only
+            // into the subtle recessed resting pose used by the stack.
+            if dragOffset > 0, current.above != nil {
+                let down = min(dragOffset / h, 1)
+                if free {
+                    return LayerTransform(offsetY: 0, scale: 1, opacity: 1)
+                }
+                return LayerTransform(
+                    offsetY: h * gap * down,
+                    scale: 1 - activeShrink * down,
+                    opacity: 1 - Double(activeFade) * Double(down)
+                )
+            }
+
             // Active layer follows the finger.
             let total = abs(dragOffset) / h
             let off = rubber(dragOffset, h: h)
             if free {
                 // Rigid plate: no fade/shrink, just translation.
-                return LayerTransform(offset: off, scale: 1, opacity: 1)
+                let progress = min(max(0, -dragOffset) / h, 1)
+                return LayerTransform(
+                    offsetX: staggered ? staggerX * progress : 0,
+                    offsetY: off - staggerTopLift * progress,
+                    rotation: staggered ? staggerRotation * Double(progress) : 0,
+                    scale: 1,
+                    opacity: 1
+                )
             }
             return LayerTransform(
-                offset: off,
+                offsetY: off,
                 scale: 1 - activeShrink * min(total, 1),
                 opacity: 1 - Double(activeFade) * Double(min(total, 1))
             )
@@ -144,10 +185,10 @@ struct DayPagedStackView: View {
             let startOffset = h * gap
             let off = startOffset * (1 - min(up, 1))
             if free {
-                return LayerTransform(offset: off, scale: 1, opacity: 1)
+                return LayerTransform(offsetY: off, scale: 1, opacity: 1)
             }
             return LayerTransform(
-                offset: off,
+                offsetY: off,
                 scale: beneathStartScale + (1 - beneathStartScale) * min(up, 1),
                 opacity: Double(beneathStartOpacity) + Double(1 - beneathStartOpacity) * Double(min(up, 1))
             )
@@ -157,13 +198,20 @@ struct DayPagedStackView: View {
             // Above: fully off-screen at rest (it sits on top in z-order, so any
             // peek would bleed over the active layer), drops in as we swipe down.
             let down = max(0, dragOffset) / h
-            let startOffset = -h
+            let startOffset = -h - staggerTopLift
             let off = startOffset * (1 - min(down, 1))
             if free {
-                return LayerTransform(offset: off, scale: 1, opacity: 1)
+                let resting = 1 - min(down, 1)
+                return LayerTransform(
+                    offsetX: staggered ? staggerX * resting : 0,
+                    offsetY: off,
+                    rotation: staggered ? staggerRotation * Double(resting) : 0,
+                    scale: 1,
+                    opacity: 1
+                )
             }
             return LayerTransform(
-                offset: off,
+                offsetY: off,
                 scale: beneathStartScale + (1 - beneathStartScale) * min(down, 1),
                 opacity: Double(beneathStartOpacity) + Double(1 - beneathStartOpacity) * Double(min(down, 1))
             )
@@ -171,9 +219,9 @@ struct DayPagedStackView: View {
 
         // Non-adjacent layer: park far off-screen, fully hidden.
         if layer.rawValue < current.rawValue {
-            return LayerTransform(offset: -h * 2, scale: 1, opacity: 0)
+            return LayerTransform(offsetY: -h * 2, scale: 1, opacity: 0)
         } else {
-            return LayerTransform(offset: h * 2, scale: 1, opacity: 0)
+            return LayerTransform(offsetY: h * 2, scale: 1, opacity: 0)
         }
     }
 
@@ -194,9 +242,23 @@ struct DayPagedStackView: View {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
                 guard isVerticalEnough(value.translation) else { return }
+                if let pendingLayer {
+                    flipGeneration += 1
+                    finishFlip(to: pendingLayer)
+                }
+                if current == .content,
+                   model.pageFlipMode == .continuousStaggered {
+                    updateContinuousContentDrag(value.translation.height, h: h)
+                    return
+                }
                 if !isDragging {
                     isDragging = true
                     flipCancelled = !shouldAllowFlip(for: value.translation.height)
+                }
+                if !flipCancelled,
+                   current == .content,
+                   !shouldAllowFlip(for: value.translation.height) {
+                    flipCancelled = true
                 }
                 if flipCancelled {
                     dragOffset = 0
@@ -205,6 +267,12 @@ struct DayPagedStackView: View {
                 }
             }
             .onEnded { value in
+                guard pendingLayer == nil else { return }
+                if current == .content,
+                   model.pageFlipMode == .continuousStaggered {
+                    endContinuousContentDrag(value, h: h)
+                    return
+                }
                 guard isDragging, !flipCancelled else {
                     cancelDrag()
                     return
@@ -224,19 +292,119 @@ struct DayPagedStackView: View {
             }
     }
 
+    /// Lets the inner ScrollView consume a drag first, then transfers the
+    /// unconsumed distance to page flipping when that same drag reaches an edge.
+    private func updateContinuousContentDrag(_ translation: CGFloat, h: CGFloat) {
+        guard !model.isDragEnabled else {
+            isDragging = true
+            flipCancelled = true
+            dragOffset = 0
+            return
+        }
+
+        let direction: CGFloat = translation < 0 ? -1 : 1
+        let firstUpdate = !isDragging
+        if firstUpdate {
+            isDragging = true
+            flipCancelled = false
+        }
+
+        if continuousFlipDirection != 0,
+           continuousFlipDirection != direction {
+            clearContinuousHandoff()
+            dragOffset = 0
+        }
+
+        if continuousHandoffTranslation == nil {
+            let reachedEdge = direction < 0 ? contentEdges.atBottom : contentEdges.atTop
+            guard reachedEdge else {
+                dragOffset = 0
+                return
+            }
+            continuousFlipDirection = direction
+            continuousHandoffTranslation = firstUpdate ? 0 : translation
+        }
+
+        guard let handoff = continuousHandoffTranslation else { return }
+        let residual = translation - handoff
+        if continuousFlipDirection < 0 {
+            guard residual <= 0 else {
+                clearContinuousHandoff()
+                dragOffset = 0
+                return
+            }
+            dragOffset = constrained(residual * continuousDragGain, h: h)
+        } else {
+            guard residual >= 0 else {
+                clearContinuousHandoff()
+                dragOffset = 0
+                return
+            }
+            dragOffset = constrained(residual * continuousDragGain, h: h)
+        }
+    }
+
+    private func endContinuousContentDrag(_ value: DragGesture.Value, h: CGFloat) {
+        guard continuousHandoffTranslation != nil else {
+            isDragging = false
+            flipCancelled = false
+            clearContinuousHandoff()
+            return
+        }
+
+        let distance = dragOffset
+        let velocity = value.predictedEndTranslation.height - value.translation.height
+        let threshold = h * continuousSnapThreshold
+        let flingDown = velocity > continuousFlingVelocity
+        let flingUp = velocity < -continuousFlingVelocity
+        let direction = continuousFlipDirection
+        clearContinuousHandoff()
+
+        if direction < 0,
+           (distance <= -threshold || flingUp),
+           let below = current.below {
+            commitFlip(to: below, target: -h)
+        } else if direction > 0,
+                  (distance >= threshold || flingDown),
+                  let above = current.above {
+            commitFlip(to: above, target: h)
+        } else {
+            cancelDrag()
+        }
+    }
+
+    private func clearContinuousHandoff() {
+        continuousHandoffTranslation = nil
+        continuousFlipDirection = 0
+    }
+
     /// Animates the active layer fully off-screen to the flip target, then
     /// swaps `current` and zeroes the offset. Because the adjacent layer's
     /// rest transform equals its position at the target offset, the swap is
     /// seamless (no jump).
     private func commitFlip(to layer: Layer, target: CGFloat) {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.84)) {
+        flipGeneration += 1
+        let generation = flipGeneration
+        pendingLayer = layer
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.84), completionCriteria: .removed) {
             dragOffset = target
         } completion: {
+            guard generation == flipGeneration else { return }
+            finishFlip(to: layer)
+        }
+    }
+
+    private func finishFlip(to layer: Layer) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             current = layer
             dragOffset = 0
             isDragging = false
+            pendingLayer = nil
             flipCancelled = false
+            clearContinuousHandoff()
         }
     }
 
@@ -246,6 +414,7 @@ struct DayPagedStackView: View {
         }
         isDragging = false
         flipCancelled = false
+        clearContinuousHandoff()
     }
 
     /// Decides whether a drag starting on the current layer may flip (rather

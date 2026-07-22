@@ -31,37 +31,16 @@ struct DayMagazineView: View {
     var body: some View {
         GeometryReader { geo in
             let contentWidth = geo.size.width - 40
-            let viewportHeight = geo.size.height
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: model.sectionTintActive ? 0 : 96) {
                         Color.clear.frame(height: 0).id("scroll_top")
-                            .background(
-                                GeometryReader { g in
-                                    Color.clear.preference(
-                                        key: ScrollEdgeKey.self,
-                                        value: ScrollEdgesPayload(
-                                            topY: g.frame(in: .named("dayScroll")).minY,
-                                            bottomY: nil,
-                                            viewport: nil))
-                                }
-                            )
 
                         ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
                             sectionView(section, index: sIdx, contentWidth: contentWidth)
                         }
 
                         Color.clear.frame(height: 1).id("scroll_bottom")
-                            .background(
-                                GeometryReader { g in
-                                    Color.clear.preference(
-                                        key: ScrollEdgeKey.self,
-                                        value: ScrollEdgesPayload(
-                                            topY: nil,
-                                            bottomY: g.frame(in: .named("dayScroll")).minY,
-                                            viewport: viewportHeight))
-                                }
-                            )
                     }
                     .padding(.top, topSafeAreaInset() + 24)
                     .padding(.bottom, 24)
@@ -75,8 +54,22 @@ struct DayMagazineView: View {
                 .onChange(of: model.instanceID) {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
+                .onScrollGeometryChange(for: ContentScrollEdges.self) { geometry in
+                    let minOffset = geometry.contentInsets.top
+                    let maxOffset = max(
+                        minOffset,
+                        geometry.contentSize.height
+                            + geometry.contentInsets.bottom
+                            - geometry.containerSize.height
+                    )
+                    return ContentScrollEdges(
+                        atTop: geometry.contentOffset.y <= minOffset + 1,
+                        atBottom: geometry.contentOffset.y >= maxOffset - 1
+                    )
+                } action: { _, edges in
+                    updateScrollEdges(edges)
+                }
                 .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
-                .onPreferenceChange(ScrollEdgeKey.self) { updateScrollEdges($0) }
                 .overlay(alignment: .top) { topOverlay(proxy: proxy) }
             }
         }
@@ -148,6 +141,30 @@ struct DayMagazineView: View {
     }
     private var allTemplatesEnabled: Bool {
         selectableTemplates.allSatisfy { model.enabledTemplates.contains($0) }
+    }
+
+    private var pageFlipMenu: some View {
+        Menu("翻页模式") {
+            ForEach(PageFlipMode.allCases) { mode in
+                Button {
+                    model.pageFlipMode = mode
+                } label: {
+                    if model.pageFlipMode == mode {
+                        Label(mode.label, systemImage: "checkmark")
+                    } else {
+                        Text(mode.label)
+                    }
+                }
+            }
+            if model.pageFlipMode == .staggeredPhysics
+                || model.pageFlipMode == .continuousStaggered {
+                Divider()
+                Toggle("顶部防露边（上移 10）", isOn: Binding(
+                    get: { model.staggeredTopLiftEnabled },
+                    set: { model.staggeredTopLiftEnabled = $0 }
+                ))
+            }
+        }
     }
 
     /// Builds a labeled submenu that works like a Picker but reliably shows SF Symbols icons.
@@ -279,9 +296,7 @@ struct DayMagazineView: View {
                                labelOf: { $0.label })
                 }
             }
-            animPicker("翻页模式",
-                       binding: Binding(get: { model.pageFlipMode }, set: { model.pageFlipMode = $0 }),
-                       labelOf: { $0.label })
+            pageFlipMenu
             animPicker("封面日期字体",
                        binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                        labelOf: { $0.label })
@@ -408,18 +423,7 @@ struct DayMagazineView: View {
         activeSegmentID = sid
     }
 
-    private func updateScrollEdges(_ payload: ScrollEdgesPayload) {
-        // The two sentinels emit separately; accumulate into stable state.
-        var edges = scrollEdgesBinding?.wrappedValue ?? ContentScrollEdges()
-        if let topY = payload.topY {
-            // Top sentinel is at scroll origin (y=0) when the scroll is pinned
-            // to the top; small epsilon for floating-point jitter.
-            edges.atTop = topY >= -1
-        }
-        if let bottomY = payload.bottomY, let viewport = payload.viewport {
-            // Bottom sentinel enters the viewport when its minY <= viewport.
-            edges.atBottom = bottomY <= viewport + 1
-        }
+    private func updateScrollEdges(_ edges: ContentScrollEdges) {
         if let binding = scrollEdgesBinding, binding.wrappedValue != edges {
             binding.wrappedValue = edges
         }
@@ -590,25 +594,6 @@ private struct BlockPositionKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
         value.merge(nextValue()) { _, new in new }
-    }
-}
-
-/// One sentinel emission: either the top sentinel's Y, or the bottom
-/// sentinel's Y plus the viewport height. The two are emitted separately and
-/// merged by `reduce` so the consumer sees the latest of each.
-struct ScrollEdgesPayload: Equatable {
-    var topY: CGFloat?
-    var bottomY: CGFloat?
-    var viewport: CGFloat?
-}
-
-private struct ScrollEdgeKey: PreferenceKey {
-    static var defaultValue: ScrollEdgesPayload = ScrollEdgesPayload()
-    static func reduce(value: inout ScrollEdgesPayload, nextValue: () -> ScrollEdgesPayload) {
-        let next = nextValue()
-        if let t = next.topY { value.topY = t }
-        if let b = next.bottomY { value.bottomY = b }
-        if let v = next.viewport { value.viewport = v }
     }
 }
 
