@@ -4,7 +4,6 @@ struct HomeView: View {
     var onPickDay: () -> Void
     @State private var appeared = false
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
-    @AppStorage("OneDay.tunnelControl") private var tunnelControlRaw = TunnelControl.auto.rawValue
 
     private var rewindMode: RewindMode { RewindMode(rawValue: rewindModeRaw) ?? .flash }
 
@@ -42,10 +41,10 @@ struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.paper.ignoresSafeArea())
-        .overlay(alignment: .topTrailing) {
-            settingsMenu
+        .overlay(alignment: .topLeading) {
+            modeMenu
                 .padding(.top, 8)
-                .padding(.trailing, 20)
+                .padding(.leading, 16)
                 .opacity(appeared ? 1 : 0)
         }
         .onAppear {
@@ -53,7 +52,7 @@ struct HomeView: View {
         }
     }
 
-    private var settingsMenu: some View {
+    private var modeMenu: some View {
         Menu {
             Picker("穿梭模式", selection: Binding(
                 get: { rewindMode },
@@ -63,19 +62,8 @@ struct HomeView: View {
                     Label(mode.label, systemImage: mode.icon).tag(mode)
                 }
             }
-            if rewindMode == .tunnel {
-                Divider()
-                Picker("控制方式", selection: Binding(
-                    get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
-                    set: { tunnelControlRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelControl.allCases) { c in
-                        Label(c.label, systemImage: c.icon).tag(c)
-                    }
-                }
-            }
         } label: {
-            Image(systemName: "gearshape")
+            Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .frame(width: 38, height: 38)

@@ -371,19 +371,17 @@ enum ScrollSpring: String, CaseIterable, Identifiable {
 
 /// Time-travel mode shown after tapping "时光穿梭" on the home screen.
 enum RewindMode: String, CaseIterable, Identifiable {
-    case flash, tunnel, rewind
+    case flash, rewind
     var id: String { rawValue }
     var label: String {
         switch self {
         case .flash:  return "经典闪现"
-        case .tunnel: return "纵深隧道"
         case .rewind: return "时光倒流"
         }
     }
     var icon: String {
         switch self {
         case .flash:  return "photo.stack"
-        case .tunnel: return "arrow.up.forward.app"
         case .rewind: return "clock.arrow.circlepath"
         }
     }
@@ -529,26 +527,27 @@ enum PageFlipMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// Display font for the cover's big date. Both are heavy, poster-like faces.
+/// Display font shared by the cover and time-travel dates.
 enum CoverDateFont: String, CaseIterable, Identifiable {
     case impact
     case markerFelt
+    case serifBold
+    static let storageKey = "OneDay.coverDateFont"
     var id: String { rawValue }
     var label: String {
         switch self {
         case .impact:     return "Impact"
         case .markerFelt: return "Marker Felt"
+        case .serifBold:  return "Serif Bold"
         }
     }
     var icon: String { "textformat" }
-    private var fontName: String {
-        switch self {
-        case .impact:     return "Impact"
-        case .markerFelt: return "MarkerFelt-Wide"
-        }
-    }
     func font(_ size: CGFloat) -> Font {
-        .custom(fontName, size: size)
+        switch self {
+        case .impact:     return .custom("Impact", size: size)
+        case .markerFelt: return .custom("MarkerFelt-Wide", size: size)
+        case .serifBold:  return Theme.serif(size, weight: .bold)
+        }
     }
 }
 

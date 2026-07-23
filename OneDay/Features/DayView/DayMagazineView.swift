@@ -297,7 +297,7 @@ struct DayMagazineView: View {
                 }
             }
             pageFlipMenu
-            animPicker("封面日期字体",
+            animPicker("标题字体",
                        binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                        labelOf: { $0.label })
             Toggle("地点工具条", isOn: Binding(

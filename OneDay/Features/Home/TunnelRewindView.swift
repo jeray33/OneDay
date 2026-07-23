@@ -3,9 +3,10 @@ import Photos
 import UIKit
 import QuartzCore
 
-/// Reference wrapper for the day passed into `loadDay`. A raw `Date` value gets
-/// zeroed to the reference date crossing the stored async-closure boundary (Swift
-/// reabstraction-thunk ABI issue); a class reference survives it reliably.
+/// The day the tunnel landed on, handed back to the host synchronously.
+/// Arguments passed through a stored `async` closure get zeroed to the reference
+/// date (Swift async reabstraction-thunk miscompile), so landing is reported via a
+/// plain synchronous callback and the host does the async load itself.
 final class TunnelDayRequest {
     let date: Date
     init(_ date: Date) { self.date = date }
@@ -39,15 +40,9 @@ struct TunnelRewindView: View {
     let control: TunnelControl
     let dateNamespace: Namespace.ID
     var startDate: Date? = nil
-    /// When true, this view is acting as the "时光倒流" home screen: it starts idle
-    /// (auto shows a start button; manual waits for swipes) and exposes the mode /
-    /// control pickers in its top corners.
-    var isRewindHome: Bool = false
-    var loadDay: (TunnelDayRequest) async -> DayViewModel?
-    var onFinish: (DayViewModel) -> Void
-    var onClose: () -> Void
+    var onLand: (TunnelDayRequest) -> Void
 
-    // MARK: Live-editable settings (shared with the home gear via @AppStorage)
+    // MARK: Live-editable settings persisted via @AppStorage
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.tunnelControl") private var tunnelControlRaw = TunnelControl.auto.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
@@ -96,31 +91,19 @@ struct TunnelRewindView: View {
     init(model: DayViewModel, layers: [TunnelLayer], control: TunnelControl,
          dateNamespace: Namespace.ID,
          startDate: Date? = nil,
-         isRewindHome: Bool = false,
-         loadDay: @escaping (TunnelDayRequest) async -> DayViewModel?,
-         onFinish: @escaping (DayViewModel) -> Void,
-         onClose: @escaping () -> Void) {
+         onLand: @escaping (TunnelDayRequest) -> Void) {
         self.model = model
         self.layers = layers
         self.control = control
         self.dateNamespace = dateNamespace
         self.startDate = startDate
-        self.isRewindHome = isRewindHome
-        self.loadDay = loadDay
-        self.onFinish = onFinish
-        self.onClose = onClose
+        self.onLand = onLand
         let startIndex = startDate.flatMap { d in
             layers.firstIndex { Calendar.current.isDate($0.date, inSameDayAs: d) }
         } ?? 0
         let start = Double(startIndex) - 1.0   // = snapProgress(for: startIndex), 1.0 = focal
         _progress = State(initialValue: start)
-        let initialMode: Mode
-        if isRewindHome {
-            initialMode = control == .auto ? .awaitingStart : .manualIdle
-        } else {
-            initialMode = control == .auto ? .autoPlay : .manualIdle
-        }
-        _mode = State(initialValue: initialMode)
+        _mode = State(initialValue: control == .auto ? .awaitingStart : .manualIdle)
         let initialDate = layers.indices.contains(startIndex) ? layers[startIndex].date : model.date
         _displayDate = State(initialValue: initialDate)
     }
@@ -154,12 +137,12 @@ struct TunnelRewindView: View {
                     dateOverlay
                 }
                 hint
-                if isRewindHome, control == .auto, mode == .awaitingStart {
+                if control == .auto, mode == .awaitingStart {
                     startButton
                 }
                 VStack {
                     HStack {
-                        if isRewindHome { modeMenu }
+                        modeMenu
                         Spacer()
                         settingsMenu
                     }
@@ -326,29 +309,27 @@ struct TunnelRewindView: View {
 
     private var settingsPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if isRewindHome {
-                settingGroup("控制方式") {
-                    Picker("", selection: Binding(
-                        get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
-                        set: { tunnelControlRaw = $0.rawValue }
-                    )) {
-                        ForEach(TunnelControl.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
+            settingGroup("控制方式") {
+                Picker("", selection: Binding(
+                    get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
+                    set: { tunnelControlRaw = $0.rawValue }
+                )) {
+                    ForEach(TunnelControl.allCases) { Text($0.label).tag($0) }
                 }
-                settingGroup("排序") {
-                    Picker("", selection: Binding(
-                        get: { rewindSortOrder },
-                        set: { rewindSortOrderRaw = $0.rawValue }
-                    )) {
-                        ForEach(RewindSortOrder.allCases) { order in
-                            Text(order.label).tag(order)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                Divider()
+                .pickerStyle(.segmented)
             }
+            settingGroup("排序") {
+                Picker("", selection: Binding(
+                    get: { rewindSortOrder },
+                    set: { rewindSortOrderRaw = $0.rawValue }
+                )) {
+                    ForEach(RewindSortOrder.allCases) { order in
+                        Text(order.label).tag(order)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            Divider()
             settingGroup("背景色") {
                 Picker("", selection: Binding(
                     get: { background }, set: { backgroundRaw = $0.rawValue }
@@ -555,18 +536,14 @@ struct TunnelRewindView: View {
     // MARK: Landing
 
     private func finish(on date: Date) async {
-        var landing = model
         let day = Calendar.current.startOfDay(for: date)
-        let picked = await loadDay(TunnelDayRequest(day))
-        if let picked { landing = picked }
-
-        displayDate = landing.date
-        topLabel = DateText.relativeCaption(landing.date) ?? "那一天"
+        displayDate = day
+        topLabel = DateText.relativeCaption(day) ?? "那一天"
         SoundEffects.settle()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
         try? await Task.sleep(nanoseconds: 1_000_000_000)
-        onFinish(landing)
+        onLand(TunnelDayRequest(day))
     }
 
     // MARK: Math helpers

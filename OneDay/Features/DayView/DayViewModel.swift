@@ -37,7 +37,7 @@ final class DayViewModel {
     private static let scrollTiltDecayKey = "OneDay.scrollTiltDecay"
     private static let pageFlipModeKey   = "OneDay.pageFlipMode"
     private static let staggeredTopLiftKey = "OneDay.staggeredTopLift"
-    private static let coverDateFontKey  = "OneDay.coverDateFont"
+    private static let coverDateFontKey  = CoverDateFont.storageKey
     private static let sectionTintKey    = "OneDay.sectionTint"
     private static let locationBarKey    = "OneDay.locationBar"
 

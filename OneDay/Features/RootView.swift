@@ -13,8 +13,6 @@ struct RootView: View {
     @State private var eligibleDays: [Date] = []
     @State private var flashFrames: [FlashFrame] = []
     @State private var tunnelLayers: [TunnelLayer] = []
-    @State private var cameFromTunnel = false
-    @State private var forceManualTunnel = false
     @State private var tunnelStartDate: Date?
     @State private var rewindHomeID = UUID()
     @State private var rewindPreparing = false
@@ -33,7 +31,6 @@ struct RootView: View {
     private var tunnelPhotoScale: TunnelPhotoScale { TunnelPhotoScale(rawValue: tunnelPhotoScaleRaw) ?? .medium }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
 
-    private let tunnelDayCount = 15
     private let tunnelMinPhotos = 3
     private let tunnelPhotosPerDay = 3...5
     private let rewindRandomCount = 39
@@ -50,16 +47,18 @@ struct RootView: View {
                             control: tunnelControl,
                             dateNamespace: dateNamespace,
                             startDate: tunnelStartDate,
-                            isRewindHome: true,
-                            loadDay: { req in await makeDayModel(for: req.date) },
-                            onFinish: { model in
-                                self.dayModel = model
-                                tunnelStartDate = model.date
-                                withAnimation(.easeInOut(duration: 0.35)) {
-                                    phase = .day
+                            onLand: { req in
+                                let target = req.date
+                                Task {
+                                    if let model = await makeDayModel(for: target) {
+                                        self.dayModel = model
+                                        tunnelStartDate = model.date
+                                        withAnimation(.easeInOut(duration: 0.35)) {
+                                            phase = .day
+                                        }
+                                    }
                                 }
-                            },
-                            onClose: {}
+                            }
                         )
                         .id(rewindHomeID)
                         .transition(.opacity)
@@ -76,42 +75,20 @@ struct RootView: View {
 
             case .rewinding(let id):
                 if let dayModel {
-                    Group {
-                        if rewindMode == .tunnel {
-                            let effectiveControl: TunnelControl = forceManualTunnel ? .manual : tunnelControl
-                            TunnelRewindView(
-                                model: dayModel,
-                                layers: tunnelLayers,
-                                control: effectiveControl,
-                                dateNamespace: dateNamespace,
-                                startDate: tunnelStartDate,
-                                loadDay: { req in await makeDayModel(for: req.date) },
-                                onFinish: { model in
-                                    self.dayModel = model
-                                    tunnelStartDate = model.date
-                                    withAnimation(.easeInOut(duration: 0.35)) {
-                                        phase = .day
-                                    }
-                                },
-                                onClose: { goHome() }
-                            )
-                        } else {
-                            DayFlowView(
-                                model: dayModel,
-                                flashFrames: flashFrames,
-                                dateNamespace: dateNamespace,
-                                loadDay: { day in await makeDayModel(for: day) },
-                                onFinish: { model in
-                                    self.dayModel = model
-                                    withAnimation(.easeInOut(duration: 0.35)) {
-                                        phase = .day
-                                    }
-                                },
-                                onClose: { goHome() },
-                                onReroll: { pickDay() }
-                            )
-                        }
-                    }
+                    DayFlowView(
+                        model: dayModel,
+                        flashFrames: flashFrames,
+                        dateNamespace: dateNamespace,
+                        loadDay: { day in await makeDayModel(for: day) },
+                        onFinish: { model in
+                            self.dayModel = model
+                            withAnimation(.easeInOut(duration: 0.35)) {
+                                phase = .day
+                            }
+                        },
+                        onClose: { goHome() },
+                        onReroll: { pickDay() }
+                    )
                     .id(id)
                     .transition(.opacity)
                 }
@@ -202,8 +179,6 @@ struct RootView: View {
         tunnelLayers = layers
         flashFrames = []
         tunnelStartDate = nil
-        cameFromTunnel = false
-        forceManualTunnel = false
         rewindHomeID = UUID()
     }
 
@@ -238,35 +213,9 @@ struct RootView: View {
 
             eligibleDays = days
 
-            if rewindMode == .tunnel {
-                let group = await PhotoLibraryService.shared.tunnelGroup(
-                    dayCount: tunnelDayCount,
-                    minPhotos: tunnelMinPhotos,
-                    photosPerDay: tunnelPhotosPerDay
-                )
-                let layers = await loadTunnelLayers(group, photoScale: tunnelPhotoScale)
-                if let landingDate = layers.last?.date,
-                   let landingItems = await landingItems(on: landingDate),
-                   !layers.isEmpty {
-                    dayModel = DayViewModel(date: landingDate, items: landingItems)
-                    tunnelLayers = layers
-                    flashFrames = []
-                    cameFromTunnel = true
-                    forceManualTunnel = false
-                    tunnelStartDate = nil
-                    withAnimation(.easeInOut(duration: 0.4)) {
-                        phase = .rewinding(UUID())
-                    }
-                    return
-                }
-                // Fall back to flash mode if the tunnel group could not be built.
-            }
-
             dayModel = DayViewModel(date: target, items: items)
             tunnelLayers = []
             flashFrames = []
-            cameFromTunnel = false
-            forceManualTunnel = false
             tunnelStartDate = nil
             withAnimation(.easeInOut(duration: 0.4)) {
                 phase = .rewinding(UUID())
@@ -416,11 +365,6 @@ struct RootView: View {
             withAnimation(.easeInOut(duration: 0.4)) {
                 phase = .home
             }
-        } else if cameFromTunnel, !tunnelLayers.isEmpty {
-            forceManualTunnel = true
-            withAnimation(.easeInOut(duration: 0.4)) {
-                phase = .rewinding(UUID())
-            }
         } else {
             goHome()
         }
@@ -433,8 +377,6 @@ struct RootView: View {
             eligibleDays = []
             flashFrames = []
             tunnelLayers = []
-            cameFromTunnel = false
-            forceManualTunnel = false
             tunnelStartDate = nil
             navLoading = false
         }

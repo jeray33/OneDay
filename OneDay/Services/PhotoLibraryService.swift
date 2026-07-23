@@ -47,49 +47,6 @@ final class PhotoLibraryService {
         await eligibleDays().randomElement()
     }
 
-    /// Build a tunnel rewind group: random days with at least `minPhotos` eligible
-    /// photos, each day contributing `photosPerDay` random photos. Sorted ascending
-    /// (oldest -> newest) so they can be flown through in chronological order.
-    func tunnelGroup(
-        dayCount: Int,
-        minPhotos: Int,
-        photosPerDay: ClosedRange<Int>
-    ) async -> [(date: Date, assets: [PHAsset])] {
-        await Task.detached(priority: .userInitiated) {
-            let options = PHFetchOptions()
-            options.predicate = NSPredicate(
-                format: "mediaType == %d AND NOT ((mediaSubtype & %d) != 0)",
-                PHAssetMediaType.image.rawValue,
-                PHAssetMediaSubtype.photoScreenshot.rawValue
-            )
-            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-            let result = PHAsset.fetchAssets(with: options)
-
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: Date())
-            var groups: [Date: [PHAsset]] = [:]
-
-            result.enumerateObjects { asset, _, _ in
-                guard MediaFilter.isEligible(asset) else { return }
-                guard let date = asset.creationDate else { return }
-                let day = calendar.startOfDay(for: date)
-                guard day < today else { return }
-                groups[day, default: []].append(asset)
-            }
-
-            let eligible = groups.filter { $0.value.count >= minPhotos }
-            guard eligible.count > 0 else { return [] }
-
-            let selectedDays = eligible.keys.shuffled().prefix(min(dayCount, eligible.count))
-            return selectedDays.compactMap { day in
-                let all = eligible[day]!
-                let count = Int.random(in: photosPerDay)
-                let chosen = all.shuffled().prefix(count)
-                return (date: day, assets: Array(chosen))
-            }.sorted { $0.date < $1.date }
-        }.value
-    }
-
     /// Build the "time rewind" tunnel group: the most recent eligible day up to and
     /// including today, plus `randomCount` random other eligible days, each day
     /// contributing `photosPerDay` random photos. The first day is the anchor (today
