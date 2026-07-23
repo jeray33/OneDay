@@ -369,6 +369,137 @@ enum ScrollSpring: String, CaseIterable, Identifiable {
     }
 }
 
+/// Time-travel mode shown after tapping "时光穿梭" on the home screen.
+enum RewindMode: String, CaseIterable, Identifiable {
+    case flash, tunnel, rewind
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .flash:  return "经典闪现"
+        case .tunnel: return "纵深隧道"
+        case .rewind: return "时光倒流"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .flash:  return "photo.stack"
+        case .tunnel: return "arrow.up.forward.app"
+        case .rewind: return "clock.arrow.circlepath"
+        }
+    }
+}
+
+/// Sort order for the "rewind" time-travel tunnel: today/newest first, then either
+/// descending chronologically (reverse) or shuffled (random).
+enum RewindSortOrder: String, CaseIterable, Identifiable {
+    case reverse, random
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .reverse: return "倒序"
+        case .random:  return "随机"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .reverse: return "arrow.down.circle"
+        case .random:  return "shuffle.circle"
+        }
+    }
+}
+
+/// Control style for the tunnel rewind mode.
+enum TunnelControl: String, CaseIterable, Identifiable {
+    case auto, manual
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .auto:   return "自动穿梭"
+        case .manual: return "手动滑动"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .auto:   return "play.circle"
+        case .manual: return "hand.draw"
+        }
+    }
+}
+
+/// Backdrop for the tunnel rewind mode. Dark reads more cinematic (photos pop,
+/// depth-of-field + vignette are stronger); light matches the rest of the app.
+enum TunnelBackground: String, CaseIterable, Identifiable {
+    case light, dark
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .light: return "白色"
+        case .dark:  return "深色"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .light: return "sun.max"
+        case .dark:  return "moon.stars"
+        }
+    }
+    var isDark: Bool { self == .dark }
+    var color: Color { self == .dark ? Color(white: 0.06) : Theme.paper }
+    var scheme: ColorScheme { self == .dark ? .dark : .light }
+}
+
+/// How far the tunnel photos spread from the center (tube-wall radius).
+enum TunnelSpread: String, CaseIterable, Identifiable {
+    case narrowest, narrow, medium, wide, widest
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 2 }
+    var label: String { ["最窄", "较窄", "适中", "较宽", "最宽"][idx] }
+    /// Multiplier on the reference radius (min(w,h) * 0.5).
+    var factor: Double { [0.40, 0.75, 1.10, 1.50, 1.90][idx] }
+}
+
+/// Base on-screen size of each tunnel photo at the focus plane.
+enum TunnelPhotoScale: String, CaseIterable, Identifiable {
+    case smallest, small, medium, large, largest
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 2 }
+    var label: String { ["最小", "较小", "适中", "较大", "最大"][idx] }
+    /// Base long-side length in points (loader adds a small random jitter).
+    var base: CGFloat { [104, 128, 150, 176, 204][idx] }
+}
+
+/// How large a photo may grow before it fades out, i.e. how much it spills past
+/// the screen edges.
+enum TunnelOverflow: String, CaseIterable, Identifiable {
+    case none, slight, medium, more, heavy
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 2 }
+    var label: String { ["不冲屏", "轻微", "适中", "较多", "大幅"][idx] }
+    /// Fully visible while scale <= fadeStart; fully gone by fadeEnd.
+    var fadeStart: Double { [1.15, 1.25, 1.40, 1.70, 2.40][idx] }
+    var fadeEnd: Double { [1.50, 1.75, 2.10, 2.80, 4.20][idx] }
+    /// Depth closer than this is culled.
+    var nearCull: Double { [0.62, 0.55, 0.46, 0.34, 0.20][idx] }
+}
+
+/// Where the "回到" caption + big date sit during the tunnel rewind.
+enum TunnelTextPosition: String, CaseIterable, Identifiable {
+    case center, bottom
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .center: return "居中"
+        case .bottom: return "底部"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .center: return "text.aligncenter"
+        case .bottom: return "arrow.down.to.line"
+        }
+    }
+}
+
 /// Three-layer page flip transition style for the cover/content/back stack.
 enum PageFlipMode: String, CaseIterable, Identifiable {
     /// C: drag follows finger, snap-to-page on release, lower layer scales/fades in from a fixed start.

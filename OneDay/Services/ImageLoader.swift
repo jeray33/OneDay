@@ -35,12 +35,14 @@ final class ImageLoader: @unchecked Sendable {
     }
 
     /// Single-shot thumbnail, suitable for preloading the rewind flash pool.
-    nonisolated func thumbnail(asset: PHAsset, size: CGSize) async -> UIImage? {
+    /// Pass `highQuality: true` when the image is scaled up on screen (e.g. the
+    /// tunnel rewind), so it stays sharp instead of pixelating.
+    nonisolated func thumbnail(asset: PHAsset, size: CGSize, highQuality: Bool = false) async -> UIImage? {
         await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
             options.isNetworkAccessAllowed = true
-            options.deliveryMode = .fastFormat
-            options.resizeMode = .fast
+            options.deliveryMode = highQuality ? .highQualityFormat : .fastFormat
+            options.resizeMode = highQuality ? .exact : .fast
             options.isSynchronous = false
             let target = CGSize(width: size.width * 2, height: size.height * 2)
             var resumed = false
