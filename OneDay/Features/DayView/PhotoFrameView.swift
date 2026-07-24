@@ -9,12 +9,15 @@ struct PhotoFrameView: View {
     var kenBurns: Bool = false
     var favorite: Bool = false
     var ratioOverride: CGFloat? = nil
+    var ratioRange: ClosedRange<CGFloat> = 0.55...1.85
     var borderColor: Color = Theme.frame
     /// Polaroid look: a tall white strip along the bottom edge.
     var polaroid: Bool = false
+    var minimumPolaroidBottom: CGFloat = 20
+    var shadowLevel: PhotoShadowLevel = .max
 
     private var ratio: CGFloat {
-        min(max(ratioOverride ?? item.aspectRatio, 0.55), 1.85)
+        min(max(ratioOverride ?? item.aspectRatio, ratioRange.lowerBound), ratioRange.upperBound)
     }
 
     private var imageSize: CGSize {
@@ -24,7 +27,7 @@ struct PhotoFrameView: View {
 
     /// Bottom edge thickness. Polaroid keeps thin top/sides but a chunky bottom.
     private var bottomBorder: CGFloat {
-        polaroid ? border + max(imageSize.height * 0.16, 20) : border
+        polaroid ? border + max(imageSize.height * 0.16, minimumPolaroidBottom) : border
     }
 
     var body: some View {
@@ -35,7 +38,10 @@ struct PhotoFrameView: View {
             .padding(.horizontal, border)
             .padding(.bottom, bottomBorder)
             .background(borderColor)
-            .shadow(color: .black.opacity(0.16), radius: 7, x: 0, y: 4)
+            .shadow(color: .black.opacity(0.16 * Double(shadowLevel.scale)),
+                    radius: 7 * shadowLevel.scale,
+                    x: 0,
+                    y: 4 * shadowLevel.scale)
     }
 
     @ViewBuilder

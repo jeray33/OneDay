@@ -1,6 +1,20 @@
 import Foundation
 import CoreLocation
 
+enum PhotoLayoutMode: String, CaseIterable, Identifiable {
+    case magazine
+    case alignedGrid
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .magazine:    return "杂志排布"
+        case .alignedGrid: return "整齐排布"
+        }
+    }
+}
+
 enum BlockTemplate: String, CaseIterable, Hashable {
     case single    // reduced-width single, alternating alignment
     case duo       // two side by side, equal-height row
@@ -34,6 +48,8 @@ struct LayoutConfig: Equatable {
     var borderScale: CGFloat = 1.0
     /// White frame or photo-tinted colored frame.
     var borderStyle: PhotoBorderStyle = .white
+    /// Strength of the shared photo projection.
+    var shadowLevel: PhotoShadowLevel = .max
     /// Phase-value offset per photo index in multi-photo blocks (0 = no stagger).
     var staggerFactor: Double = 0
 

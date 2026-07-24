@@ -213,26 +213,107 @@ struct DayMagazineView: View {
                 }
             }
             Menu("布局") {
-                Toggle("全选", isOn: Binding(
-                    get: { allTemplatesEnabled },
-                    set: { on in
-                        model.enabledTemplates = on
-                            ? Set(selectableTemplates)
-                            : [.single]
-                    }
-                ))
-                Divider()
-                ForEach(selectableTemplates, id: \.self) { t in
-                    Toggle(t.label, isOn: Binding(
-                        get: { model.enabledTemplates.contains(t) },
-                        set: { on in
-                            if on {
-                                model.enabledTemplates.insert(t)
-                            } else if model.enabledTemplates.count > 1 {
-                                model.enabledTemplates.remove(t)
+                Menu("排版方式") {
+                    ForEach(PhotoLayoutMode.allCases) { mode in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.photoLayoutMode = mode
+                            }
+                        } label: {
+                            if model.photoLayoutMode == mode {
+                                Label(mode.label, systemImage: "checkmark")
+                            } else {
+                                Text(mode.label)
                             }
                         }
-                    ))
+                    }
+                }
+                Divider()
+                if model.photoLayoutMode == .magazine {
+                    Menu("照片组合") {
+                        Toggle("全选", isOn: Binding(
+                            get: { allTemplatesEnabled },
+                            set: { on in
+                                model.enabledTemplates = on
+                                    ? Set(selectableTemplates)
+                                    : [.single]
+                            }
+                        ))
+                        Divider()
+                        ForEach(selectableTemplates, id: \.self) { t in
+                            Toggle(t.label, isOn: Binding(
+                                get: { model.enabledTemplates.contains(t) },
+                                set: { on in
+                                    if on {
+                                        model.enabledTemplates.insert(t)
+                                    } else if model.enabledTemplates.count > 1 {
+                                        model.enabledTemplates.remove(t)
+                                    }
+                                }
+                            ))
+                        }
+                    }
+                } else {
+                    Menu("列数") {
+                        ForEach(1...6, id: \.self) { count in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    model.gridColumnCount = count
+                                }
+                            } label: {
+                                let label = Self.chineseColumnLabel(count)
+                                if model.gridColumnCount == count {
+                                    Label(label, systemImage: "checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    }
+                    Menu("横向间距") {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.gridHorizontalSpacing = nil
+                            }
+                        } label: {
+                            if model.gridHorizontalSpacing == nil {
+                                Label("自动", systemImage: "checkmark")
+                            } else {
+                                Text("自动")
+                            }
+                        }
+                        Divider()
+                        ForEach(Self.gridHorizontalSpacingOptions, id: \.self) { spacing in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    model.gridHorizontalSpacing = spacing
+                                }
+                            } label: {
+                                let label = Self.spacingLabel(spacing)
+                                if model.gridHorizontalSpacing == spacing {
+                                    Label(label, systemImage: "checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    }
+                    Menu("纵向间距") {
+                        ForEach(Self.gridVerticalSpacingOptions, id: \.self) { spacing in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    model.gridVerticalSpacing = spacing
+                                }
+                            } label: {
+                                let label = Self.spacingLabel(spacing)
+                                if model.gridVerticalSpacing == spacing {
+                                    Label(label, systemImage: "checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Menu("白边") {
@@ -250,6 +331,21 @@ struct DayMagazineView: View {
                 )) {
                     ForEach(PhotoBorderStyle.allCases) { s in
                         Label(s.label, systemImage: s.icon).tag(s)
+                    }
+                }
+            }
+            Menu("投影") {
+                ForEach(PhotoShadowLevel.allCases) { level in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            model.photoShadow = level
+                        }
+                    } label: {
+                        if model.photoShadow == level {
+                            Label(level.label, systemImage: "checkmark")
+                        } else {
+                            Text(level.label)
+                        }
                     }
                 }
             }
@@ -304,11 +400,13 @@ struct DayMagazineView: View {
                 get: { model.showLocationBar },
                 set: { model.showLocationBar = $0 }
             ))
-            Button {
-                model.isDragEnabled.toggle()
-            } label: {
-                Label(model.isDragEnabled ? "锁定照片位置" : "自由摆放照片",
-                      systemImage: model.isDragEnabled ? "lock" : "hand.draw")
+            if model.photoLayoutMode == .magazine {
+                Button {
+                    model.isDragEnabled.toggle()
+                } label: {
+                    Label(model.isDragEnabled ? "锁定照片位置" : "自由摆放照片",
+                          systemImage: model.isDragEnabled ? "lock" : "hand.draw")
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -317,6 +415,29 @@ struct DayMagazineView: View {
                 .frame(width: 38, height: 38)
                 .background(.ultraThinMaterial, in: Circle())
         }
+    }
+
+    private static func chineseColumnLabel(_ count: Int) -> String {
+        switch count {
+        case 1: return "一列"
+        case 2: return "两列"
+        case 3: return "三列"
+        case 4: return "四列"
+        case 5: return "五列"
+        default: return "六列"
+        }
+    }
+
+    private static let gridHorizontalSpacingOptions: [CGFloat] = [
+        0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40
+    ]
+
+    private static let gridVerticalSpacingOptions: [CGFloat] = [
+        0, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64
+    ]
+
+    private static func spacingLabel(_ spacing: CGFloat) -> String {
+        "\(Int(spacing)) pt"
     }
 
     // MARK: Block row (with optional free-canvas dragging)
@@ -411,6 +532,151 @@ struct DayMagazineView: View {
         )
     }
 
+    @ViewBuilder
+    private func alignedGridRow(_ blocks: [MagazineBlock], contentWidth: CGFloat) -> some View {
+        let count = min(max(model.gridColumnCount, 1), 6)
+        let horizontalInset: CGFloat = contentWidth >= 560 ? 20 : 8
+        let horizontalSpacing = model.gridHorizontalSpacing
+            ?? alignedGridHorizontalSpacing(for: count)
+        let availableWidth = max(contentWidth - horizontalInset * 2, 1)
+        let cellWidth = max(
+            (availableWidth - horizontalSpacing * CGFloat(count - 1)) / CGFloat(count),
+            1
+        )
+        let columns = Array(
+            repeating: GridItem(.fixed(cellWidth), spacing: horizontalSpacing, alignment: .top),
+            count: count
+        )
+        let entries = blocks.flatMap { block in
+            block.items.enumerated().map { index, item in
+                AlignedGridEntry(item: item, blockID: block.id, startsBlock: index == 0)
+            }
+        }
+
+        LazyVGrid(columns: columns, alignment: .leading, spacing: model.gridVerticalSpacing) {
+            ForEach(entries) { entry in
+                if entry.startsBlock {
+                    alignedGridCell(entry.item, width: cellWidth)
+                        .id(entry.blockID)
+                        .background(blockPositionReader(for: entry.blockID))
+                } else {
+                    alignedGridCell(entry.item, width: cellWidth)
+                }
+            }
+        }
+        .padding(.horizontal, horizontalInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func alignedGridCell(_ item: PhotoItem, width: CGFloat) -> some View {
+        let count = min(max(model.gridColumnCount, 1), 6)
+        let border = max(
+            (alignedGridBorderBase(for: count) * model.layoutConfig.borderScale).rounded(),
+            0
+        )
+        let ratioRange = (CGFloat(9) / 20)...(CGFloat(16) / 9)
+        let polaroidMinimum = min(20, max(5, width * 0.12))
+        let scrollAnimation = model.scrollSpring.animation
+        let scrollScale = model.scrollScale.value
+        let scrollMovement = model.scrollMovement.value
+        let scrollRotation = model.scrollRotation.value
+        let scrollOpacity = model.scrollFade.offScreenOpacity
+        let scrollBlur = CGFloat(model.scrollBlur.radius)
+        let scrollParallax = model.scrollParallax.factor
+        let scrollTiltX = CGFloat(model.scrollTiltX.degrees)
+        let scrollTiltY = CGFloat(model.scrollTiltY.degrees)
+        let scrollTiltDecay = model.scrollTiltDecay.power
+
+        return PhotoFrameView(
+            item: item,
+            width: width,
+            border: border,
+            favorite: model.isFavorite(item),
+            ratioRange: ratioRange,
+            borderColor: model.frameColor(for: item),
+            polaroid: model.borderStyle.isPolaroid,
+            minimumPolaroidBottom: polaroidMinimum,
+            shadowLevel: model.photoShadow
+        )
+        .matchedTransitionSource(id: item.id, in: previewNamespace)
+        .onTapGesture { open(item) }
+        .contextMenu {
+            Button {
+                Task { await model.perform(.toggleFavorite, on: item) }
+            } label: {
+                Label(model.isFavorite(item) ? "取消收藏" : "收藏",
+                      systemImage: model.isFavorite(item) ? "heart.slash" : "heart")
+            }
+            Button {
+                Task { await model.perform(.pickAlbum, on: item) }
+            } label: {
+                Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
+            }
+            Button(role: .destructive) {
+                Task { await model.perform(.delete, on: item) }
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
+        .scrollTransition(.animated(scrollAnimation)) { content, phase in
+            let y: CGFloat = phase == .bottomTrailing ? scrollMovement :
+                             phase == .topLeading ? -scrollMovement * 0.64 : 0
+            return content
+                .opacity(phase.isIdentity ? 1 : scrollOpacity)
+                .scaleEffect(
+                    phase == .topLeading ? (1.0 - scrollScale) :
+                    phase == .bottomTrailing ? (1.0 + scrollScale) : 1.0
+                )
+                .rotationEffect(.degrees(
+                    phase == .topLeading ? scrollRotation :
+                    phase == .bottomTrailing ? -scrollRotation : 0
+                ))
+                .offset(y: y)
+                .blur(radius: phase == .bottomTrailing ? scrollBlur * CGFloat(phase.value) : 0)
+        }
+        .scrollTransition(.interactive) { content, phase in
+            let parallaxY = CGFloat(-min(0.0, phase.value)) * scrollParallax
+            let value = phase.value
+            let easedValue = CGFloat(
+                (value >= 0 ? 1.0 : -1.0) * pow(abs(value), scrollTiltDecay)
+            )
+            return content
+                .rotation3DEffect(.degrees(easedValue * scrollTiltX),
+                                  axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(easedValue * scrollTiltY),
+                                  axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .offset(y: parallaxY)
+        }
+    }
+
+    private func alignedGridHorizontalSpacing(for count: Int) -> CGFloat {
+        switch count {
+        case 1...3: return 16
+        case 4:     return 14
+        default:    return 12
+        }
+    }
+
+    private func alignedGridBorderBase(for count: Int) -> CGFloat {
+        switch count {
+        case 1: return 9
+        case 2: return 7
+        case 3: return 5
+        case 4: return 4
+        case 5: return 3
+        default: return 2
+        }
+    }
+
+    private func blockPositionReader(for blockID: UUID) -> some View {
+        GeometryReader { geo in
+            Color.clear.preference(
+                key: BlockPositionKey.self,
+                value: [blockID.uuidString: geo.frame(in: .named("dayScroll")).minY]
+            )
+        }
+    }
+
     private func updateActiveSegment(_ positions: [String: CGFloat]) {
         guard !positions.isEmpty else { return }
         let anchorY: CGFloat = 150
@@ -499,6 +765,8 @@ struct DayMagazineView: View {
                 .foregroundStyle(Theme.ink.opacity(0.7))
         case .block(let block):
             blockRow(block, contentWidth: contentWidth)
+        case .grid(let blocks):
+            alignedGridRow(blocks, contentWidth: contentWidth)
         }
     }
 
@@ -508,11 +776,9 @@ struct DayMagazineView: View {
             if case .label = row { return 6 }
             return 24
         }
-        switch (rows[index - 1], row) {
-        case (_, .label):       return 80   // start of a new time segment
-        case (.label, .block):  return 12   // photo tucked under its time label
-        case (.block, .block):  return 56
-        }
+        if case .label = row { return 80 }              // start of a new time segment
+        if case .label = rows[index - 1] { return 12 }  // photos tucked under their time label
+        return 56
     }
 
     /// Builds the ordered rows for a section: time-segment labels interleaved
@@ -524,10 +790,10 @@ struct DayMagazineView: View {
         guard !blocks.isEmpty else { return [] }
         let allDates = blocks.flatMap(\.items).compactMap(\.creationDate).sorted()
         guard let first = allDates.first, let last = allDates.last else {
-            return blocks.map { .block($0) }
+            return contentRows(for: blocks)
         }
         if last.timeIntervalSince(first) <= 2 * 3600 {
-            return [.label(timeRangeText(first, last))] + blocks.map { .block($0) }
+            return [.label(timeRangeText(first, last))] + contentRows(for: blocks)
         }
         var rows: [SectionRow] = []
         var currentBucket: Date?
@@ -538,7 +804,7 @@ struct DayMagazineView: View {
             if let f = dates.first, let l = dates.last {
                 rows.append(.label(timeRangeText(f, l)))
             }
-            rows.append(contentsOf: bucketBlocks.map { .block($0) })
+            rows.append(contentsOf: contentRows(for: bucketBlocks))
             bucketBlocks.removeAll()
         }
         for block in blocks {
@@ -550,6 +816,15 @@ struct DayMagazineView: View {
         }
         flush()
         return rows
+    }
+
+    private func contentRows(for blocks: [MagazineBlock]) -> [SectionRow] {
+        switch model.photoLayoutMode {
+        case .magazine:
+            return blocks.map { .block($0) }
+        case .alignedGrid:
+            return [.grid(blocks)]
+        }
     }
 
     /// Rounds a date down to a clock-aligned even hour (…14:00, 16:00…).
@@ -582,10 +857,19 @@ struct DayMagazineView: View {
 
 // MARK: - Section rows
 
-/// A rendered row inside a section: either a time-segment label or a photo block.
+/// A rendered row inside a section: a time label, magazine block, or aligned photo grid.
 private enum SectionRow {
     case label(String)
     case block(MagazineBlock)
+    case grid([MagazineBlock])
+}
+
+private struct AlignedGridEntry: Identifiable {
+    let item: PhotoItem
+    let blockID: UUID
+    let startsBlock: Bool
+
+    var id: String { item.id }
 }
 
 // MARK: - Scroll tracking

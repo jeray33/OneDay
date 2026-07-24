@@ -149,9 +149,13 @@ struct DayCoverView: View {
                        width: width,
                        border: max(width * 0.035, 6) * model.borderWidth.scale,
                        borderColor: model.frameColor(for: item),
-                       polaroid: model.borderStyle.isPolaroid)
+                       polaroid: model.borderStyle.isPolaroid,
+                       shadowLevel: model.photoShadow)
             .rotationEffect(.degrees(stableAngle(for: item.id)))
-            .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 8)
+            .shadow(color: .black.opacity(0.28 * Double(model.photoShadow.scale)),
+                    radius: 12 * model.photoShadow.scale,
+                    x: 0,
+                    y: 8 * model.photoShadow.scale)
             .position(anchor)
     }
 
@@ -165,7 +169,9 @@ struct DayCoverView: View {
             CGPoint(x: size.width * 0.3, y: size.height * 0.62)
         ]
         ForEach(Array(stickers.prefix(2).enumerated()), id: \.element.id) { idx, sticker in
-            PersonStickerView(sticker: sticker, maxHeight: size.height * 0.17)
+            PersonStickerView(sticker: sticker,
+                              maxHeight: size.height * 0.17,
+                              shadowLevel: model.photoShadow)
                 .rotationEffect(.degrees(stableAngle(for: sticker.id) * 0.8))
                 .position(anchors[idx % anchors.count])
         }

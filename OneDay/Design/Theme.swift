@@ -17,6 +17,39 @@ enum Theme {
     }
 }
 
+enum PhotoShadowLevel: String, CaseIterable, Identifiable {
+    case none, extraFine, fine, small, medium, mediumLarge, large, max
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .none:        return "无投影"
+        case .extraFine:   return "极细"
+        case .fine:        return "细小"
+        case .small:       return "较小"
+        case .medium:      return "中等"
+        case .mediumLarge: return "稍大"
+        case .large:       return "较大"
+        case .max:         return "最大"
+        }
+    }
+
+    /// Multiplier for every photo-shadow component. Max preserves the current effect.
+    var scale: CGFloat {
+        switch self {
+        case .none:        return 0
+        case .extraFine:   return 0.15
+        case .fine:        return 0.28
+        case .small:       return 0.42
+        case .medium:      return 0.58
+        case .mediumLarge: return 0.72
+        case .large:       return 0.86
+        case .max:         return 1
+        }
+    }
+}
+
 enum PhotoBorderWidth: String, CaseIterable, Identifiable {
     case none, thin, medium, thick, max
     var id: String { rawValue }

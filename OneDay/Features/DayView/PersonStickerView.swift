@@ -5,13 +5,17 @@ import SwiftUI
 struct PersonStickerView: View {
     let sticker: PersonSticker
     var maxHeight: CGFloat = 220
+    var shadowLevel: PhotoShadowLevel = .max
 
     var body: some View {
         Image(uiImage: sticker.image)
             .resizable()
             .aspectRatio(contentMode: .fit)
             .frame(maxHeight: maxHeight)
-            .shadow(color: .black.opacity(0.22), radius: 6, x: 0, y: 4)
+            .shadow(color: .black.opacity(0.22 * Double(shadowLevel.scale)),
+                    radius: 6 * shadowLevel.scale,
+                    x: 0,
+                    y: 4 * shadowLevel.scale)
             .accessibilityHidden(true)
     }
 }

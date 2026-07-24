@@ -22,7 +22,12 @@ final class DayViewModel {
     private static let backgroundKey   = "OneDay.pageBackground"
     private static let borderWidthKey  = "OneDay.borderWidth"
     private static let borderStyleKey  = "OneDay.borderStyle"
+    private static let photoShadowKey  = "OneDay.photoShadow"
     private static let enabledTemplatesKey = "OneDay.enabledTemplates"
+    private static let photoLayoutModeKey = "OneDay.photoLayoutMode"
+    private static let gridColumnCountKey = "OneDay.gridColumnCount"
+    private static let gridHorizontalSpacingKey = "OneDay.gridHorizontalSpacing"
+    private static let gridVerticalSpacingKey = "OneDay.gridVerticalSpacing"
     // MARK: Scroll animation
     private static let scrollScaleKey    = "OneDay.scrollScale"
     private static let scrollMovementKey = "OneDay.scrollMovement"
@@ -56,11 +61,43 @@ final class DayViewModel {
             if borderStyle == .colored { Task { await computeFrameColors() } }
         }
     }
+    var photoShadow: PhotoShadowLevel {
+        didSet {
+            UserDefaults.standard.set(photoShadow.rawValue, forKey: Self.photoShadowKey)
+        }
+    }
     var enabledTemplates: Set<BlockTemplate> {
         didSet {
             let raw = enabledTemplates.map(\.rawValue).joined(separator: ",")
             UserDefaults.standard.set(raw, forKey: Self.enabledTemplatesKey)
             recompose()
+        }
+    }
+    var photoLayoutMode: PhotoLayoutMode {
+        didSet {
+            UserDefaults.standard.set(photoLayoutMode.rawValue, forKey: Self.photoLayoutModeKey)
+        }
+    }
+    var gridColumnCount: Int {
+        didSet {
+            UserDefaults.standard.set(gridColumnCount, forKey: Self.gridColumnCountKey)
+        }
+    }
+    /// Nil keeps the column-aware 16 / 14 / 12 pt automatic spacing.
+    var gridHorizontalSpacing: CGFloat? {
+        didSet {
+            if let gridHorizontalSpacing {
+                UserDefaults.standard.set(Double(gridHorizontalSpacing),
+                                          forKey: Self.gridHorizontalSpacingKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.gridHorizontalSpacingKey)
+            }
+        }
+    }
+    var gridVerticalSpacing: CGFloat {
+        didSet {
+            UserDefaults.standard.set(Double(gridVerticalSpacing),
+                                      forKey: Self.gridVerticalSpacingKey)
         }
     }
     var scrollScale: ScrollScaleMagnitude {
@@ -200,6 +237,8 @@ final class DayViewModel {
         self.borderWidth = PhotoBorderWidth(rawValue: savedWidth ?? "") ?? .max
         let savedStyle = UserDefaults.standard.string(forKey: Self.borderStyleKey)
         self.borderStyle = PhotoBorderStyle(rawValue: savedStyle ?? "") ?? .white
+        let savedShadow = UserDefaults.standard.string(forKey: Self.photoShadowKey)
+        self.photoShadow = PhotoShadowLevel(rawValue: savedShadow ?? "") ?? .max
         self.scrollScale    = ScrollScaleMagnitude(rawValue: UserDefaults.standard.string(forKey: Self.scrollScaleKey)    ?? "") ?? .strong
         self.scrollMovement = ScrollMovement(rawValue:       UserDefaults.standard.string(forKey: Self.scrollMovementKey) ?? "") ?? .large
         self.scrollRotation = ScrollRotation(rawValue:       UserDefaults.standard.string(forKey: Self.scrollRotationKey) ?? "") ?? .medium
@@ -216,6 +255,25 @@ final class DayViewModel {
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
+        self.photoLayoutMode = PhotoLayoutMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.photoLayoutModeKey) ?? ""
+        ) ?? .magazine
+        let savedGridColumnCount = UserDefaults.standard.integer(forKey: Self.gridColumnCountKey)
+        self.gridColumnCount = (1...6).contains(savedGridColumnCount) ? savedGridColumnCount : 3
+        if UserDefaults.standard.object(forKey: Self.gridHorizontalSpacingKey) != nil {
+            self.gridHorizontalSpacing = CGFloat(
+                UserDefaults.standard.double(forKey: Self.gridHorizontalSpacingKey)
+            )
+        } else {
+            self.gridHorizontalSpacing = nil
+        }
+        if UserDefaults.standard.object(forKey: Self.gridVerticalSpacingKey) != nil {
+            self.gridVerticalSpacing = CGFloat(
+                UserDefaults.standard.double(forKey: Self.gridVerticalSpacingKey)
+            )
+        } else {
+            self.gridVerticalSpacing = 24
+        }
         // Enabled templates must be loaded before composing sections
         let rawTpl = UserDefaults.standard.string(forKey: Self.enabledTemplatesKey) ?? ""
         let loadedTpl = Set(rawTpl.split(separator: ",").compactMap { BlockTemplate(rawValue: String($0)) })
@@ -233,6 +291,7 @@ final class DayViewModel {
         var c = LayoutConfig.make(itemCount: allItems.count)
         c.borderScale    = borderWidth.scale
         c.borderStyle    = borderStyle
+        c.shadowLevel    = photoShadow
         c.staggerFactor  = scrollStagger.factor
         return c
     }
