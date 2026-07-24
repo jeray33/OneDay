@@ -2,6 +2,28 @@ import SwiftUI
 import Photos
 import CoreLocation
 
+enum CoverMode: String, CaseIterable {
+    case collage    // 拼贴（现有）
+    case scattered  // 散布（新增）
+
+    var label: String { self == .collage ? "拼贴" : "散布" }
+}
+
+enum SectionTitleSize: String, CaseIterable, Identifiable {
+    case xsmall, small, medium, large, xlarge
+    var id: String { rawValue }
+    var label: String { ["最小", "较小", "适中", "较大", "最大"][Self.allCases.firstIndex(of: self) ?? 4] }
+    var size: CGFloat { [32, 38, 44, 50, 56][Self.allCases.firstIndex(of: self) ?? 4] }
+}
+
+struct ScatteredCoverPhoto: Identifiable {
+    let id: String
+    let item: PhotoItem
+    let angle: Double      // radians, tube-wall angle
+    let radius: Double     // 0...1
+    let baseSize: CGSize   // base display size
+}
+
 @MainActor
 @Observable
 final class DayViewModel {
@@ -28,6 +50,7 @@ final class DayViewModel {
     private static let gridColumnCountKey = "OneDay.gridColumnCount"
     private static let gridHorizontalSpacingKey = "OneDay.gridHorizontalSpacing"
     private static let gridVerticalSpacingKey = "OneDay.gridVerticalSpacing"
+    private static let gridLazyEnabledKey = "OneDay.gridLazyEnabled"
     // MARK: Scroll animation
     private static let scrollScaleKey    = "OneDay.scrollScale"
     private static let scrollMovementKey = "OneDay.scrollMovement"
@@ -45,6 +68,8 @@ final class DayViewModel {
     private static let coverDateFontKey  = CoverDateFont.storageKey
     private static let sectionTintKey    = "OneDay.sectionTint"
     private static let locationBarKey    = "OneDay.locationBar"
+    private static let coverModeKey      = "OneDay.coverMode"
+    private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
 
     var background: PageBackground {
         didSet {
@@ -79,9 +104,7 @@ final class DayViewModel {
         }
     }
     var gridColumnCount: Int {
-        didSet {
-            UserDefaults.standard.set(gridColumnCount, forKey: Self.gridColumnCountKey)
-        }
+        didSet { }  // 不持久化，每次根据照片数自动选择默认列数
     }
     /// Nil keeps the column-aware 16 / 14 / 12 pt automatic spacing.
     var gridHorizontalSpacing: CGFloat? {
@@ -98,6 +121,13 @@ final class DayViewModel {
         didSet {
             UserDefaults.standard.set(Double(gridVerticalSpacing),
                                       forKey: Self.gridVerticalSpacingKey)
+        }
+    }
+    /// When true, the aligned grid uses LazyVGrid (original behavior).
+    /// When false, uses a non-lazy VStack+HStack grid (fixes scroll jumping).
+    var gridLazyEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(gridLazyEnabled, forKey: Self.gridLazyEnabledKey)
         }
     }
     var scrollScale: ScrollScaleMagnitude {
@@ -154,8 +184,19 @@ final class DayViewModel {
     var showLocationBar: Bool {
         didSet { UserDefaults.standard.set(showLocationBar, forKey: Self.locationBarKey) }
     }
+    var coverMode: CoverMode {
+        didSet { UserDefaults.standard.set(coverMode.rawValue, forKey: Self.coverModeKey) }
+    }
+    var sectionTitleSize: SectionTitleSize {
+        didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
+    }
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
+    private(set) var scatteredCoverPhotos: [ScatteredCoverPhoto] = []
+    /// Spread factor used for scattered cover layout (from tunnel settings or default).
+    var scatteredSpreadFactor: Double = 1.10
+    /// Initial drift offset captured from the tunnel at landing, animated to zero on the cover.
+    var scatteredInitialDrift: CGSize = .zero
     private(set) var personStickers: [PersonSticker] = []
     private(set) var coverBackgroundColor: Color = Color(white: 0.96)
     private var coverBackgroundIsDark = false
@@ -255,11 +296,14 @@ final class DayViewModel {
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
+        self.coverMode = CoverMode(rawValue: UserDefaults.standard.string(forKey: Self.coverModeKey) ?? "") ?? .collage
+        self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
         self.photoLayoutMode = PhotoLayoutMode(
             rawValue: UserDefaults.standard.string(forKey: Self.photoLayoutModeKey) ?? ""
         ) ?? .magazine
-        let savedGridColumnCount = UserDefaults.standard.integer(forKey: Self.gridColumnCountKey)
-        self.gridColumnCount = (1...6).contains(savedGridColumnCount) ? savedGridColumnCount : 3
+        let total = items.count
+        let defaultColumns = total < 20 ? 1 : total <= 50 ? 2 : 3
+        self.gridColumnCount = (1...6).contains(defaultColumns) ? defaultColumns : 3
         if UserDefaults.standard.object(forKey: Self.gridHorizontalSpacingKey) != nil {
             self.gridHorizontalSpacing = CGFloat(
                 UserDefaults.standard.double(forKey: Self.gridHorizontalSpacingKey)
@@ -274,6 +318,7 @@ final class DayViewModel {
         } else {
             self.gridVerticalSpacing = 24
         }
+        self.gridLazyEnabled = UserDefaults.standard.object(forKey: Self.gridLazyEnabledKey) as? Bool ?? false
         // Enabled templates must be loaded before composing sections
         let rawTpl = UserDefaults.standard.string(forKey: Self.enabledTemplatesKey) ?? ""
         let loadedTpl = Set(rawTpl.split(separator: ",").compactMap { BlockTemplate(rawValue: String($0)) })
@@ -378,6 +423,7 @@ final class DayViewModel {
         await computeCoverPhotos()
         await computeCoverBackgroundColor()
         await computePersonStickers()
+        if scatteredCoverPhotos.isEmpty { computeScatteredCoverPhotos() }
     }
 
     /// Extracts a vivid-but-soft tint color from each photo’s thumbnail for use as a frame.
@@ -515,6 +561,58 @@ final class DayViewModel {
         let ordered = coverPhotos + photos.filter { !coverIDs.contains($0.id) }
         let stickers = await PersonStickerExtractor.shared.extract(from: ordered, max: 2)
         personStickers = stickers
+    }
+
+    // MARK: Scattered cover photos
+
+    /// Sets scattered cover photos from the tunnel layer that landed on this day.
+    /// Matches tunnel photos to this day's PhotoItems by asset identifier.
+    func setTunnelCoverPhotos(from layer: TunnelLayer, drift: CGSize = .zero) {
+        let itemByID = Dictionary(allItems.map { ($0.asset.localIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
+        var result: [ScatteredCoverPhoto] = []
+        for tp in layer.photos {
+            guard let item = itemByID[tp.assetIdentifier] else { continue }
+            result.append(ScatteredCoverPhoto(
+                id: item.id,
+                item: item,
+                angle: tp.angle,
+                radius: tp.radius,
+                baseSize: tp.size))
+        }
+        if !result.isEmpty {
+            scatteredCoverPhotos = result
+            scatteredInitialDrift = drift
+            let spreadRaw = UserDefaults.standard.string(forKey: "OneDay.tunnelSpread") ?? ""
+            scatteredSpreadFactor = (TunnelSpread(rawValue: spreadRaw) ?? .medium).factor
+        }
+    }
+
+    /// Generates scattered cover photos for non-tunnel days: picks 3-5 random
+    /// photos and assigns tube-wall-like coordinates.
+    private func computeScatteredCoverPhotos() {
+        let photos = allItems.filter { !$0.isVideo }
+        guard !photos.isEmpty else { scatteredCoverPhotos = []; return }
+        let count = min(photos.count, Int.random(in: 3...5))
+        let chosen = photos.shuffled().prefix(count)
+        let dayPhase = Double.random(in: 0..<(2 * .pi))
+        var result: [ScatteredCoverPhoto] = []
+        for (j, item) in chosen.enumerated() {
+            let aspect = item.aspectRatio
+            let longSide = CGFloat.random(in: 138...162)
+            let size: CGSize = aspect >= 1
+                ? CGSize(width: longSide, height: longSide / aspect)
+                : CGSize(width: longSide * aspect, height: longSide)
+            let baseAngle = (2 * .pi / Double(max(count, 1))) * Double(j)
+            let angle = dayPhase + baseAngle + Double.random(in: -0.4...0.4)
+            result.append(ScatteredCoverPhoto(
+                id: item.id,
+                item: item,
+                angle: angle,
+                radius: Double.random(in: 0.55...1.3),
+                baseSize: size))
+        }
+        scatteredCoverPhotos = result
+        scatteredSpreadFactor = 1.50
     }
 
     /// True when at least one located photo/video exists (map is worth showing).

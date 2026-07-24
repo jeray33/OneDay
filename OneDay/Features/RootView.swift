@@ -51,9 +51,14 @@ struct RootView: View {
                                 let target = req.date
                                 Task {
                                     if let model = await makeDayModel(for: target) {
+                                        if let layer = tunnelLayers.first(where: {
+                                            Calendar.current.isDate($0.date, inSameDayAs: target)
+                                        }) {
+                                            model.setTunnelCoverPhotos(from: layer, drift: req.drift)
+                                        }
                                         self.dayModel = model
                                         tunnelStartDate = model.date
-                                        withAnimation(.easeInOut(duration: 0.35)) {
+                                        withAnimation(.easeInOut(duration: 0.5)) {
                                             phase = .day
                                         }
                                     }
@@ -261,6 +266,7 @@ struct RootView: View {
                         let angle = dayPhase + baseAngle + Double.random(in: -0.4...0.4)
                         photos.append(TunnelPhoto(
                             image: image,
+                            assetIdentifier: asset.localIdentifier,
                             angle: angle,
                             radius: Double.random(in: 0.45...1.0),
                             zJitter: Double.random(in: -0.34...0.34),

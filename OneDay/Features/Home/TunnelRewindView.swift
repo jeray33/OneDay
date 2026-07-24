@@ -9,7 +9,11 @@ import QuartzCore
 /// plain synchronous callback and the host does the async load itself.
 final class TunnelDayRequest {
     let date: Date
-    init(_ date: Date) { self.date = date }
+    let drift: CGSize
+    init(_ date: Date, drift: CGSize = .zero) {
+        self.date = date
+        self.drift = drift
+    }
 }
 
 /// One depth plane in the tunnel: a single day with a few photos scattered on the
@@ -24,6 +28,7 @@ struct TunnelLayer: Identifiable {
 struct TunnelPhoto: Identifiable {
     let id = UUID()
     let image: UIImage
+    let assetIdentifier: String
     let angle: Double     // radians around the tube axis
     let radius: Double    // 0...1 fraction of the reference radius
     let zJitter: Double   // per-photo depth offset (drives staggered speed)
@@ -542,8 +547,9 @@ struct TunnelRewindView: View {
         SoundEffects.settle()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        onLand(TunnelDayRequest(day))
+        let drift = CGSize(width: sin(clock * 0.55) * 12, height: cos(clock * 0.43) * 9)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        onLand(TunnelDayRequest(day, drift: drift))
     }
 
     // MARK: Math helpers

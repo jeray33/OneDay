@@ -9,6 +9,9 @@ struct DayCoverView: View {
     var dateIsSource: Bool = false
     var onClose: (() -> Void)? = nil
 
+    @State private var scatteredAppeared = false
+    @State private var driftSettled = false
+
     var body: some View {
         ZStack {
             model.coverBackgroundColor.ignoresSafeArea()
@@ -16,21 +19,29 @@ struct DayCoverView: View {
             GeometryReader { geo in
                 let size = geo.size
                 ZStack {
-                    // Overlapping collage: photos, stickers and the map patch
-                    // sit close together with slight overlaps (no gaps).
-                    photosLayer(in: size)
-                    stickersLayer(in: size)
+                    switch model.coverMode {
+                    case .collage:
+                        // Overlapping collage: photos, stickers and the map patch
+                        // sit close together with slight overlaps (no gaps).
+                        photosLayer(in: size)
+                        stickersLayer(in: size)
 
-                    if model.hasAnyLocation {
-                        TornPaperMapPatch(locations: model.routeLocations)
-                            .frame(width: size.width * 0.6)
-                            .rotationEffect(.degrees(-2.5))
-                            .position(x: size.width * 0.54, y: size.height * 0.78)
+                        if model.hasAnyLocation {
+                            TornPaperMapPatch(locations: model.routeLocations)
+                                .frame(width: size.width * 0.6)
+                                .rotationEffect(.degrees(-2.5))
+                                .position(x: size.width * 0.54, y: size.height * 0.78)
+                        }
+                    case .scattered:
+                        scatteredPhotosLayer(in: size)
                     }
 
                     dateBlock
                         .frame(maxWidth: .infinity)
-                        .position(x: size.width / 2, y: size.height * 0.22)
+                        .position(x: size.width / 2,
+                                  y: model.coverMode == .scattered
+                                    ? size.height * 0.5
+                                    : size.height * 0.22)
 
                     infoLine
                         .frame(width: size.width)
@@ -40,24 +51,34 @@ struct DayCoverView: View {
             .environment(\.colorScheme, model.coverColorScheme)
 
             if let onClose {
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button(action: onClose) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(foregroundTint)
-                                .frame(width: 38, height: 38)
-                                .background(.ultraThinMaterial, in: Circle())
-                        }
-                        .padding(.trailing, 16)
-                        .padding(.top, topSafeAreaInset() + 6)
-                    }
-                    Spacer()
-                }
+                DayTopBar(model: model, onClose: onClose, tint: foregroundTint)
             }
         }
         .ignoresSafeArea()
+        .onAppear {
+            let fromTunnel = model.scatteredInitialDrift != .zero
+            scatteredAppeared = false
+            driftSettled = false
+            if fromTunnel {
+                withAnimation(.easeOut(duration: 0.6).delay(0.1)) {
+                    scatteredAppeared = true
+                    driftSettled = true
+                }
+            } else if !model.scatteredCoverPhotos.isEmpty {
+                triggerScatteredEnter()
+            }
+        }
+        .onChange(of: model.scatteredCoverPhotos.count) { _, count in
+            if count > 0, !scatteredAppeared, model.scatteredInitialDrift == .zero {
+                triggerScatteredEnter()
+            }
+        }
+    }
+
+    private func triggerScatteredEnter() {
+        withAnimation(.spring(response: 0.7, dampingFraction: 0.82)) {
+            scatteredAppeared = true
+        }
     }
 
     // MARK: Date
@@ -177,6 +198,37 @@ struct DayCoverView: View {
         }
     }
 
+    // MARK: Scattered photos
+
+    @ViewBuilder
+    private func scatteredPhotosLayer(in size: CGSize) -> some View {
+        let ref = Double(min(size.width, size.height)) * 0.5
+        let spread = model.scatteredSpreadFactor
+        ForEach(Array(model.scatteredCoverPhotos.enumerated()), id: \.element.id) { idx, photo in
+            let screenR = photo.radius * spread * ref
+            let drift = driftSettled ? .zero : model.scatteredInitialDrift
+            let x = size.width / 2 + drift.width + cos(photo.angle) * screenR
+            let y = size.height / 2 + drift.height + sin(photo.angle) * screenR
+            let border = max(photo.baseSize.width * 0.035, 6) * model.borderWidth.scale
+            let totalWidth = photo.baseSize.width + 2 * border
+            PhotoFrameView(item: photo.item,
+                           width: totalWidth,
+                           border: border,
+                           borderColor: model.frameColor(for: photo.item),
+                           polaroid: model.borderStyle.isPolaroid,
+                           shadowLevel: model.photoShadow)
+                .shadow(color: .black.opacity(0.28 * Double(model.photoShadow.scale)),
+                        radius: 12 * model.photoShadow.scale,
+                        x: 0,
+                        y: 8 * model.photoShadow.scale)
+                .modifier(ScatteredPhotoEnter(
+                    appeared: scatteredAppeared,
+                    fromTunnel: model.scatteredInitialDrift != .zero,
+                    index: idx))
+                .position(x: x, y: y)
+        }
+    }
+
     // MARK: Helpers
 
     private var foregroundTint: Color {
@@ -202,6 +254,29 @@ private struct OptionalMatchedDate: ViewModifier {
             content.matchedGeometryEffect(id: "flowDate", in: namespace, isSource: isSource)
         } else {
             content
+        }
+    }
+}
+
+/// Scattered photo entrance: tunnel source skips scale/opacity (only drift
+/// settles), non-tunnel source springs in with a staggered scale + fade.
+private struct ScatteredPhotoEnter: ViewModifier {
+    let appeared: Bool
+    let fromTunnel: Bool
+    let index: Int
+
+    func body(content: Content) -> some View {
+        if fromTunnel {
+            // 隧道来源：无 scale/opacity 动画，仅靠 drift 归位 + 交叉淡入
+            content
+        } else {
+            // 非隧道来源：弹性缩放入场
+            content
+                .scaleEffect(appeared ? 1.0 : 0.85)
+                .opacity(appeared ? 1.0 : 0.0)
+                .animation(.spring(response: 0.7, dampingFraction: 0.82)
+                            .delay(Double(index) * 0.06),
+                           value: appeared)
         }
     }
 }

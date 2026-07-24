@@ -26,23 +26,9 @@ struct DayBackCoverView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.colorScheme, model.backCoverColorScheme)
 
-            // Close button top-right (migrated from the magazine top overlay).
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(Theme.ink)
-                            .frame(width: 38, height: 38)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .padding(.trailing, 16)
-                    .padding(.top, topSafeAreaInset() + 6)
-                }
-                Spacer()
-            }
-            .environment(\.colorScheme, model.backCoverColorScheme)
+            // Close button (top-left) and settings menu (top-right).
+            DayTopBar(model: model, onClose: onClose, tint: Theme.ink)
+                .environment(\.colorScheme, model.backCoverColorScheme)
         }
         .ignoresSafeArea()
     }
