@@ -1,16 +1,39 @@
 import SwiftUI
+import UIKit
 
 struct PhotoPreviewView: View {
     let model: DayViewModel
     let namespace: Namespace.ID
+    @AppStorage("OneDay.previewSwipeYawEnabled") private var swipeYawEnabled = true
+    @AppStorage("OneDay.previewSwipeYawLevel") private var swipeYawLevel = SwipeYawLevel.medium.rawValue
+    @AppStorage("OneDay.previewSwipeGlossEnabled") private var swipeGlossEnabled = true
+    @AppStorage("OneDay.previewSwipeGlossLevel") private var swipeGlossLevel = SwipeGlossLevel.medium.rawValue
+    @AppStorage("OneDay.previewSwipeSpeedBiasEnabled") private var swipeSpeedBiasEnabled = false
+    @AppStorage("OneDay.previewSwipeSpeedBiasLevel") private var swipeSpeedBiasLevel = SwipeSpeedBiasLevel.medium.rawValue
 
     @State private var selection: String
     @State private var dragOffset: CGSize = .zero
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
+    @State private var editingItem: PhotoItem?
     @State private var bgOpacity: Double = 0
-    @State private var place: String?
     @State private var dynamicBg: Color?
+    @State private var showAlbumConfig = false
+    @State private var tagAlbums: [AlbumInfo] = []
+    @State private var membershipIDs: Set<String> = []
+    @State private var isMutatingAlbum = false
+    @State private var isMutatingHidden = false
+    @State private var pendingDeleteIDs: [String] = []
+    @State private var showPendingDelete = false
+    @State private var stagingDeleteScale: CGFloat = 1
+    @State private var isStagingDelete = false
+    @State private var flipAngle: Double = 0
+    @State private var isFlipTransitioning = false
+    @State private var observedHorizontalSwipe = false
+    @State private var pendingSwipeSettleHaptic = false
+    @State private var dragStartSelection: String?
+    @State private var isVerticalDragLocked = false
+    @State private var verticalDragItemID: String?
     @Environment(\.dismiss) private var dismiss
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID) {
@@ -19,15 +42,49 @@ struct PhotoPreviewView: View {
         _selection = State(initialValue: current.id)
     }
 
-    private var items: [PhotoItem] { model.allItems }
-
-    private var currentItem: PhotoItem? {
-        items.first { $0.id == selection }
+    private var allItems: [PhotoItem] { model.allItems }
+    private var visibleItems: [PhotoItem] {
+        allItems.filter { !pendingDeleteIDs.contains($0.id) }
+    }
+    private var currentItem: PhotoItem? { visibleItems.first { $0.id == selection } }
+    private var pendingDeleteItems: [PhotoItem] {
+        pendingDeleteIDs.compactMap { id in allItems.first { $0.id == id } }
+    }
+    private var pendingDeleteLastItem: PhotoItem? {
+        guard let lastID = pendingDeleteIDs.last else { return nil }
+        return allItems.first { $0.id == lastID }
     }
 
-    /// 0 → resting, 1 → fully dragged down. Drives scale and fades.
     private var dragProgress: CGFloat {
         min(max(dragOffset.height, 0) / 320, 1)
+    }
+    private var deleteProgress: CGFloat {
+        min(max(-dragOffset.height, 0) / 280, 1)
+    }
+    private var activeScale: CGFloat {
+        let base = 1 - dragProgress * 0.18 - deleteProgress * 0.45
+        return max(0.08, base) * stagingDeleteScale
+    }
+    private var controlsOpacity: Double {
+        let progress = max(dragProgress, deleteProgress)
+        return Double(max(0, 1 - progress * 2))
+    }
+    private var swipeEffectConfig: SwipePreviewEffectConfig {
+        SwipePreviewEffectConfig(
+            yawEnabled: swipeYawEnabled,
+            yawMaxDegrees: SwipeYawLevel(rawValue: swipeYawLevel)?.degrees ?? SwipeYawLevel.medium.degrees,
+            glossEnabled: swipeGlossEnabled,
+            glossStrength: SwipeGlossLevel(rawValue: swipeGlossLevel)?.strength ?? SwipeGlossLevel.medium.strength,
+            speedBiasEnabled: swipeSpeedBiasEnabled,
+            incomingOffsetFactor: SwipeSpeedBiasLevel(rawValue: swipeSpeedBiasLevel)?.incomingOffsetFactor ?? SwipeSpeedBiasLevel.medium.incomingOffsetFactor,
+            outgoingOffsetFactor: SwipeSpeedBiasLevel(rawValue: swipeSpeedBiasLevel)?.outgoingOffsetFactor ?? SwipeSpeedBiasLevel.medium.outgoingOffsetFactor
+        )
+    }
+    private var isFlippedToBack: Bool {
+        flipAngle > 90
+    }
+    private var isFlipActive: Bool {
+        isFlipTransitioning || flipAngle > 0.001
     }
 
     var body: some View {
@@ -37,34 +94,106 @@ struct PhotoPreviewView: View {
                 .opacity(bgOpacity * Double(1 - dragProgress))
 
             TabView(selection: $selection) {
-                ForEach(items) { item in
-                    PreviewPageView(item: item, model: model, onZoomChanged: { isZoomed = $0 })
-                        .tag(item.id)
+                ForEach(visibleItems) { item in
+                    PreviewPageView(
+                        item: item,
+                        model: model,
+                        onZoomChanged: { isZoomed = $0 },
+                        onEditCaption: { editingItem = $0 },
+                        photoOffsetX: 0,
+                        photoOffsetY: 0,
+                        photoScale: 1,
+                        infoOpacity: (isZoomed || isFlipActive) ? 0 : controlsOpacity,
+                        isZoomed: isZoomed,
+                        flipAngle: flipAngle,
+                        swipeEffectConfig: swipeEffectConfig,
+                        onFlipRequest: { requestFlip(toBack: true) },
+                        onFlipBackRequest: { requestFlip(toBack: false) }
+                    )
+                    .tag(item.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
-            .scaleEffect(1 - dragProgress * 0.18)
-            .offset(dragOffset)
+            .opacity(isVerticalDragLocked ? 0 : 1)
+            .allowsHitTesting(!isVerticalDragLocked && !isFlipActive)
             .simultaneousGesture(dismissDrag)
+
+            verticalDragOverlay
         }
         .overlay(alignment: .top) { topBar }
+        .overlay(alignment: .bottom) { bottomControls }
         .statusBarHidden()
         .sheet(item: $albumItem) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
+        .sheet(item: $editingItem) { item in
+            CaptionEditorSheet(item: item) { caption in
+                Task { await model.updateCaption(caption, for: item) }
+            }
+        }
+        .sheet(isPresented: $showAlbumConfig) {
+            AlbumConfigSheet(model: model) {
+                refreshTagAlbums()
+            }
+        }
+        .sheet(isPresented: $showPendingDelete) {
+            PendingDeleteSheet(
+                items: pendingDeleteItems,
+                onCancel: {
+                    pendingDeleteIDs.removeAll()
+                    showPendingDelete = false
+                    performDismiss()
+                },
+                onConfirm: { selectedIDs in
+                    Task { await confirmPendingDelete(selectedIDs: selectedIDs) }
+                }
+            )
+        }
         .onAppear {
             withAnimation(.easeOut(duration: 0.35)) { bgOpacity = 1 }
+            refreshTagAlbums()
+            refreshMembership()
+            ensureValidSelectionAfterFiltering()
         }
         .onChange(of: selection) {
             isZoomed = false
             dragOffset = .zero
-            place = nil
+            flipAngle = 0
+            isFlipTransitioning = false
+            if pendingSwipeSettleHaptic {
+                pendingSwipeSettleHaptic = false
+                let feedback = UIImpactFeedbackGenerator(style: .light)
+                feedback.prepare()
+                feedback.impactOccurred(intensity: 0.55)
+            }
+            refreshMembership()
+        }
+        .onChange(of: pendingDeleteIDs) {
+            ensureValidSelectionAfterFiltering()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isFlippedToBack {
+                requestFlip(toBack: false)
+            }
         }
         .task(id: selection) {
-            await updatePlace()
             await updateDynamicBackground()
         }
+    }
+
+    private var bottomControls: some View {
+        VStack(spacing: 8) {
+            albumTagBar
+            bottomActionBar
+        }
+        .padding(.bottom, 10)
+        .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
+        .opacity((isZoomed || isFlipActive) ? 0 : controlsOpacity)
+        .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
+        .allowsHitTesting(!(isZoomed || isFlipActive) && max(dragProgress, deleteProgress) < 0.15
+                          && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete)
     }
 
     private func updateDynamicBackground() async {
@@ -73,63 +202,217 @@ struct PhotoPreviewView: View {
         withAnimation(.easeInOut(duration: 0.45)) { dynamicBg = color }
     }
 
-    private func updatePlace() async {
-        guard let location = currentItem?.location else { place = nil; return }
-        place = await LocationResolver.shared.name(for: location)
+    private func requestClose() {
+        if pendingDeleteIDs.isEmpty {
+            performDismiss()
+        } else {
+            showPendingDelete = true
+        }
     }
 
-    private var captionLine1: String? { place }
-
-    private var captionLine2: String? {
-        guard let item = currentItem else { return nil }
-        let date = item.creationDate ?? Date()
-        let c = DateText.components(date)
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return "\(c.year).\(c.month).\(c.day) \(DateText.weekday(date)) \(f.string(from: date))"
-    }
-
-    private func close() {
+    private func performDismiss() {
         withAnimation(.easeOut(duration: 0.25)) { bgOpacity = 0 }
         dismiss()
     }
 
-    /// Apple Photos style: the photo tracks the finger, scales down and the
-    /// background/controls fade. Horizontal drags fall through to paging,
-    /// and the gesture is suppressed while zoomed so panning works.
     private var dismissDrag: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard !isZoomed else { return }
-                if abs(value.translation.height) > abs(value.translation.width) {
-                    dragOffset = CGSize(width: value.translation.width * 0.5,
-                                        height: max(value.translation.height, 0))
+                guard !isZoomed, !isStagingDelete, !isFlipActive else { return }
+                if dragStartSelection == nil { dragStartSelection = selection }
+                let t = value.translation
+                if abs(t.width) > 12, abs(t.width) > abs(t.height) {
+                    observedHorizontalSwipe = true
+                }
+                if !isVerticalDragLocked {
+                    let enoughDistance = abs(t.height) > 8 || abs(t.width) > 8
+                    if enoughDistance && abs(t.height) > abs(t.width) {
+                        isVerticalDragLocked = true
+                        verticalDragItemID = dragStartSelection ?? selection
+                    }
+                }
+                if isVerticalDragLocked {
+                    dragOffset = CGSize(width: value.translation.width * 0.35,
+                                        height: value.translation.height)
+                    if let dragStartSelection, selection != dragStartSelection {
+                        selection = dragStartSelection
+                    }
                 }
             }
             .onEnded { value in
-                guard !isZoomed else { return }
-                let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
-                let farEnough = value.translation.height > 120
-                    || value.predictedEndTranslation.height > 320
-                if verticalDominant && farEnough {
-                    close()
-                } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        dragOffset = .zero
+                guard !isZoomed, !isStagingDelete, !isFlipActive else { return }
+                let startedSelection = dragStartSelection
+                dragStartSelection = nil
+                let horizontalDistance = abs(value.translation.width)
+                if observedHorizontalSwipe && horizontalDistance > 20 {
+                    pendingSwipeSettleHaptic = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 700_000_000)
+                        if pendingSwipeSettleHaptic {
+                            pendingSwipeSettleHaptic = false
+                        }
                     }
                 }
+                observedHorizontalSwipe = false
+                guard isVerticalDragLocked else { return }
+                let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
+                guard verticalDominant else {
+                    isVerticalDragLocked = false
+                    verticalDragItemID = nil
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        dragOffset = .zero
+                        stagingDeleteScale = 1
+                    }
+                    return
+                }
+                if let startedSelection, selection != startedSelection {
+                    selection = startedSelection
+                }
+
+                let downFarEnough = value.translation.height > 120
+                    || value.predictedEndTranslation.height > 320
+                let upFarEnough = value.translation.height < -180
+                    || value.predictedEndTranslation.height < -460
+
+                if upFarEnough {
+                    Task { await stageCurrentForDeletion() }
+                    return
+                }
+                if downFarEnough {
+                    isVerticalDragLocked = false
+                    verticalDragItemID = nil
+                    requestClose()
+                    return
+                }
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    dragOffset = .zero
+                    stagingDeleteScale = 1
+                }
+                isVerticalDragLocked = false
+                verticalDragItemID = nil
             }
     }
 
     private var topBar: some View {
         HStack(spacing: 10) {
-            Button { close() } label: {
+            Button { requestClose() } label: {
                 icon("xmark")
             }
             Spacer(minLength: 4)
-            captionBlock
+            pendingDeleteBadge
             Spacer(minLength: 4)
             if let item = currentItem {
+                Menu {
+                    Menu("照片操作") {
+                        Button {
+                            editingItem = item
+                        } label: {
+                            Label("编辑说明", systemImage: "pencil")
+                        }
+                        Button {
+                            albumItem = item
+                        } label: {
+                            Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
+                        }
+                    }
+                    Menu("显示与布局") {
+                        Toggle(isOn: Binding(
+                            get: { model.showAlbumTagBar },
+                            set: { model.showAlbumTagBar = $0 }
+                        )) {
+                            Label("相簿标签栏", systemImage: "rectangle.stack")
+                        }
+                    }
+                    Menu("横滑视觉效果") {
+                        Toggle(isOn: $swipeYawEnabled) {
+                            Label("Y轴转角", systemImage: "rotate.3d")
+                        }
+                        if swipeYawEnabled {
+                            Picker("转角幅度", selection: $swipeYawLevel) {
+                                ForEach(SwipeYawLevel.allCases, id: \.rawValue) { level in
+                                    Text(level.label).tag(level.rawValue)
+                                }
+                            }
+                        }
+                        Divider()
+                        Toggle(isOn: $swipeGlossEnabled) {
+                            Label("反光效果", systemImage: "sparkles")
+                        }
+                        if swipeGlossEnabled {
+                            Picker("反光强度", selection: $swipeGlossLevel) {
+                                ForEach(SwipeGlossLevel.allCases, id: \.rawValue) { level in
+                                    Text(level.label).tag(level.rawValue)
+                                }
+                            }
+                        }
+                        Divider()
+                        Toggle(isOn: $swipeSpeedBiasEnabled) {
+                            Label("速度差", systemImage: "gauge.with.dots.needle.33percent")
+                        }
+                        if swipeSpeedBiasEnabled {
+                            Picker("速度差参数", selection: $swipeSpeedBiasLevel) {
+                                ForEach(SwipeSpeedBiasLevel.allCases, id: \.rawValue) { level in
+                                    Text(level.label).tag(level.rawValue)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    icon("ellipsis")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .offset(y: (isZoomed || isFlipActive) ? -14 : 0)
+        .opacity((isZoomed || isFlipActive) ? 0 : controlsOpacity)
+        .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
+    }
+
+    @ViewBuilder
+    private var pendingDeleteBadge: some View {
+        if let item = pendingDeleteLastItem, !pendingDeleteIDs.isEmpty {
+            Button {
+                showPendingDelete = true
+            } label: {
+                ZStack(alignment: .topTrailing) {
+                    PHImageView(
+                        asset: item.asset,
+                        displaySize: CGSize(width: 20, height: 20),
+                        fill: true,
+                        highQuality: false
+                    )
+                    .frame(width: 20, height: 20)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                    Text("\(pendingDeleteIDs.count)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .frame(height: 13)
+                        .background(.red, in: Capsule())
+                        .offset(x: 7, y: -7)
+                }
+                .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Color.clear.frame(width: 34, height: 34)
+        }
+    }
+
+    private func icon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 16, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 40, height: 40)
+            .background(.black.opacity(0.35), in: Circle())
+    }
+
+    @ViewBuilder
+    private var bottomActionBar: some View {
+        if let item = currentItem {
+            HStack {
                 Button {
                     Task { await model.toggleFavorite(item) }
                 } label: {
@@ -141,58 +424,299 @@ struct PhotoPreviewView: View {
                         .background(.black.opacity(0.35), in: Circle())
                         .contentTransition(.symbolEffect(.replace))
                 }
-                Menu {
-                    Button {
-                        albumItem = item
-                    } label: {
-                        Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
-                    }
-                    Button(role: .destructive) {
-                        Task { await model.perform(.delete, on: item) }
-                        close()
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
+                Spacer()
+                Button {
+                    Task { await hideCurrentItem() }
                 } label: {
-                    icon("ellipsis")
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.black.opacity(0.35), in: Circle())
+                }
+                .disabled(isMutatingHidden)
+                Button {
+                    model.showAlbumTagBar.toggle()
+                } label: {
+                    Image(systemName: model.showAlbumTagBar ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.plus")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.black.opacity(0.35), in: Circle())
                 }
             }
+            .padding(.horizontal, 16)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .offset(y: isZoomed ? -14 : 0)
-        .opacity(isZoomed ? 0 : Double(max(0, 1 - dragProgress * 2)))
-        .animation(.easeInOut(duration: 0.22), value: isZoomed)
     }
 
-    private var captionColor: Color {
-        model.pageColorScheme == .dark ? .white : Color(white: 0.15)
-    }
-
-    private var captionBlock: some View {
-        VStack(spacing: 1) {
-            if let line1 = captionLine1, !line1.isEmpty {
-                Text(line1)
-                    .font(Theme.serif(14, weight: .semibold))
-                    .foregroundStyle(captionColor)
-                    .lineLimit(1)
-            }
-            if let line2 = captionLine2, !line2.isEmpty {
-                Text(line2)
-                    .font(Theme.serif(11))
-                    .foregroundStyle(captionColor.opacity(0.8))
-                    .lineLimit(1)
-            }
+    @ViewBuilder
+    private var albumTagBar: some View {
+        if model.showAlbumTagBar {
+            AlbumTagBar(
+                albums: tagAlbums,
+                membershipIDs: membershipIDs,
+                onConfigure: { showAlbumConfig = true },
+                onTapAlbum: { album in
+                    Task { await toggleCurrentPhoto(in: album) }
+                }
+            )
         }
-        .multilineTextAlignment(.center)
-        .shadow(color: .black.opacity(model.pageColorScheme == .dark ? 0.5 : 0.12), radius: 3, x: 0, y: 1)
     }
 
-    private func icon(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 16, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 40, height: 40)
-            .background(.black.opacity(0.35), in: Circle())
+    private func refreshTagAlbums() {
+        tagAlbums = model.enabledAlbums()
+        refreshMembership()
+    }
+
+    private func refreshMembership() {
+        guard let item = currentItem else {
+            membershipIDs = []
+            return
+        }
+        membershipIDs = model.albumIDs(containing: item, among: tagAlbums)
+    }
+
+    private func toggleCurrentPhoto(in album: AlbumInfo) async {
+        guard !isMutatingAlbum, let item = currentItem else { return }
+        isMutatingAlbum = true
+        defer { isMutatingAlbum = false }
+
+        if membershipIDs.contains(album.id) {
+            let ok = await model.removeFromAlbum(album, item: item)
+            guard ok else { return }
+            membershipIDs.remove(album.id)
+        } else {
+            let ok = await model.addToAlbum(album, item: item)
+            guard ok else { return }
+            membershipIDs.insert(album.id)
+            advanceToNextPhoto()
+        }
+    }
+
+    private func advanceToNextPhoto() {
+        guard let idx = visibleItems.firstIndex(where: { $0.id == selection }),
+              idx + 1 < visibleItems.count else { return }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            selection = visibleItems[idx + 1].id
+        }
+    }
+
+    private func hideCurrentItem() async {
+        guard !isMutatingHidden, let item = currentItem else { return }
+        isMutatingHidden = true
+        defer { isMutatingHidden = false }
+        let ids = visibleItems.map(\.id)
+        let currentIndex = ids.firstIndex(of: item.id)
+        let nextID: String?
+        if let currentIndex {
+            if currentIndex + 1 < ids.count {
+                nextID = ids[currentIndex + 1]
+            } else if currentIndex > 0 {
+                nextID = ids[currentIndex - 1]
+            } else {
+                nextID = nil
+            }
+        } else {
+            nextID = nil
+        }
+        let ok = await model.setHidden(true, item: item)
+        guard ok else { return }
+        if let nextID {
+            withAnimation(.easeInOut(duration: 0.28)) {
+                selection = nextID
+            }
+        } else {
+            requestClose()
+        }
+    }
+
+    private func stageCurrentForDeletion() async {
+        guard let item = currentItem, !isStagingDelete else { return }
+        if pendingDeleteIDs.contains(item.id) {
+            advanceAfterStaging(from: item.id)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragOffset = .zero }
+            isVerticalDragLocked = false
+            verticalDragItemID = nil
+            return
+        }
+        isStagingDelete = true
+        withAnimation(.easeIn(duration: 0.3)) {
+            dragOffset = CGSize(width: dragOffset.width, height: -360)
+            stagingDeleteScale = 0.08
+        }
+        try? await Task.sleep(nanoseconds: 320_000_000)
+        let feedback = UIImpactFeedbackGenerator(style: .light)
+        feedback.prepare()
+        feedback.impactOccurred(intensity: 0.7)
+        pendingDeleteIDs.append(item.id)
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            dragOffset = .zero
+            stagingDeleteScale = 1
+        }
+        advanceAfterStaging(from: item.id)
+        isStagingDelete = false
+        isVerticalDragLocked = false
+        verticalDragItemID = nil
+    }
+
+    private func advanceAfterStaging(from currentID: String) {
+        let ids = allItems.map(\.id)
+        guard let currentIndex = ids.firstIndex(of: currentID) else { return }
+
+        func pick(indices: [Int]) -> String? {
+            for i in indices where !pendingDeleteIDs.contains(ids[i]) {
+                return ids[i]
+            }
+            return nil
+        }
+
+        let forward = Array((currentIndex + 1)..<ids.count)
+        let backward = Array((0..<currentIndex).reversed())
+        let targetID = pick(indices: forward) ?? pick(indices: backward)
+        guard let targetID else {
+            showPendingDelete = true
+            return
+        }
+        selection = targetID
+    }
+
+    private func confirmPendingDelete(selectedIDs: Set<String>) async {
+        guard !selectedIDs.isEmpty else { return }
+        let targetItems = pendingDeleteItems.filter { selectedIDs.contains($0.id) }
+        guard !targetItems.isEmpty else { return }
+        do {
+            try await PhotoActionService.shared.delete(targetItems.map(\.asset))
+            model.removeItems(ids: selectedIDs)
+            pendingDeleteIDs.removeAll { selectedIDs.contains($0) }
+            showPendingDelete = false
+            performDismiss()
+        } catch {
+            // Keep sheet open on failure/cancel.
+        }
+    }
+
+    private func ensureValidSelectionAfterFiltering() {
+        guard !visibleItems.isEmpty else {
+            if !pendingDeleteIDs.isEmpty { showPendingDelete = true }
+            return
+        }
+        if !visibleItems.contains(where: { $0.id == selection }) {
+            selection = visibleItems[0].id
+        }
+    }
+
+    @ViewBuilder
+    private var verticalDragOverlay: some View {
+        if isVerticalDragLocked,
+           let lockedID = verticalDragItemID,
+           let item = visibleItems.first(where: { $0.id == lockedID }) {
+            PreviewPageView(
+                item: item,
+                model: model,
+                onZoomChanged: { isZoomed = $0 },
+                onEditCaption: { editingItem = $0 },
+                photoOffsetX: dragOffset.width,
+                photoOffsetY: dragOffset.height,
+                photoScale: activeScale,
+                infoOpacity: (isZoomed || isFlipActive) ? 0 : controlsOpacity,
+                isZoomed: isZoomed,
+                flipAngle: flipAngle,
+                swipeEffectConfig: swipeEffectConfig,
+                onFlipRequest: { requestFlip(toBack: true) },
+                onFlipBackRequest: { requestFlip(toBack: false) }
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func requestFlip(toBack: Bool) {
+        guard !isStagingDelete else { return }
+        if toBack {
+            guard !isFlippedToBack, !isFlipTransitioning, !isZoomed else { return }
+        } else {
+            guard (isFlippedToBack || isFlipTransitioning), !isFlipTransitioning else { return }
+        }
+        isFlipTransitioning = true
+        withAnimation(.easeInOut(duration: 0.6)) {
+            flipAngle = toBack ? 180 : 0
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            isFlipTransitioning = false
+        }
+    }
+}
+
+private enum SwipeSpeedBiasLevel: String, CaseIterable {
+    case subtle
+    case medium
+    case high
+
+    var label: String {
+        switch self {
+        case .subtle: return "轻微"
+        case .medium: return "标准"
+        case .high: return "明显"
+        }
+    }
+
+    var incomingOffsetFactor: Double {
+        switch self {
+        case .subtle: return 0.10
+        case .medium: return 0.18
+        case .high: return 0.26
+        }
+    }
+
+    var outgoingOffsetFactor: Double {
+        switch self {
+        case .subtle: return 0.04
+        case .medium: return 0.08
+        case .high: return 0.12
+        }
+    }
+}
+private enum SwipeYawLevel: String, CaseIterable {
+    case low
+    case medium
+    case high
+
+    var label: String {
+        switch self {
+        case .low: return "轻微"
+        case .medium: return "标准"
+        case .high: return "明显"
+        }
+    }
+
+    var degrees: Double {
+        switch self {
+        case .low: return 8
+        case .medium: return 14
+        case .high: return 20
+        }
+    }
+}
+
+private enum SwipeGlossLevel: String, CaseIterable {
+    case low
+    case medium
+    case high
+
+    var label: String {
+        switch self {
+        case .low: return "柔和"
+        case .medium: return "标准"
+        case .high: return "强烈"
+        }
+    }
+
+    var strength: Double {
+        switch self {
+        case .low: return 0.22
+        case .medium: return 0.36
+        case .high: return 0.52
+        }
     }
 }

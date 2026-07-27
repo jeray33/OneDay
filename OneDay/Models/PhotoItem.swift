@@ -3,6 +3,7 @@ import CoreLocation
 
 struct PhotoItem: Identifiable, Hashable {
     let asset: PHAsset
+    var caption: String? = nil
 
     var id: String { asset.localIdentifier }
     var isVideo: Bool { asset.mediaType == .video }
@@ -17,6 +18,7 @@ struct PhotoItem: Identifiable, Hashable {
     }
 
     var isFavorite: Bool { asset.isFavorite }
+    var isHidden: Bool { asset.isHidden }
 
     var durationText: String? {
         guard isVideo, duration > 0 else { return nil }

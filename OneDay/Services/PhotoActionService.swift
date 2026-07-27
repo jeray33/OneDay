@@ -27,6 +27,13 @@ final class PhotoActionService {
         }
     }
 
+    func setHidden(_ hidden: Bool, on asset: PHAsset) async throws {
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetChangeRequest(for: asset)
+            request.isHidden = hidden
+        }
+    }
+
     func delete(_ assets: [PHAsset]) async throws {
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest.deleteAssets(assets as NSArray)
@@ -39,11 +46,45 @@ final class PhotoActionService {
     }
 
     func addToAlbum(identifier: String, assets: [PHAsset]) async throws {
-        guard let collection = PHAssetCollection.fetchAssetCollections(
-            withLocalIdentifiers: [identifier], options: nil).firstObject else {
+        guard let collection = collection(identifier: identifier) else {
             throw NSError(domain: "OneDay", code: -2)
         }
         try await add(assets, to: collection)
+    }
+
+    func removeFromAlbum(identifier: String, assets: [PHAsset]) async throws {
+        guard let collection = collection(identifier: identifier) else {
+            throw NSError(domain: "OneDay", code: -2)
+        }
+        try await remove(assets, from: collection)
+    }
+
+    /// Album ids among `albumIDs` that currently contain `asset`.
+    func albumIDs(containing asset: PHAsset, among albumIDs: [String]) -> Set<String> {
+        guard !albumIDs.isEmpty else { return [] }
+        var result = Set<String>()
+        for id in albumIDs {
+            guard let collection = collection(identifier: id) else { continue }
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(format: "localIdentifier == %@", asset.localIdentifier)
+            options.fetchLimit = 1
+            if PHAsset.fetchAssets(in: collection, options: options).count > 0 {
+                result.insert(id)
+            }
+        }
+        return result
+    }
+
+    /// Creates an empty user album (or returns the existing one with the same title).
+    @discardableResult
+    func createAlbum(named name: String) async throws -> AlbumInfo {
+        let collection = try await albumCollection(named: name)
+        let count = PHAsset.fetchAssets(in: collection, options: nil).count
+        return AlbumInfo(
+            id: collection.localIdentifier,
+            title: collection.localizedTitle ?? name,
+            count: count
+        )
     }
 
     /// User-created albums only (regular albums), with asset counts.
@@ -59,10 +100,23 @@ final class PhotoActionService {
         return albums.sorted { $0.title.localizedCompare($1.title) == .orderedAscending }
     }
 
+    private func collection(identifier: String) -> PHAssetCollection? {
+        PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: [identifier], options: nil
+        ).firstObject
+    }
+
     private func add(_ assets: [PHAsset], to collection: PHAssetCollection) async throws {
         try await PHPhotoLibrary.shared().performChanges {
             guard let request = PHAssetCollectionChangeRequest(for: collection) else { return }
             request.addAssets(assets as NSArray)
+        }
+    }
+
+    private func remove(_ assets: [PHAsset], from collection: PHAssetCollection) async throws {
+        try await PHPhotoLibrary.shared().performChanges {
+            guard let request = PHAssetCollectionChangeRequest(for: collection) else { return }
+            request.removeAssets(assets as NSArray)
         }
     }
 

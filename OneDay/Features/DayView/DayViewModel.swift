@@ -34,7 +34,9 @@ final class DayViewModel {
     var selected: PhotoItem?
 
     private var favoriteIDs: Set<String>
+    private var hiddenIDs: Set<String>
     var albumPickerItem: PhotoItem?
+    var captionErrorMessage: String?
 
     // Free-canvas arrangement: per-block offsets applied when drag mode is on.
     var isDragEnabled = false
@@ -70,6 +72,11 @@ final class DayViewModel {
     private static let locationBarKey    = "OneDay.locationBar"
     private static let coverModeKey      = "OneDay.coverMode"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
+private static let photoMapKey       = "OneDay.photoMap"
+    private static let photoCaptionsKey  = "OneDay.photoCaptions"
+private static let albumTagBarKey    = "OneDay.albumTagBar"
+    private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
+    private static let albumTagOrderKey  = "OneDay.albumTagOrder"
 
     var background: PageBackground {
         didSet {
@@ -184,11 +191,36 @@ final class DayViewModel {
     var showLocationBar: Bool {
         didSet { UserDefaults.standard.set(showLocationBar, forKey: Self.locationBarKey) }
     }
+    /// Whether the trajectory map banner appears at the top of the photo page.
+    var showPhotoMap: Bool {
+        didSet { UserDefaults.standard.set(showPhotoMap, forKey: Self.photoMapKey) }
+    }
     var coverMode: CoverMode {
         didSet { UserDefaults.standard.set(coverMode.rawValue, forKey: Self.coverModeKey) }
     }
     var sectionTitleSize: SectionTitleSize {
         didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
+    }
+    /// Whether to show each photo's caption/description beneath it in the photo
+    /// page and in the photo preview.
+    var showPhotoCaptions: Bool {
+        didSet { UserDefaults.standard.set(showPhotoCaptions, forKey: Self.photoCaptionsKey) }
+    }
+    /// Whether the album quick-tag bar is shown at the bottom of photo preview.
+    var showAlbumTagBar: Bool {
+        didSet { UserDefaults.standard.set(showAlbumTagBar, forKey: Self.albumTagBarKey) }
+    }
+    /// Album localIdentifiers the user has turned off in the preview tag bar.
+    /// New albums are enabled by default (not present in this set).
+    var disabledAlbumIDs: Set<String> {
+        didSet {
+            UserDefaults.standard.set(Array(disabledAlbumIDs), forKey: Self.disabledAlbumIDsKey)
+        }
+    }
+    /// Preferred display order of album tags (album localIdentifiers).
+    /// Albums not listed appear after, in title order.
+    var albumTagOrder: [String] {
+        didSet { UserDefaults.standard.set(albumTagOrder, forKey: Self.albumTagOrderKey) }
     }
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
@@ -272,6 +304,7 @@ final class DayViewModel {
         self.date = date
         self.allItems = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         self.favoriteIDs = Set(items.filter { $0.isFavorite }.map(\.id))
+        self.hiddenIDs = Set(items.filter { $0.isHidden }.map(\.id))
         let saved = UserDefaults.standard.string(forKey: Self.backgroundKey)
         self.background = PageBackground(rawValue: saved ?? "") ?? .paper
         let savedWidth = UserDefaults.standard.string(forKey: Self.borderWidthKey)
@@ -296,8 +329,14 @@ final class DayViewModel {
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
+        self.showPhotoMap = UserDefaults.standard.object(forKey: Self.photoMapKey) as? Bool ?? true
         self.coverMode = CoverMode(rawValue: UserDefaults.standard.string(forKey: Self.coverModeKey) ?? "") ?? .collage
         self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
+self.showPhotoCaptions = UserDefaults.standard.object(forKey: Self.photoCaptionsKey) as? Bool ?? false
+self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey) as? Bool ?? true
+        let savedDisabled = UserDefaults.standard.stringArray(forKey: Self.disabledAlbumIDsKey) ?? []
+        self.disabledAlbumIDs = Set(savedDisabled)
+        self.albumTagOrder = UserDefaults.standard.stringArray(forKey: Self.albumTagOrderKey) ?? []
         self.photoLayoutMode = PhotoLayoutMode(
             rawValue: UserDefaults.standard.string(forKey: Self.photoLayoutModeKey) ?? ""
         ) ?? .magazine
@@ -424,6 +463,65 @@ final class DayViewModel {
         await computeCoverBackgroundColor()
         await computePersonStickers()
         if scatteredCoverPhotos.isEmpty { computeScatteredCoverPhotos() }
+        await loadPhotoCaptions()
+    }
+
+    /// Updates the caption for a single photo in `allItems` and `sections`.
+    func updateCaption(_ caption: String?, for item: PhotoItem) async {
+        do {
+            try await PhotoCaptionManager.shared.setCaption(caption, for: item.asset)
+        } catch {
+            captionErrorMessage = error.localizedDescription
+            return
+        }
+
+        let id = item.id
+        if let index = allItems.firstIndex(where: { $0.id == id }) {
+            allItems[index].caption = caption
+        }
+        for sIndex in sections.indices {
+            for bIndex in sections[sIndex].blocks.indices {
+                for iIndex in sections[sIndex].blocks[bIndex].items.indices {
+                    if sections[sIndex].blocks[bIndex].items[iIndex].id == id {
+                        sections[sIndex].blocks[bIndex].items[iIndex].caption = caption
+                    }
+                }
+            }
+        }
+    }
+
+    /// Loads captions for all photos asynchronously and updates `allItems`.
+    private func loadPhotoCaptions() async {
+        guard !allItems.isEmpty else { return }
+
+        let pairs = await withTaskGroup(of: (Int, String?).self) { group in
+            for (index, item) in allItems.enumerated() {
+                group.addTask {
+                    let caption = await PhotoCaptionManager.shared.caption(for: item.asset)
+                    return (index, caption)
+                }
+            }
+            var results: [(Int, String?)] = []
+            for await result in group { results.append(result) }
+            return results
+        }
+
+        var updated = allItems
+        for (index, caption) in pairs { updated[index].caption = caption }
+        allItems = updated
+
+        // Propagate captions into the composed sections so every rendered copy
+        // of a PhotoItem has the caption.
+        for sIndex in sections.indices {
+            for bIndex in sections[sIndex].blocks.indices {
+                for iIndex in sections[sIndex].blocks[bIndex].items.indices {
+                    let id = sections[sIndex].blocks[bIndex].items[iIndex].id
+                    if let caption = updated.first(where: { $0.id == id })?.caption {
+                        sections[sIndex].blocks[bIndex].items[iIndex].caption = caption
+                    }
+                }
+            }
+        }
     }
 
     /// Extracts a vivid-but-soft tint color from each photo’s thumbnail for use as a frame.
@@ -622,6 +720,15 @@ final class DayViewModel {
 
     /// True when at least one located photo/video exists (map is worth showing).
     var hasAnyLocation: Bool { !routeLocations.isEmpty }
+
+    /// Centroid coordinate of each route stop (one dot per stop on the map).
+    var routeStopCoordinates: [CLLocationCoordinate2D] {
+        routeSegments.map(\.coordinate)
+    }
+
+    /// Whether the trajectory map banner should appear at the top of the photo
+    /// page: requires the user setting on and at least one located photo.
+    var showsPhotoMap: Bool { showPhotoMap && hasAnyLocation }
 
     /// Background color derived from a specific photo, matching the current
     /// `background` setting. Returns nil for non-photo backgrounds (paper/dark/
@@ -878,18 +985,89 @@ final class DayViewModel {
         }
     }
 
+    func isHidden(_ item: PhotoItem) -> Bool {
+        hiddenIDs.contains(item.id) || item.isHidden
+    }
+
+    @discardableResult
+    func setHidden(_ hidden: Bool, item: PhotoItem) async -> Bool {
+        do {
+            try await PhotoActionService.shared.setHidden(hidden, on: item.asset)
+            if hidden {
+                hiddenIDs.insert(item.id)
+                remove(item)
+            } else {
+                hiddenIDs.remove(item.id)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: Albums
 
     func userAlbums() -> [AlbumInfo] {
-        PhotoActionService.shared.userAlbums()
+        orderedAlbums(PhotoActionService.shared.userAlbums())
     }
 
-    func addToAlbum(_ album: AlbumInfo, item: PhotoItem) async {
-        try? await PhotoActionService.shared.addToAlbum(identifier: album.id, assets: [item.asset])
+    /// User albums that should appear in the preview tag bar.
+    func enabledAlbums() -> [AlbumInfo] {
+        userAlbums().filter { !disabledAlbumIDs.contains($0.id) }
+    }
+
+    private func orderedAlbums(_ albums: [AlbumInfo]) -> [AlbumInfo] {
+        let byID = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0) })
+        var result: [AlbumInfo] = []
+        var seen = Set<String>()
+        for id in albumTagOrder {
+            if let album = byID[id] {
+                result.append(album)
+                seen.insert(id)
+            }
+        }
+        for album in albums where !seen.contains(album.id) {
+            result.append(album)
+        }
+        return result
+    }
+
+    @discardableResult
+    func addToAlbum(_ album: AlbumInfo, item: PhotoItem) async -> Bool {
+        do {
+            try await PhotoActionService.shared.addToAlbum(identifier: album.id, assets: [item.asset])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    func removeFromAlbum(_ album: AlbumInfo, item: PhotoItem) async -> Bool {
+        do {
+            try await PhotoActionService.shared.removeFromAlbum(identifier: album.id, assets: [item.asset])
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Which of the given albums currently contain this photo.
+    func albumIDs(containing item: PhotoItem, among albums: [AlbumInfo]) -> Set<String> {
+        PhotoActionService.shared.albumIDs(
+            containing: item.asset,
+            among: albums.map(\.id)
+        )
     }
 
     func createAlbum(named name: String, item: PhotoItem) async {
         try? await PhotoActionService.shared.addToAlbum(named: name, assets: [item.asset])
+    }
+
+    /// Creates an empty album for configuration; does not add a photo.
+    @discardableResult
+    func createEmptyAlbum(named name: String) async -> AlbumInfo? {
+        try? await PhotoActionService.shared.createAlbum(named: name)
     }
 
     var headerPlaces: [String] {
@@ -931,8 +1109,18 @@ final class DayViewModel {
         }
     }
 
+    func removeItems(ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        let toRemove = allItems.filter { ids.contains($0.id) }
+        for item in toRemove {
+            remove(item)
+        }
+    }
+
     private func remove(_ item: PhotoItem) {
         allItems.removeAll { $0.id == item.id }
+        favoriteIDs.remove(item.id)
+        hiddenIDs.remove(item.id)
         for index in sections.indices {
             for blockIndex in sections[index].blocks.indices {
                 sections[index].blocks[blockIndex].items.removeAll { $0.id == item.id }

@@ -24,6 +24,7 @@ struct DayMagazineView: View {
     @State private var activeSegmentID: String?
     @State private var pinchScale: CGFloat = 1.0
     @State private var pinchBaseline: CGFloat = 1.0
+    @State private var editingItem: PhotoItem?
 
     private var shouldRevealContent: Bool {
         contentRevealed && revealContent
@@ -37,6 +38,13 @@ struct DayMagazineView: View {
                     VStack(spacing: model.sectionTintActive ? 0 : 96) {
                         Color.clear.frame(height: 0).id("scroll_top")
 
+                        if model.showsPhotoMap {
+                            DayRouteMapBanner(locations: model.routeLocations,
+                                              stopCoordinates: model.routeStopCoordinates,
+                                              isDarkPage: model.pageColorScheme == .dark)
+                                .frame(width: geo.size.width, height: 240)
+                        }
+
                         ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
                             sectionView(section, index: sIdx, contentWidth: contentWidth)
                         }
@@ -46,7 +54,7 @@ struct DayMagazineView: View {
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
                     }
-                    .padding(.top, topSafeAreaInset() + 24)
+                    .padding(.top, model.showsPhotoMap ? 0 : topSafeAreaInset() + 24)
                     .padding(.bottom, 24)
                     .contentShape(Rectangle())
                     .highPriorityGesture(columnPinchGesture)
@@ -94,6 +102,23 @@ struct DayMagazineView: View {
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
+        .sheet(item: $editingItem) { item in
+            CaptionEditorSheet(item: item) { caption in
+                Task { await model.updateCaption(caption, for: item) }
+            }
+        }
+        .alert("保存说明失败", isPresented: captionErrorBinding) {
+            Button("好") { model.captionErrorMessage = nil }
+        } message: {
+            Text(model.captionErrorMessage ?? "")
+        }
+    }
+
+    private var captionErrorBinding: Binding<Bool> {
+        Binding(
+            get: { model.captionErrorMessage != nil },
+            set: { if !$0 { model.captionErrorMessage = nil } }
+        )
     }
 
     // MARK: Day navigation
@@ -230,7 +255,9 @@ struct DayMagazineView: View {
             onSelect: { open($0) },
             onAction: { action, item in
                 Task { await model.perform(action, on: item) }
-            }
+            },
+            showCaptions: model.showPhotoCaptions,
+            onEditCaption: { editingItem = $0 }
         )
         .frame(maxWidth: .infinity)
         .scrollTransition(.animated(model.scrollSpring.animation)) { content, phase in
@@ -396,7 +423,9 @@ struct DayMagazineView: View {
             borderColor: model.frameColor(for: item),
             polaroid: model.borderStyle.isPolaroid,
             minimumPolaroidBottom: polaroidMinimum,
-            shadowLevel: model.photoShadow
+            shadowLevel: model.photoShadow,
+            showCaption: model.showPhotoCaptions,
+            onEditCaption: { editingItem = $0 }
         )
         .matchedTransitionSource(id: item.id, in: previewNamespace)
         .onTapGesture { open(item) }

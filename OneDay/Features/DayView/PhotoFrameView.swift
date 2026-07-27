@@ -15,6 +15,10 @@ struct PhotoFrameView: View {
     var polaroid: Bool = false
     var minimumPolaroidBottom: CGFloat = 20
     var shadowLevel: PhotoShadowLevel = .max
+    var showCaption: Bool = false
+    var onEditCaption: ((PhotoItem) -> Void)? = nil
+
+    private let captionFontSize: CGFloat = 12
 
     private var ratio: CGFloat {
         min(max(ratioOverride ?? item.aspectRatio, ratioRange.lowerBound), ratioRange.upperBound)
@@ -31,6 +35,34 @@ struct PhotoFrameView: View {
     }
 
     var body: some View {
+        VStack(spacing: 6) {
+            framedImage
+            if showCaption, let caption = item.caption, !caption.isEmpty {
+                HStack(spacing: 4) {
+                    Text(caption)
+                        .font(Theme.serif(captionFontSize, weight: .regular))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    if let onEditCaption {
+                        Button {
+                            onEditCaption(item)
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Theme.ink.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(width: width)
+    }
+
+    private var framedImage: some View {
         PHImageView(asset: item.asset, displaySize: imageSize, fill: true, kenBurns: kenBurns)
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }

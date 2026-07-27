@@ -197,13 +197,13 @@ final class PhotoLibraryService {
 
         var entries: [TodayInHistoryEntry] = []
         for (date, year, allAssets, selectedAssets) in groups {
-            let allItems = allAssets.map(PhotoItem.init(asset:))
+            let allItems = allAssets.map { PhotoItem(asset: $0) }
             let placeText = await PhotoRoute.placeText(for: allItems)
             entries.append(TodayInHistoryEntry(
                 date: date,
                 year: year,
                 placeText: placeText,
-                photos: selectedAssets.map(PhotoItem.init(asset:)),
+                photos: selectedAssets.map { PhotoItem(asset: $0) },
                 totalMediaCount: allAssets.count
             ))
         }

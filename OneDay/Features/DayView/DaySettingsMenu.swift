@@ -249,6 +249,16 @@ struct DaySettingsMenu: View {
                 get: { model.showLocationBar },
                 set: { model.showLocationBar = $0 }
             ))
+            if model.hasAnyLocation {
+                Toggle("轨迹地图", isOn: Binding(
+                    get: { model.showPhotoMap },
+                    set: { model.showPhotoMap = $0 }
+                ))
+            }
+            Toggle("显示说明文字", isOn: Binding(
+                get: { model.showPhotoCaptions },
+                set: { model.showPhotoCaptions = $0 }
+            ))
             if model.photoLayoutMode == .magazine {
                 Button {
                     model.isDragEnabled.toggle()

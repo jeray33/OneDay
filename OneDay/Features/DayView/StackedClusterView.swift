@@ -10,6 +10,8 @@ struct StackedClusterView: View {
     var frameColor: (PhotoItem) -> Color = { _ in Theme.frame }
     var polaroid: Bool = false
     var shadowLevel: PhotoShadowLevel = .max
+    var showCaptions: Bool = false
+    var onEditCaption: ((PhotoItem) -> Void)? = nil
 
     @State private var expanded = false
 
@@ -67,7 +69,9 @@ struct StackedClusterView: View {
                        ratioOverride: cardRatio,
                        borderColor: frameColor(item),
                        polaroid: polaroid,
-                       shadowLevel: shadowLevel)
+                       shadowLevel: shadowLevel,
+                       showCaption: showCaptions,
+                       onEditCaption: onEditCaption)
             .matchedTransitionSource(id: item.id, in: namespace)
     }
 }
