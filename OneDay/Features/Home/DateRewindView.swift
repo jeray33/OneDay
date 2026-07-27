@@ -19,7 +19,6 @@ struct DayFlowView: View {
     var loadDay: (Date) async -> DayViewModel?
     var onFinish: (DayViewModel) -> Void
     var onClose: () -> Void
-    var onReroll: () -> Void
 
     @State private var displayDate: Date
     @State private var flashImage: UIImage?
@@ -35,14 +34,13 @@ struct DayFlowView: View {
     init(model: DayViewModel, flashFrames: [FlashFrame], dateNamespace: Namespace.ID,
          loadDay: @escaping (Date) async -> DayViewModel?,
          onFinish: @escaping (DayViewModel) -> Void,
-         onClose: @escaping () -> Void, onReroll: @escaping () -> Void) {
+         onClose: @escaping () -> Void) {
         self.model = model
         self.flashFrames = flashFrames
         self.dateNamespace = dateNamespace
         self.loadDay = loadDay
         self.onFinish = onFinish
         self.onClose = onClose
-        self.onReroll = onReroll
         _displayDate = State(initialValue: flashFrames.first?.date ?? model.date)
         _flashImage = State(initialValue: flashFrames.first?.image)
     }

@@ -83,7 +83,7 @@ final class DayViewModel {
     var borderStyle: PhotoBorderStyle {
         didSet {
             UserDefaults.standard.set(borderStyle.rawValue, forKey: Self.borderStyleKey)
-            if borderStyle == .colored { Task { await computeFrameColors() } }
+            if borderStyle == .colored { Task { await computeFrameColors(for: Array(allItems.prefix(40))) } }
         }
     }
     var photoShadow: PhotoShadowLevel {
@@ -419,7 +419,7 @@ final class DayViewModel {
         await resolveSegmentNames()
         rebuildSections()
         await resolvePlaces()
-        if borderStyle == .colored { await computeFrameColors() }
+        if borderStyle == .colored { await computeFrameColors(for: Array(allItems.prefix(40))) }
         await computeCoverPhotos()
         await computeCoverBackgroundColor()
         await computePersonStickers()
@@ -427,8 +427,13 @@ final class DayViewModel {
     }
 
     /// Extracts a vivid-but-soft tint color from each photo’s thumbnail for use as a frame.
-    private func computeFrameColors() async {
-        let photos = allItems.filter { !$0.isVideo }.prefix(40)
+    func prepareFrameColors(for items: [PhotoItem]) async {
+        guard borderStyle == .colored else { return }
+        await computeFrameColors(for: items)
+    }
+
+    private func computeFrameColors(for items: [PhotoItem]) async {
+        let photos = items.filter { !$0.isVideo }
         for item in photos where photoFrameColors[item.id] == nil {
             guard let img = await ImageLoader.shared.thumbnail(asset: item.asset,
                                                               size: CGSize(width: 48, height: 48)),
@@ -761,18 +766,10 @@ final class DayViewModel {
 
     // MARK: Route
 
-    /// Distance (m) beyond which a photo is treated as a new place stop.
-    private static let placeThreshold: CLLocationDistance = 200
-
     /// A chronological route stop: a geographic cluster of located items. Built
     /// purely from coordinates so it stays consistent with the map and is not
     /// affected by time-band sectioning. Revisits appear as separate stops.
-    struct RouteSegment: Identifiable {
-        let id: String              // earliest item id in the segment (stable)
-        let firstItemID: String     // earliest item, used as the scroll target
-        let coordinate: CLLocationCoordinate2D
-        let itemIDs: [String]
-    }
+    typealias RouteSegment = PhotoRouteSegment
 
     private var segmentNames: [String: String] = [:]
 
@@ -783,43 +780,10 @@ final class DayViewModel {
 
     /// Geographic clustering of located items into ordered stops (route mode:
     /// a returning location yields a new stop). A new stop starts when an item
-    /// is farther than `placeThreshold` from the running centroid of the
+    /// is farther than 200m from the running centroid of the
     /// current stop.
     var routeSegments: [RouteSegment] {
-        let located = allItems.filter { $0.location != nil }
-        guard !located.isEmpty else { return [] }
-
-        var segments: [RouteSegment] = []
-        var ids: [String] = []
-        var first: PhotoItem?
-        var sumLat = 0.0, sumLon = 0.0
-
-        func centroid() -> CLLocation {
-            let n = Double(ids.count)
-            return CLLocation(latitude: sumLat / n, longitude: sumLon / n)
-        }
-        func flush() {
-            guard let first else { return }
-            segments.append(RouteSegment(id: first.id, firstItemID: first.id,
-                                         coordinate: centroid().coordinate, itemIDs: ids))
-        }
-        func reset() { ids = []; first = nil; sumLat = 0; sumLon = 0 }
-        func add(_ item: PhotoItem, _ loc: CLLocation) {
-            if first == nil { first = item }
-            ids.append(item.id)
-            sumLat += loc.coordinate.latitude
-            sumLon += loc.coordinate.longitude
-        }
-
-        for item in located {
-            guard let loc = item.location else { continue }
-            if !ids.isEmpty, loc.distance(from: centroid()) > Self.placeThreshold {
-                flush(); reset()
-            }
-            add(item, loc)
-        }
-        flush()
-        return segments
+        PhotoRoute.segments(for: allItems)
     }
 
     /// A displayed route stop. Consecutive segments that resolve to the exact

@@ -18,6 +18,9 @@ struct RootView: View {
     @State private var rewindPreparing = false
     @State private var preparing = false
     @State private var navLoading = false
+    @State private var historyEntries: [TodayInHistoryEntry] = []
+    @State private var historyLoading = false
+    @State private var historyReferenceDay: Date?
     @State private var showPermissionAlert = false
     @State private var showEmptyAlert = false
     @Namespace private var dateNamespace
@@ -91,8 +94,7 @@ struct RootView: View {
                                 phase = .day
                             }
                         },
-                        onClose: { goHome() },
-                        onReroll: { pickDay() }
+                        onClose: { goHome() }
                     )
                     .id(id)
                     .transition(.opacity)
@@ -105,7 +107,9 @@ struct RootView: View {
                         dateNamespace: dateNamespace,
                         dateIsSource: false,
                         onClose: { closeDay() },
-                        onReroll: { pickDay() },
+                        historyEntries: historyEntries,
+                        historyLoading: historyLoading,
+                        onSelectHistoryDay: { date in navigate(to: date) },
                         prevDate: previousDate(for: dayModel.date),
                         nextDate: nextDate(for: dayModel.date),
                         onPrevDay: { if let date = previousDate(for: dayModel.date) { navigate(to: date) } },
@@ -130,6 +134,15 @@ struct RootView: View {
         }
         .task {
             if rewindMode == .rewind { await prepareRewind() }
+        }
+        .onChange(of: dayModel?.date) { _, newDate in
+            guard let newDate else {
+                historyEntries = []
+                historyLoading = false
+                historyReferenceDay = nil
+                return
+            }
+            prepareTodayInHistoryIfNeeded(for: newDate)
         }
         .onChange(of: rewindModeRaw) { _, newValue in
             let mode = RewindMode(rawValue: newValue) ?? .flash
@@ -239,6 +252,21 @@ struct RootView: View {
     private func landingItems(on date: Date) async -> [PhotoItem]? {
         let items = await PhotoLibraryService.shared.items(on: date)
         return items.isEmpty ? nil : items
+    }
+
+    private func prepareTodayInHistoryIfNeeded(for day: Date) {
+        let referenceDate = Calendar.current.startOfDay(for: day)
+        guard historyReferenceDay != referenceDate else { return }
+        historyReferenceDay = referenceDate
+        historyEntries = []
+        historyLoading = true
+
+        Task {
+            let entries = await PhotoLibraryService.shared.todayInHistory(referenceDate: referenceDate)
+            guard historyReferenceDay == referenceDate else { return }
+            historyEntries = entries
+            historyLoading = false
+        }
     }
 
     private func loadTunnelLayers(_ group: [(date: Date, assets: [PHAsset])],

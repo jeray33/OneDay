@@ -12,7 +12,9 @@ struct DayPagedStackView: View {
     var dateNamespace: Namespace.ID
     var dateIsSource: Bool
     var onClose: () -> Void
-    var onReroll: () -> Void
+    var historyEntries: [TodayInHistoryEntry]
+    var historyLoading: Bool
+    var onSelectHistoryDay: ((Date) -> Void)? = nil
     var prevDate: Date?
     var nextDate: Date?
     var onPrevDay: (() -> Void)?
@@ -34,6 +36,7 @@ struct DayPagedStackView: View {
     @State private var continuousHandoffTranslation: CGFloat?
     @State private var continuousFlipDirection: CGFloat = 0
     @State private var contentEdges = ContentScrollEdges()
+    @State private var backEdges = ContentScrollEdges()
 
     // Transition tuning. `activeFade`/`activeShrink` are aligned with the
     // beneath/above start opacity & scale so that when a flip commits (the
@@ -90,7 +93,11 @@ struct DayPagedStackView: View {
             dateIsSource: dateIsSource,
             contentRevealed: current == .content || p.opacity > 0.05,
             onClose: onClose,
-            onReroll: onReroll,
+            prevDate: prevDate,
+            nextDate: nextDate,
+            onPrevDay: onPrevDay,
+            onNextDay: onNextDay,
+            navLoading: navLoading,
             scrollEdgesBinding: $contentEdges,
             scrollDisabled: current != .content
         )
@@ -106,13 +113,12 @@ struct DayPagedStackView: View {
         let p = layerProgress(.back, h: h)
         DayBackCoverView(
             model: model,
-            prevDate: prevDate,
-            nextDate: nextDate,
-            onPrevDay: onPrevDay,
-            onNextDay: onNextDay,
-            onReroll: onReroll,
+            entries: historyEntries,
+            isLoading: historyLoading,
+            onSelectHistoryDay: onSelectHistoryDay,
             onClose: onClose,
-            navLoading: navLoading
+            scrollEdgesBinding: $backEdges,
+            scrollDisabled: current != .back
         )
         .rotationEffect(.degrees(p.rotation))
         .offset(x: p.offsetX, y: p.offsetY)
@@ -256,7 +262,6 @@ struct DayPagedStackView: View {
                     flipCancelled = !shouldAllowFlip(for: value.translation.height)
                 }
                 if !flipCancelled,
-                   current == .content,
                    !shouldAllowFlip(for: value.translation.height) {
                     flipCancelled = true
                 }
@@ -421,8 +426,12 @@ struct DayPagedStackView: View {
     /// than being ceded to the inner scroll view or photo-drag mode).
     private func shouldAllowFlip(for translation: CGFloat) -> Bool {
         switch current {
-        case .cover, .back:
+        case .cover:
             return true
+        case .back:
+            // The history page owns upward drags for scrolling. It can flip
+            // back to the photo page only when pulled down from its top edge.
+            return translation > 0 && backEdges.atTop
         case .content:
             // When free-canvas photo arrangement is on, vertical drags move
             // photos, not layers.

@@ -1,6 +1,16 @@
 import Photos
 import Foundation
 
+struct TodayInHistoryEntry: Identifiable {
+    let date: Date
+    let year: Int
+    let placeText: String?
+    let photos: [PhotoItem]
+    let totalMediaCount: Int
+
+    var id: Date { date }
+}
+
 @MainActor
 final class PhotoLibraryService {
     static let shared = PhotoLibraryService()
@@ -143,6 +153,61 @@ final class PhotoLibraryService {
         let days = await eligibleDays() // sorted descending (newest first)
         let current = Calendar.current.startOfDay(for: date)
         return days.last { $0 > current }
+    }
+
+    /// Calendar days that share the reference month/day. Each year contributes up to
+    /// `photoLimit` random still photos; membership stays stable for this result.
+    func todayInHistory(referenceDate: Date = Date(), photoLimit: Int = 3) async -> [TodayInHistoryEntry] {
+        let groups = await Task.detached(priority: .userInitiated) {
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(
+                format: "NOT ((mediaSubtype & %d) != 0)",
+                PHAssetMediaSubtype.photoScreenshot.rawValue
+            )
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            let result = PHAsset.fetchAssets(with: options)
+
+            let calendar = Calendar.current
+            let reference = calendar.dateComponents([.year, .month, .day], from: referenceDate)
+            guard let referenceMonth = reference.month,
+                  let referenceDay = reference.day else { return [(Date, Int, [PHAsset], [PHAsset])]() }
+
+            var assetsByDate: [Date: [PHAsset]] = [:]
+            result.enumerateObjects { asset, _, _ in
+                guard MediaFilter.isEligible(asset), let date = asset.creationDate else { return }
+                let components = calendar.dateComponents([.year, .month, .day], from: date)
+                guard let year = components.year,
+                      components.month == referenceMonth,
+                      components.day == referenceDay else { return }
+                let day = calendar.startOfDay(for: date)
+                assetsByDate[day, default: []].append(asset)
+            }
+
+            return assetsByDate.keys.sorted(by: >).map { date in
+                let allAssets = assetsByDate[date] ?? []
+                let selected = allAssets
+                    .filter { $0.mediaType == .image }
+                    .shuffled()
+                    .prefix(min(photoLimit, allAssets.filter { $0.mediaType == .image }.count))
+                    .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+                let year = calendar.component(.year, from: date)
+                return (date, year, allAssets, Array(selected))
+            }
+        }.value
+
+        var entries: [TodayInHistoryEntry] = []
+        for (date, year, allAssets, selectedAssets) in groups {
+            let allItems = allAssets.map(PhotoItem.init(asset:))
+            let placeText = await PhotoRoute.placeText(for: allItems)
+            entries.append(TodayInHistoryEntry(
+                date: date,
+                year: year,
+                placeText: placeText,
+                photos: selectedAssets.map(PhotoItem.init(asset:)),
+                totalMediaCount: allAssets.count
+            ))
+        }
+        return entries
     }
 
     func items(on day: Date) async -> [PhotoItem] {

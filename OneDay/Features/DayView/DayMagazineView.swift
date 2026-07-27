@@ -7,7 +7,6 @@ struct DayMagazineView: View {
     var dateIsSource: Bool
     var contentRevealed: Bool
     var onClose: () -> Void
-    var onReroll: () -> Void
     var prevDate: Date? = nil
     var nextDate: Date? = nil
     var onPrevDay: (() -> Void)? = nil
@@ -42,7 +41,10 @@ struct DayMagazineView: View {
                             sectionView(section, index: sIdx, contentWidth: contentWidth)
                         }
 
-                        Color.clear.frame(height: 1).id("scroll_bottom")
+                        VStack(spacing: 0) {
+                            dayNavigationFooter
+                            Color.clear.frame(height: 1).id("scroll_bottom")
+                        }
                     }
                     .padding(.top, topSafeAreaInset() + 24)
                     .padding(.bottom, 24)
@@ -77,10 +79,6 @@ struct DayMagazineView: View {
                 .overlay(alignment: .top) { topOverlay(proxy: proxy) }
             }
         }
-        .onShake {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-            onReroll()
-        }
         .task(id: model.instanceID) {
             revealContent = false
             try? await Task.sleep(nanoseconds: 160_000_000)
@@ -96,6 +94,42 @@ struct DayMagazineView: View {
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
+    }
+
+    // MARK: Day navigation
+
+    private var dayNavigationFooter: some View {
+        HStack {
+            Button { onPrevDay?() } label: {
+                Text(prevDate.map { "← \(Self.navDateText($0))" } ?? "← 无上一次")
+                    .font(Theme.serif(16, weight: .medium))
+                    .foregroundStyle(navLoading || prevDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
+            }
+            .disabled(navLoading || prevDate == nil)
+
+            Spacer()
+
+            Button { onNextDay?() } label: {
+                Text(nextDate.map { "\(Self.navDateText($0)) →" } ?? "无下一次 →")
+                    .font(Theme.serif(16, weight: .medium))
+                    .foregroundStyle(navLoading || nextDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
+            }
+            .disabled(navLoading || nextDate == nil)
+        }
+        .overlay {
+            if navLoading {
+                ProgressView().scaleEffect(0.7).tint(Theme.ink)
+            }
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 36)
+        .frame(maxWidth: .infinity)
+        .revealFade(shouldRevealContent, delay: 0.5)
+    }
+
+    private static func navDateText(_ date: Date) -> String {
+        let components = DateText.components(date)
+        return "\(components.year).\(components.month).\(components.day)"
     }
 
     private var selectedBinding: Binding<PhotoItem?> {
