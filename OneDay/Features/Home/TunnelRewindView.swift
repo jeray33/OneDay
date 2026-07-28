@@ -19,9 +19,10 @@ final class TunnelDayRequest {
 /// One depth plane in the tunnel: a single day with a few photos scattered on the
 /// tube wall around it.
 struct TunnelLayer: Identifiable {
-    let id = UUID()
     let date: Date
     let photos: [TunnelPhoto]
+
+    var id: Date { date }
 }
 
 /// A single photo floating on the tube wall of its day.

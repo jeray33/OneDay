@@ -37,6 +37,11 @@ struct RootView: View {
     private let tunnelMinPhotos = 3
     private let tunnelPhotosPerDay = 3...5
     private let rewindRandomCount = 39
+    private let tunnelInitialLayerCount = 6
+    private let tunnelLayerBatchSize = 4
+    private let tunnelLoadConcurrency = 6
+    private let tunnelPreviewSize = CGSize(width: 190, height: 238)
+    private let tunnelHighQualitySize = CGSize(width: 270, height: 338)
 
     var body: some View {
         ZStack {
@@ -132,7 +137,7 @@ struct RootView: View {
         } message: {
             Text("相册里暂时没有可回顾的过去某天。")
         }
-        .task {
+        .task(id: rewindModeRaw) {
             if rewindMode == .rewind { await prepareRewind() }
         }
         .onChange(of: dayModel?.date) { _, newDate in
@@ -142,13 +147,17 @@ struct RootView: View {
                 historyReferenceDay = nil
                 return
             }
+            guard phase == .day else { return }
             prepareTodayInHistoryIfNeeded(for: newDate)
+        }
+        .onChange(of: phase) { _, newPhase in
+            if newPhase == .day, let date = dayModel?.date {
+                prepareTodayInHistoryIfNeeded(for: date)
+            }
         }
         .onChange(of: rewindModeRaw) { _, newValue in
             let mode = RewindMode(rawValue: newValue) ?? .flash
-            if mode == .rewind {
-                Task { await prepareRewind() }
-            } else if phase == .home {
+            if mode != .rewind, phase == .home {
                 tunnelLayers = []
                 dayModel = nil
                 tunnelStartDate = nil
@@ -185,19 +194,184 @@ struct RootView: View {
             photosPerDay: tunnelPhotosPerDay
         )
         let sortedGroup = sortRewindGroup(group, by: rewindSortOrder)
-        let layers = await loadTunnelLayers(sortedGroup, photoScale: tunnelPhotoScale)
-        guard let newest = layers.first?.date,
-              let items = await landingItems(on: newest),
-              !layers.isEmpty else {
-            showEmptyAlert = true
+        guard !sortedGroup.isEmpty, !Task.isCancelled else {
+            if !Task.isCancelled { showEmptyAlert = true }
             return
         }
+
+        let initialGroup = Array(sortedGroup.prefix(tunnelInitialLayerCount))
+        let initialAssets = initialGroup.flatMap(\.assets)
+        let initialStages = [
+            ImageLoader.LoadStage(
+                size: tunnelPreviewSize,
+                quality: .fast,
+                priority: .userInitiated
+            ),
+            ImageLoader.LoadStage(
+                size: tunnelHighQualitySize,
+                quality: .highQuality,
+                priority: .userInitiated
+            )
+        ]
+
+        var initialLayers: [TunnelLayer] = []
+        var didPresentTunnel = false
+        for await stage in ImageLoader.shared.stagedThumbnails(
+            assets: initialAssets,
+            stages: initialStages,
+            maxConcurrent: tunnelLoadConcurrency
+        ) {
+            guard !Task.isCancelled else { return }
+            initialLayers = Self.makeTunnelLayers(
+                initialGroup,
+                images: stage.images,
+                photoScale: tunnelPhotoScale,
+                preserving: initialLayers
+            )
+            guard let anchor = initialLayers.first, !anchor.photos.isEmpty else { continue }
+
+            if didPresentTunnel {
+                mergeTunnelLayers(initialLayers)
+                continue
+            }
+
+            let newest = sortedGroup[0].date
+            guard let items = await landingItems(on: newest) else {
+                showEmptyAlert = true
+                return
+            }
+            let initialByDate = Dictionary(
+                uniqueKeysWithValues: initialLayers.map { ($0.date, $0) }
+            )
+            dayModel = DayViewModel(date: newest, items: items)
+            tunnelLayers = sortedGroup.map { entry in
+                initialByDate[entry.date] ?? TunnelLayer(date: entry.date, photos: [])
+            }
+            flashFrames = []
+            tunnelStartDate = nil
+            rewindHomeID = UUID()
+            didPresentTunnel = true
+        }
+
+        guard didPresentTunnel, !Task.isCancelled else {
+            if !Task.isCancelled { showEmptyAlert = true }
+            return
+        }
+
+        let remainingGroup = Array(sortedGroup.dropFirst(initialGroup.count))
+        let remainingBatches = stride(
+            from: 0,
+            to: remainingGroup.count,
+            by: tunnelLayerBatchSize
+        ).map { start in
+            Array(remainingGroup[start..<min(start + tunnelLayerBatchSize, remainingGroup.count)])
+        }
+
+        // Populate every remaining day quickly so the camera never has to wait
+        // for far-away high-quality images before the tunnel can be explored.
+        for batch in remainingBatches {
+            guard !Task.isCancelled else { return }
+            let images = await ImageLoader.shared.thumbnails(
+                assets: batch.flatMap(\.assets),
+                size: tunnelPreviewSize,
+                quality: .fast,
+                priority: .normal,
+                maxConcurrent: tunnelLoadConcurrency
+            )
+            let loaded = Self.makeTunnelLayers(
+                batch,
+                images: images,
+                photoScale: tunnelPhotoScale,
+                preserving: tunnelLayers
+            )
+            mergeTunnelLayers(loaded)
+        }
+
+        guard !Task.isCancelled else { return }
         eligibleDays = await PhotoLibraryService.shared.eligibleDays()
-        dayModel = DayViewModel(date: newest, items: items)
-        tunnelLayers = layers
-        flashFrames = []
-        tunnelStartDate = nil
-        rewindHomeID = UUID()
+
+        // Upgrade previews in small, low-priority batches. The shared loader
+        // reuses cached results and cancellation propagates when the mode changes.
+        for batch in remainingBatches {
+            guard !Task.isCancelled else { return }
+            let images = await ImageLoader.shared.thumbnails(
+                assets: batch.flatMap(\.assets),
+                size: tunnelHighQualitySize,
+                quality: .highQuality,
+                priority: .background,
+                maxConcurrent: tunnelLoadConcurrency
+            )
+            let loaded = Self.makeTunnelLayers(
+                batch,
+                images: images,
+                photoScale: tunnelPhotoScale,
+                preserving: tunnelLayers
+            )
+            mergeTunnelLayers(loaded)
+        }
+    }
+
+    private static func makeTunnelLayers(
+        _ group: [(date: Date, assets: [PHAsset])],
+        images: [UIImage?],
+        photoScale: TunnelPhotoScale,
+        preserving existingLayers: [TunnelLayer]
+    ) -> [TunnelLayer] {
+        let existingByDate = Dictionary(
+            uniqueKeysWithValues: existingLayers.map { ($0.date, $0) }
+        )
+        var imageIndex = 0
+        return group.map { entry in
+            let existingPhotos = Dictionary(
+                uniqueKeysWithValues: (existingByDate[entry.date]?.photos ?? []).map {
+                    ($0.assetIdentifier, $0)
+                }
+            )
+            let count = entry.assets.count
+            let dayPhase = Double.random(in: 0..<(2 * .pi))
+            var photos: [TunnelPhoto] = []
+
+            for (assetIndex, asset) in entry.assets.enumerated() {
+                let image = images.indices.contains(imageIndex) ? images[imageIndex] : nil
+                imageIndex += 1
+
+                if let image {
+                    if let existing = existingPhotos[asset.localIdentifier] {
+                        photos.append(TunnelPhoto(
+                            image: image,
+                            assetIdentifier: asset.localIdentifier,
+                            angle: existing.angle,
+                            radius: existing.radius,
+                            zJitter: existing.zJitter,
+                            size: existing.size
+                        ))
+                    } else {
+                        let aspect = image.size.width / max(image.size.height, 1)
+                        let longSide = photoScale.base + CGFloat.random(in: -12...12)
+                        let size: CGSize = aspect >= 1
+                            ? CGSize(width: longSide, height: longSide / aspect)
+                            : CGSize(width: longSide * aspect, height: longSide)
+                        let baseAngle = (2 * .pi / Double(max(count, 1))) * Double(assetIndex)
+                        photos.append(TunnelPhoto(
+                            image: image,
+                            assetIdentifier: asset.localIdentifier,
+                            angle: dayPhase + baseAngle + Double.random(in: -0.4...0.4),
+                            radius: Double.random(in: 0.45...1.0),
+                            zJitter: Double.random(in: -0.34...0.34),
+                            size: size
+                        ))
+                    }
+                } else if let existing = existingPhotos[asset.localIdentifier] {
+                    photos.append(existing)
+                }
+            }
+            return TunnelLayer(date: entry.date, photos: photos)
+        }
+    }
+
+    private func mergeTunnelLayers(_ loaded: [TunnelLayer]) {
+        let loadedByDate = Dictionary(uniqueKeysWithValues: loaded.map { ($0.date, $0) })
+        tunnelLayers = tunnelLayers.map { loadedByDate[$0.date] ?? $0 }
     }
 
     private var preparingOverlay: some View {
@@ -266,49 +440,6 @@ struct RootView: View {
             guard historyReferenceDay == referenceDate else { return }
             historyEntries = entries
             historyLoading = false
-        }
-    }
-
-    private func loadTunnelLayers(_ group: [(date: Date, assets: [PHAsset])],
-                                  photoScale: TunnelPhotoScale) async -> [TunnelLayer] {
-        await withTaskGroup(of: (Int, TunnelLayer)?.self) { taskGroup in
-            for (index, entry) in group.enumerated() {
-                taskGroup.addTask {
-                    var photos: [TunnelPhoto] = []
-                    let count = entry.assets.count
-                    // Spread photos around a "tube wall": evenly-spaced base angles with
-                    // jitter, plus a random day phase so consecutive days don't line up.
-                    let dayPhase = Double.random(in: 0..<(2 * .pi))
-                    for (j, asset) in entry.assets.enumerated() {
-                        guard let image = await ImageLoader.shared.thumbnail(
-                            asset: asset, size: CGSize(width: 270, height: 338),
-                            highQuality: true) else { continue }
-
-                        let aspect = image.size.width / max(image.size.height, 1)
-                        let longSide = photoScale.base + CGFloat.random(in: -12...12)
-                        let size: CGSize = aspect >= 1
-                            ? CGSize(width: longSide, height: longSide / aspect)
-                            : CGSize(width: longSide * aspect, height: longSide)
-
-                        let baseAngle = (2 * .pi / Double(max(count, 1))) * Double(j)
-                        let angle = dayPhase + baseAngle + Double.random(in: -0.4...0.4)
-                        photos.append(TunnelPhoto(
-                            image: image,
-                            assetIdentifier: asset.localIdentifier,
-                            angle: angle,
-                            radius: Double.random(in: 0.45...1.0),
-                            zJitter: Double.random(in: -0.34...0.34),
-                            size: size))
-                    }
-                    guard !photos.isEmpty else { return nil }
-                    return (index, TunnelLayer(date: entry.date, photos: photos))
-                }
-            }
-            var collected: [(Int, TunnelLayer)] = []
-            for await result in taskGroup {
-                if let result { collected.append(result) }
-            }
-            return collected.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
     }
 
