@@ -32,6 +32,9 @@ final class DayViewModel {
     private(set) var sections: [MagazineSection]
     private(set) var allItems: [PhotoItem]
     var selected: PhotoItem?
+    /// The photo currently being viewed inside the preview. Drives the hero
+    /// fly-back so closing returns to the photo on screen now (requirement B).
+    var previewCurrentID: String?
 
     private var favoriteIDs: Set<String>
     private var hiddenIDs: Set<String>
@@ -925,6 +928,18 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     func scrollTarget(for stop: RouteStop) -> UUID? {
         for section in sections {
             for block in section.blocks where block.items.contains(where: { $0.id == stop.firstItemID }) {
+                return block.id
+            }
+        }
+        return nil
+    }
+
+    /// The block that contains a given photo id, used to silently scroll the
+    /// day page so the preview's current photo cell is on screen for the hero
+    /// fly-back to land in its real slot.
+    func blockID(forItemID id: String) -> UUID? {
+        for section in sections {
+            for block in section.blocks where block.items.contains(where: { $0.id == id }) {
                 return block.id
             }
         }

@@ -26,6 +26,20 @@ struct DayMagazineView: View {
     @State private var pinchBaseline: CGFloat = 1.0
     @State private var editingItem: PhotoItem?
 
+    // Hero transition (self-drawn flight layer)
+    @State private var frameStore = HeroFrameStore()
+    @State private var cardFrames: [String: CGRect] = [:]
+    @State private var heroPhase: HeroPhase = .idle
+    @State private var heroOpenID: String?
+    @State private var heroFlightRect: CGRect = .zero
+    @State private var heroImage: UIImage?
+    @State private var heroBorderColor: Color = .white
+    @State private var heroSourceBorder: CGFloat = 4
+    @State private var heroProgress: CGFloat = 0
+    @State private var heroDidLandOpen = false
+    @State private var sessionOpacity: Double = 0
+    @State private var cardOpacity: Double = 0
+
     private var shouldRevealContent: Bool {
         contentRevealed && revealContent
     }
@@ -34,6 +48,7 @@ struct DayMagazineView: View {
         GeometryReader { geo in
             let contentWidth = geo.size.width - 40
             ScrollViewReader { proxy in
+              ZStack {
                 ScrollView {
                     VStack(spacing: model.sectionTintActive ? 0 : 96) {
                         Color.clear.frame(height: 0).id("scroll_top")
@@ -85,6 +100,17 @@ struct DayMagazineView: View {
                 }
                 .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
                 .overlay(alignment: .top) { topOverlay(proxy: proxy) }
+                .onChange(of: model.previewCurrentID) { _, id in
+                    guard model.selected != nil, let id,
+                          let blockID = model.blockID(forItemID: id) else { return }
+                    proxy.scrollTo(blockID, anchor: .center)
+                }
+
+                heroOverlay(screen: geo.size)
+              }
+              .coordinateSpace(name: heroCoordinateSpace)
+              .onPreferenceChange(HeroCellFrameKey.self) { frameStore.cells = $0 }
+              .onPreferenceChange(HeroCardFrameKey.self) { cardFrames = $0 }
             }
         }
         .task(id: model.instanceID) {
@@ -94,10 +120,6 @@ struct DayMagazineView: View {
                 revealContent = true
             }
             await model.prepare()
-        }
-        .fullScreenCover(item: selectedBinding) { item in
-            PhotoPreviewView(model: model, current: item, namespace: previewNamespace)
-                .navigationTransition(.zoom(sourceID: item.id, in: previewNamespace))
         }
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
@@ -257,7 +279,8 @@ struct DayMagazineView: View {
                 Task { await model.perform(action, on: item) }
             },
             showCaptions: model.showPhotoCaptions,
-            onEditCaption: { editingItem = $0 }
+            onEditCaption: { editingItem = $0 },
+            hiddenItemID: heroHiddenID
         )
         .frame(maxWidth: .infinity)
         .scrollTransition(.animated(model.scrollSpring.animation)) { content, phase in
@@ -427,7 +450,7 @@ struct DayMagazineView: View {
             showCaption: model.showPhotoCaptions,
             onEditCaption: { editingItem = $0 }
         )
-        .matchedTransitionSource(id: item.id, in: previewNamespace)
+        .heroCell(id: item.id, hiddenID: heroHiddenID)
         .onTapGesture { open(item) }
         .contextMenu {
             Button {
@@ -679,8 +702,156 @@ struct DayMagazineView: View {
         Color.clear.frame(height: 24)
     }
 
+    // MARK: Hero transition
+
+    /// The grid cell to hide while its photo is presented (empties its slot so
+    /// the fly-back lands into a real gap).
+    private var heroHiddenID: String? {
+        model.selected != nil ? model.previewCurrentID : nil
+    }
+
+    /// Preview card border thickness, mirroring `PreviewPageView.sideBorder`.
+    private var heroCardBorder: CGFloat {
+        let base = (12 * model.borderWidth.scale).rounded()
+        return model.borderStyle.isPolaroid ? max(base, 10) : base
+    }
+
+    @ViewBuilder
+    private func heroOverlay(screen: CGSize) -> some View {
+        if let openID = heroOpenID, let current = model.selected {
+            ZStack {
+                PhotoPreviewView(
+                    model: model,
+                    current: current,
+                    namespace: previewNamespace,
+                    sessionOpacity: sessionOpacity,
+                    cardOpacity: cardOpacity,
+                    onSelectionChanged: { id in model.previewCurrentID = id },
+                    onClose: { drag, scale, id in closeHero(dragOffset: drag, scale: scale, id: id) }
+                )
+
+                if heroPhase == .openFlying || heroPhase == .closeFlying {
+                    HeroFlightView(
+                        image: heroImage,
+                        rect: heroFlightRect,
+                        borderColor: heroBorderColor,
+                        borderWidth: heroSourceBorder + (heroCardBorder - heroSourceBorder) * heroProgress
+                    )
+                    .transition(.identity)
+                }
+            }
+            .ignoresSafeArea()
+            .onChange(of: cardFrames) { _, frames in
+                guard heroPhase == .openFlying, !heroDidLandOpen,
+                      let card = frames[openID] else { return }
+                startOpenFlight(to: card)
+            }
+            .task(id: model.previewCurrentID) {
+                guard let id = model.previewCurrentID,
+                      let item = model.allItems.first(where: { $0.id == id }) else { return }
+                heroBorderColor = model.frameColor(for: item)
+                if let img = await ImageLoader.shared.thumbnail(
+                    asset: item.asset,
+                    size: CGSize(width: 1000, height: 1000),
+                    highQuality: true) {
+                    heroImage = img
+                }
+            }
+        }
+    }
+
     private func open(_ item: PhotoItem) {
-        model.selected = item
+        guard heroPhase == .idle else { return }
+        let source = frameStore.cells[item.id]
+        heroImage = nil
+        Task {
+            let img = await ImageLoader.shared.thumbnail(
+                asset: item.asset,
+                size: CGSize(width: 1000, height: 1000),
+                highQuality: true)
+            await MainActor.run {
+                heroOpenID = item.id
+                heroImage = img
+                heroBorderColor = model.frameColor(for: item)
+                if let source {
+                    heroSourceBorder = max(source.width * 0.03, 3)
+                    heroFlightRect = source
+                } else {
+                    heroSourceBorder = 3
+                    heroFlightRect = CGRect(x: screenCenter().x - 40, y: screenCenter().y - 40,
+                                            width: 80, height: 80)
+                }
+                heroProgress = 0
+                heroDidLandOpen = false
+                sessionOpacity = 0
+                cardOpacity = 0
+                cardFrames = [:]
+                heroPhase = .openFlying
+                model.previewCurrentID = item.id
+                model.selected = item
+            }
+        }
+    }
+
+    private func startOpenFlight(to card: CGRect) {
+        heroDidLandOpen = true
+        withAnimation(.easeOut(duration: 0.32)) { sessionOpacity = 1 }
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
+            heroFlightRect = card
+            heroProgress = 1
+        } completion: {
+            withAnimation(.easeInOut(duration: 0.14)) {
+                cardOpacity = 1
+            } completion: {
+                heroPhase = .open
+            }
+        }
+    }
+
+    private func closeHero(dragOffset: CGSize, scale: CGFloat, id: String) {
+        guard heroPhase == .open else { return }
+        let rest = cardFrames[id]
+        let dest = frameStore.cells[id]
+
+        // Plain fade when we have no card geometry or no landing cell (e.g. the
+        // photo was just deleted): degrade gracefully to A.
+        guard let rest else {
+            withAnimation(.easeOut(duration: 0.25)) {
+                sessionOpacity = 0
+                cardOpacity = 0
+            } completion: { finishClose() }
+            return
+        }
+
+        let visual = rest.scaledAboutCenter(scale).offsetBy(dragOffset)
+        heroFlightRect = visual
+        heroProgress = 1
+        heroPhase = .closeFlying
+        withAnimation(.easeInOut(duration: 0.12)) { cardOpacity = 0 }
+        withAnimation(.easeOut(duration: 0.4)) { sessionOpacity = 0 }
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+            heroFlightRect = dest ?? visual
+            heroProgress = dest != nil ? 0 : 1
+        } completion: {
+            finishClose()
+        }
+    }
+
+    private func finishClose() {
+        model.selected = nil
+        model.previewCurrentID = nil
+        heroOpenID = nil
+        heroImage = nil
+        heroPhase = .idle
+        heroDidLandOpen = false
+        heroProgress = 0
+        sessionOpacity = 0
+        cardOpacity = 0
+    }
+
+    private func screenCenter() -> CGPoint {
+        let b = UIScreen.main.bounds
+        return CGPoint(x: b.midX, y: b.midY)
     }
 }
 

@@ -71,6 +71,13 @@ struct PreviewPageView: View {
             VStack(spacing: 20) {
                 Spacer(minLength: 6)
                 flippableCard(card: card, swipeProgress: swipeProgress)
+                    .background(
+                        GeometryReader { g in
+                            Color.clear.preference(
+                                key: HeroCardFrameKey.self,
+                                value: [item.id: g.frame(in: .named(heroCoordinateSpace))])
+                        }
+                    )
                     .scaleEffect(photoScale, anchor: .center)
                     .offset(x: photoOffsetX + swipeOffsetX)
                     .offset(y: photoOffsetY)

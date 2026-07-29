@@ -11,6 +11,7 @@ struct MagazineBlockView: View {
     var onAction: (LibraryAction, PhotoItem) -> Void
     var showCaptions: Bool = false
     var onEditCaption: ((PhotoItem) -> Void)? = nil
+    var hiddenItemID: String? = nil
 
     var body: some View {
         switch block.template {
@@ -26,7 +27,8 @@ struct MagazineBlockView: View {
                                polaroid: polaroid,
                                shadowLevel: config.shadowLevel,
                                showCaptions: showCaptions,
-                               onEditCaption: onEditCaption)
+                               onEditCaption: onEditCaption,
+                               hiddenItemID: hiddenItemID)
         case .quote:   quote
         }
     }
@@ -181,7 +183,7 @@ struct MagazineBlockView: View {
 
     private func tappable<Content: View>(_ item: PhotoItem, @ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .matchedTransitionSource(id: item.id, in: namespace)
+            .heroCell(id: item.id, hiddenID: hiddenItemID)
             .onTapGesture { onSelect(item) }
             .contextMenu {
                 Button {

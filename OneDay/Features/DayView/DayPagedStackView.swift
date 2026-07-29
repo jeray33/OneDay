@@ -63,7 +63,8 @@ struct DayPagedStackView: View {
             }
             .frame(width: geo.size.width, height: h)
             .clipped()
-            .simultaneousGesture(flipGesture(h: h))
+            .simultaneousGesture(flipGesture(h: h),
+                                 including: model.selected == nil ? .all : .subviews)
         }
         .ignoresSafeArea()
     }

@@ -12,6 +12,7 @@ struct StackedClusterView: View {
     var shadowLevel: PhotoShadowLevel = .max
     var showCaptions: Bool = false
     var onEditCaption: ((PhotoItem) -> Void)? = nil
+    var hiddenItemID: String? = nil
 
     @State private var expanded = false
 
@@ -72,6 +73,6 @@ struct StackedClusterView: View {
                        shadowLevel: shadowLevel,
                        showCaption: showCaptions,
                        onEditCaption: onEditCaption)
-            .matchedTransitionSource(id: item.id, in: namespace)
+            .heroCell(id: item.id, hiddenID: hiddenItemID)
     }
 }

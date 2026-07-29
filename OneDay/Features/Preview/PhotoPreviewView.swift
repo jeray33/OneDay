@@ -4,6 +4,16 @@ import UIKit
 struct PhotoPreviewView: View {
     let model: DayViewModel
     let namespace: Namespace.ID
+    /// Host-driven fade for background + chrome during the open/close hero
+    /// transition (0 while flying in/out, 1 when fully presented).
+    var sessionOpacity: Double = 1
+    /// Host-driven opacity of the photo card. 0 while the flight layer owns the
+    /// photo, 1 once it has landed.
+    var cardOpacity: Double = 1
+    var onSelectionChanged: (String) -> Void = { _ in }
+    /// Requests close. Passes the live drag translation, scale and the current
+    /// photo id so the host can fly the photo back to its grid cell.
+    var onClose: (CGSize, CGFloat, String) -> Void = { _, _, _ in }
     @AppStorage("OneDay.previewSwipeYawEnabled") private var swipeYawEnabled = true
     @AppStorage("OneDay.previewSwipeYawLevel") private var swipeYawLevel = SwipeYawLevel.medium.rawValue
     @AppStorage("OneDay.previewSwipeGlossEnabled") private var swipeGlossEnabled = true
@@ -16,7 +26,6 @@ struct PhotoPreviewView: View {
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
     @State private var editingItem: PhotoItem?
-    @State private var bgOpacity: Double = 0
     @State private var dynamicBg: Color?
     @State private var showAlbumConfig = false
     @State private var tagAlbums: [AlbumInfo] = []
@@ -27,6 +36,7 @@ struct PhotoPreviewView: View {
     @State private var showPendingDelete = false
     @State private var stagingDeleteScale: CGFloat = 1
     @State private var isStagingDelete = false
+    @State private var isClosing = false
     @State private var flipAngle: Double = 0
     @State private var isFlipTransitioning = false
     @State private var observedHorizontalSwipe = false
@@ -34,11 +44,17 @@ struct PhotoPreviewView: View {
     @State private var dragStartSelection: String?
     @State private var isVerticalDragLocked = false
     @State private var verticalDragItemID: String?
-    @Environment(\.dismiss) private var dismiss
 
-    init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID) {
+    init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
+         sessionOpacity: Double = 1, cardOpacity: Double = 1,
+         onSelectionChanged: @escaping (String) -> Void = { _ in },
+         onClose: @escaping (CGSize, CGFloat, String) -> Void = { _, _, _ in }) {
         self.model = model
         self.namespace = namespace
+        self.sessionOpacity = sessionOpacity
+        self.cardOpacity = cardOpacity
+        self.onSelectionChanged = onSelectionChanged
+        self.onClose = onClose
         _selection = State(initialValue: current.id)
     }
 
@@ -91,7 +107,7 @@ struct PhotoPreviewView: View {
         ZStack {
             (dynamicBg ?? model.pageBackgroundColor)
                 .ignoresSafeArea()
-                .opacity(bgOpacity * Double(1 - dragProgress))
+                .opacity(sessionOpacity * Double(1 - dragProgress))
 
             TabView(selection: $selection) {
                 ForEach(visibleItems) { item in
@@ -115,8 +131,8 @@ struct PhotoPreviewView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
-            .opacity(isVerticalDragLocked ? 0 : 1)
-            .allowsHitTesting(!isVerticalDragLocked && !isFlipActive)
+            .opacity((isVerticalDragLocked ? 0 : 1) * cardOpacity)
+            .allowsHitTesting(!isVerticalDragLocked && !isFlipActive && !isClosing)
             .simultaneousGesture(dismissDrag)
 
             verticalDragOverlay
@@ -151,12 +167,13 @@ struct PhotoPreviewView: View {
             )
         }
         .onAppear {
-            withAnimation(.easeOut(duration: 0.35)) { bgOpacity = 1 }
+            onSelectionChanged(selection)
             refreshTagAlbums()
             refreshMembership()
             ensureValidSelectionAfterFiltering()
         }
         .onChange(of: selection) {
+            onSelectionChanged(selection)
             isZoomed = false
             dragOffset = .zero
             flipAngle = 0
@@ -190,7 +207,7 @@ struct PhotoPreviewView: View {
         }
         .padding(.bottom, 10)
         .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
-        .opacity((isZoomed || isFlipActive) ? 0 : controlsOpacity)
+        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
         .allowsHitTesting(!(isZoomed || isFlipActive) && max(dragProgress, deleteProgress) < 0.15
                           && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete)
@@ -210,9 +227,12 @@ struct PhotoPreviewView: View {
         }
     }
 
+    /// Close from a button / programmatic path: hand back to the host with a
+    /// resting card (no drag), letting it fly the photo home.
     private func performDismiss() {
-        withAnimation(.easeOut(duration: 0.25)) { bgOpacity = 0 }
-        dismiss()
+        guard !isClosing else { return }
+        isClosing = true
+        onClose(.zero, 1, selection)
     }
 
     private var dismissDrag: some Gesture {
@@ -269,8 +289,8 @@ struct PhotoPreviewView: View {
                     selection = startedSelection
                 }
 
-                let downFarEnough = value.translation.height > 120
-                    || value.predictedEndTranslation.height > 320
+                let downFarEnough = value.translation.height > 80
+                    || value.predictedEndTranslation.height > 240
                 let upFarEnough = value.translation.height < -180
                     || value.predictedEndTranslation.height < -460
 
@@ -279,9 +299,17 @@ struct PhotoPreviewView: View {
                     return
                 }
                 if downFarEnough {
-                    isVerticalDragLocked = false
-                    verticalDragItemID = nil
-                    requestClose()
+                    if !pendingDeleteIDs.isEmpty {
+                        isVerticalDragLocked = false
+                        verticalDragItemID = nil
+                        showPendingDelete = true
+                        return
+                    }
+                    guard !isClosing else { return }
+                    isClosing = true
+                    // Keep the dragged card shown (via verticalDragOverlay) so the
+                    // flight layer takes over from its exact on-screen position.
+                    onClose(dragOffset, activeScale, selection)
                     return
                 }
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
@@ -365,7 +393,7 @@ struct PhotoPreviewView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .offset(y: (isZoomed || isFlipActive) ? -14 : 0)
-        .opacity((isZoomed || isFlipActive) ? 0 : controlsOpacity)
+        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
     }
 
@@ -625,6 +653,7 @@ struct PhotoPreviewView: View {
                 onFlipRequest: { requestFlip(toBack: true) },
                 onFlipBackRequest: { requestFlip(toBack: false) }
             )
+            .opacity(cardOpacity)
             .ignoresSafeArea()
             .allowsHitTesting(false)
         }
