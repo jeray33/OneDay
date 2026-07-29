@@ -1,3 +1,4 @@
+import Photos
 import SwiftUI
 import UIKit
 
@@ -31,6 +32,10 @@ struct DayMagazineView: View {
     @State private var cardFrames: [String: CGRect] = [:]
     @State private var heroPhase: HeroPhase = .idle
     @State private var heroOpenID: String?
+    /// Cached top safe-area inset. Read once when the status bar is visible,
+    /// then reused so that `.statusBarHidden()` during the hero session cannot
+    /// change the ScrollView's top padding and shift the grid.
+    @State private var stableTopInset: CGFloat = 0
     @State private var heroFlightRect: CGRect = .zero
     @State private var heroImage: UIImage?
     @State private var heroBorderColor: Color = .white
@@ -42,6 +47,11 @@ struct DayMagazineView: View {
 
     private var shouldRevealContent: Bool {
         contentRevealed && revealContent
+    }
+
+    /// Uses the cached inset when available, falling back to a live read.
+    private var stableTopInsetValue: CGFloat {
+        stableTopInset > 0 ? stableTopInset : topSafeAreaInset()
     }
 
     var body: some View {
@@ -69,7 +79,7 @@ struct DayMagazineView: View {
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
                     }
-                    .padding(.top, model.showsPhotoMap ? 0 : topSafeAreaInset() + 24)
+                    .padding(.top, model.showsPhotoMap ? 0 : stableTopInsetValue + 24)
                     .padding(.bottom, 24)
                     .contentShape(Rectangle())
                     .highPriorityGesture(columnPinchGesture)
@@ -103,7 +113,17 @@ struct DayMagazineView: View {
                 .onChange(of: model.previewCurrentID) { _, id in
                     guard model.selected != nil, let id,
                           let blockID = model.blockID(forItemID: id) else { return }
-                    proxy.scrollTo(blockID, anchor: .center)
+                    // Requirement B: only scroll when the target cell is off
+                    // screen. Scrolling a visible cell would kick the cells'
+                    // animated `scrollTransition` and make the grid wobble when
+                    // it is revealed on close.
+                    if let rect = frameStore.cells[id]?.rect,
+                       rect.midY >= 0, rect.midY <= geo.size.height {
+                        return
+                    }
+                    var t = Transaction()
+                    t.disablesAnimations = true
+                    withTransaction(t) { proxy.scrollTo(blockID, anchor: .center) }
                 }
 
                 heroOverlay(screen: geo.size)
@@ -114,6 +134,10 @@ struct DayMagazineView: View {
             }
         }
         .task(id: model.instanceID) {
+            // Cache the top inset while the status bar is visible, before any
+            // hero session might hide it. This prevents the ScrollView content
+            // from shifting when the status bar toggles during preview open/close.
+            stableTopInset = topSafeAreaInset()
             revealContent = false
             try? await Task.sleep(nanoseconds: 160_000_000)
             withAnimation(.spring(response: 0.82, dampingFraction: 0.90)) {
@@ -255,7 +279,7 @@ struct DayMagazineView: View {
             DaySettingsMenu(model: model)
         }
         .padding(.horizontal, 16)
-        .padding(.top, topSafeAreaInset() + 4)
+        .padding(.top, stableTopInsetValue + 4)
         .revealFade(shouldRevealContent, delay: 0.32)
     }
 
@@ -426,7 +450,9 @@ struct DayMagazineView: View {
         )
         let ratioRange = (CGFloat(9) / 20)...(CGFloat(16) / 9)
         let polaroidMinimum = min(20, max(5, width * 0.12))
-        let scrollAnimation = model.scrollSpring.animation
+        // While a preview is open, apply scroll transitions instantly (no
+        // spring) so revealing the grid on close cannot make cells wobble.
+        let scrollAnimation = heroOpenID != nil ? .linear(duration: 0) : model.scrollSpring.animation
         let scrollScale = model.scrollScale.value
         let scrollMovement = model.scrollMovement.value
         let scrollRotation = model.scrollRotation.value
@@ -450,7 +476,7 @@ struct DayMagazineView: View {
             showCaption: model.showPhotoCaptions,
             onEditCaption: { editingItem = $0 }
         )
-        .heroCell(id: item.id, hiddenID: heroHiddenID)
+        .heroCell(id: item.id, hiddenID: heroHiddenID, border: border)
         .onTapGesture { open(item) }
         .contextMenu {
             Button {
@@ -750,10 +776,12 @@ struct DayMagazineView: View {
                 guard let id = model.previewCurrentID,
                       let item = model.allItems.first(where: { $0.id == id }) else { return }
                 heroBorderColor = model.frameColor(for: item)
+                if let cell = frameStore.cells[id] { heroSourceBorder = cell.border }
                 if let img = await ImageLoader.shared.thumbnail(
                     asset: item.asset,
                     size: CGSize(width: 1000, height: 1000),
-                    highQuality: true) {
+                    highQuality: true,
+                    contentMode: .aspectFit) {
                     heroImage = img
                 }
             }
@@ -768,16 +796,17 @@ struct DayMagazineView: View {
             let img = await ImageLoader.shared.thumbnail(
                 asset: item.asset,
                 size: CGSize(width: 1000, height: 1000),
-                highQuality: true)
+                highQuality: true,
+                contentMode: .aspectFit)
             await MainActor.run {
                 heroOpenID = item.id
                 heroImage = img
                 heroBorderColor = model.frameColor(for: item)
                 if let source {
-                    heroSourceBorder = max(source.width * 0.03, 3)
-                    heroFlightRect = source
+                    heroSourceBorder = source.border
+                    heroFlightRect = source.rect
                 } else {
-                    heroSourceBorder = 3
+                    heroSourceBorder = 0
                     heroFlightRect = CGRect(x: screenCenter().x - 40, y: screenCenter().y - 40,
                                             width: 80, height: 80)
                 }
@@ -823,14 +852,18 @@ struct DayMagazineView: View {
             return
         }
 
+        if let dest { heroSourceBorder = dest.border }
         let visual = rest.scaledAboutCenter(scale).offsetBy(dragOffset)
         heroFlightRect = visual
         heroProgress = 1
         heroPhase = .closeFlying
-        withAnimation(.easeInOut(duration: 0.12)) { cardOpacity = 0 }
+        // Hide the live card instantly (not a fade): the flight layer already
+        // sits at the exact same visual rect, so this swap is seamless and no
+        // neighbouring TabView page can flash through during a cross-fade.
+        cardOpacity = 0
         withAnimation(.easeOut(duration: 0.4)) { sessionOpacity = 0 }
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-            heroFlightRect = dest ?? visual
+            heroFlightRect = dest?.rect ?? visual
             heroProgress = dest != nil ? 0 : 1
         } completion: {
             finishClose()

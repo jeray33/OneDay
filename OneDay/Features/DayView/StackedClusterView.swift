@@ -65,14 +65,15 @@ struct StackedClusterView: View {
     }
 
     private func framed(_ item: PhotoItem) -> some View {
-        PhotoFrameView(item: item, width: cardSize.width,
-                       border: max((7 * borderScale).rounded(), 0),
+        let border = max((7 * borderScale).rounded(), 0)
+        return PhotoFrameView(item: item, width: cardSize.width,
+                       border: border,
                        ratioOverride: cardRatio,
                        borderColor: frameColor(item),
                        polaroid: polaroid,
                        shadowLevel: shadowLevel,
                        showCaption: showCaptions,
                        onEditCaption: onEditCaption)
-            .heroCell(id: item.id, hiddenID: hiddenItemID)
+            .heroCell(id: item.id, hiddenID: hiddenItemID, border: border)
     }
 }

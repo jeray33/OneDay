@@ -314,6 +314,13 @@ struct PreviewPageView: View {
                     .font(Theme.serif(14, weight: .semibold))
                     .foregroundStyle(captionColor)
                     .lineLimit(1)
+            } else if item.location != nil {
+                // Reserve the place-line height so the async-resolved name does
+                // not grow the info block and shift the card up after landing.
+                Text(" ")
+                    .font(Theme.serif(14, weight: .semibold))
+                    .lineLimit(1)
+                    .opacity(0)
             }
             if let dateLine, !dateLine.isEmpty {
                 Text(dateLine)

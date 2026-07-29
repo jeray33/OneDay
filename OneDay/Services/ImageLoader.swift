@@ -108,11 +108,12 @@ nonisolated final class ImageLoader: @unchecked Sendable {
     /// Single-shot thumbnail, suitable for preloading the rewind flash pool.
     /// Pass `highQuality: true` when the image is scaled up on screen (e.g. the
     /// tunnel rewind), so it stays sharp instead of pixelating.
-    func thumbnail(asset: PHAsset, size: CGSize, highQuality: Bool = false) async -> UIImage? {
+    func thumbnail(asset: PHAsset, size: CGSize, highQuality: Bool = false,
+                   contentMode: PHImageContentMode = .aspectFill) async -> UIImage? {
         let quality: LoadQuality = highQuality ? .highQuality : .fast
         return await requestImage(asset: asset,
                                   targetSize: pixelSize(for: size),
-                                  contentMode: .aspectFill,
+                                  contentMode: contentMode,
                                   quality: quality,
                                   allowsNetworkAccess: true)
     }

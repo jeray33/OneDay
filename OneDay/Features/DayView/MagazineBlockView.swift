@@ -43,7 +43,7 @@ struct MagazineBlockView: View {
     private var single: some View {
         let item = block.items[0]
         let photoWidth = (width * config.singleScale).rounded()
-        return tappable(item) {
+        return tappable(item, border: b(9)) {
             PhotoFrameView(item: item, width: photoWidth, border: b(9),
                            favorite: isFavorite(item), borderColor: frameColor(item),
                            polaroid: polaroid, shadowLevel: config.shadowLevel,
@@ -82,7 +82,7 @@ struct MagazineBlockView: View {
         let stagger = config.staggerFactor
         return HStack(alignment: .top, spacing: spacing) {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                tappable(item) {
+                tappable(item, border: scaledBorder) {
                     PhotoFrameView(item: item, width: frameWidths[i], border: scaledBorder,
                                    favorite: isFavorite(item), borderColor: frameColor(item),
                                    polaroid: polaroid, shadowLevel: config.shadowLevel,
@@ -129,7 +129,7 @@ struct MagazineBlockView: View {
         let lockedRatio = rightImgW / max(rightImgH, 1)
 
         return HStack(alignment: .top, spacing: spacing) {
-            tappable(primary) {
+            tappable(primary, border: bigBorder) {
                 PhotoFrameView(item: primary, width: bigWidth, border: bigBorder,
                                favorite: isFavorite(primary), borderColor: frameColor(primary),
                                polaroid: polaroid, shadowLevel: config.shadowLevel,
@@ -141,7 +141,7 @@ struct MagazineBlockView: View {
                 ForEach(Array(rest.enumerated()), id: \.element.id) { index, item in
                     let posIdx = index + 1  // big photo is slot 0; small photos start at 1
                     let stagger = config.staggerFactor
-                    tappable(item) {
+                    tappable(item, border: smallBorder) {
                         PhotoFrameView(item: item, width: smallWidth, border: smallBorder,
                                        favorite: isFavorite(item),
                                        ratioOverride: lockedRatio, borderColor: frameColor(item),
@@ -181,9 +181,9 @@ struct MagazineBlockView: View {
 
     // MARK: Helpers
 
-    private func tappable<Content: View>(_ item: PhotoItem, @ViewBuilder _ content: () -> Content) -> some View {
+    private func tappable<Content: View>(_ item: PhotoItem, border: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .heroCell(id: item.id, hiddenID: hiddenItemID)
+            .heroCell(id: item.id, hiddenID: hiddenItemID, border: border)
             .onTapGesture { onSelect(item) }
             .contextMenu {
                 Button {

@@ -13,16 +13,22 @@ enum HeroPhase {
     case closeFlying
 }
 
-/// Live on-screen frames of the photo grid cells, keyed by item id. Kept in a
+/// Live on-screen frame and border width of a photo grid cell.
+struct HeroCellInfo: Equatable {
+    var rect: CGRect
+    var border: CGFloat
+}
+
+/// Live on-screen info of the photo grid cells, keyed by item id. Kept in a
 /// reference type (not `@State`) so the very frequent updates during scrolling
 /// mutate it in place without invalidating the SwiftUI body.
 final class HeroFrameStore {
-    var cells: [String: CGRect] = [:]
+    var cells: [String: HeroCellInfo] = [:]
 }
 
 struct HeroCellFrameKey: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+    static var defaultValue: [String: HeroCellInfo] = [:]
+    static func reduce(value: inout [String: HeroCellInfo], nextValue: () -> [String: HeroCellInfo]) {
         value.merge(nextValue()) { _, new in new }
     }
 }
@@ -50,15 +56,18 @@ extension CGRect {
 
 extension View {
     /// Marks a photo grid cell as a hero source: publishes its live frame and
-    /// hides it (keeping its layout slot) while its photo is presented.
-    func heroCell(id: String, hiddenID: String?) -> some View {
+    /// real border width, and hides it (keeping its layout slot) while its photo
+    /// is presented.
+    func heroCell(id: String, hiddenID: String?, border: CGFloat) -> some View {
         self
             .opacity(id == hiddenID ? 0 : 1)
             .background(
                 GeometryReader { geo in
                     Color.clear.preference(
                         key: HeroCellFrameKey.self,
-                        value: [id: geo.frame(in: .named(heroCoordinateSpace))]
+                        value: [id: HeroCellInfo(
+                            rect: geo.frame(in: .named(heroCoordinateSpace)),
+                            border: border)]
                     )
                 }
             )
@@ -79,7 +88,7 @@ struct HeroFlightView: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .scaledToFit()
                     .frame(width: max(rect.width - borderWidth * 2, 0),
                            height: max(rect.height - borderWidth * 2, 0))
                     .clipped()
@@ -90,7 +99,6 @@ struct HeroFlightView: View {
             }
         }
         .frame(width: rect.width, height: rect.height)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
         .position(x: rect.midX, y: rect.midY)
         .allowsHitTesting(false)
     }
