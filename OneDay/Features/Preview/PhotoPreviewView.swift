@@ -173,7 +173,17 @@ struct PhotoPreviewView: View {
             ensureValidSelectionAfterFiltering()
         }
         .onChange(of: selection) {
-            onSelectionChanged(selection)
+            // A vertical dismiss drag pins `selection` back to its start every
+            // frame; running the resets below then would zero `dragOffset` and
+            // fight the live drag, making the card snap to full size and shake
+            // (issues when dragging up/down then sideways). Skip entirely while
+            // vertically locked.
+            guard !isVerticalDragLocked else { return }
+            // Defer committing the page to the grid until a drag settles, so
+            // transient TabView paging during a fast flick doesn't churn it.
+            if dragStartSelection == nil {
+                onSelectionChanged(selection)
+            }
             isZoomed = false
             dragOffset = .zero
             flipAngle = 0
@@ -205,7 +215,7 @@ struct PhotoPreviewView: View {
             albumTagBar
             bottomActionBar
         }
-        .padding(.bottom, 10)
+        .padding(.bottom, bottomSafeAreaInset() + 10)
         .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
         .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
@@ -274,7 +284,12 @@ struct PhotoPreviewView: View {
                     }
                 }
                 observedHorizontalSwipe = false
-                guard isVerticalDragLocked else { return }
+                guard isVerticalDragLocked else {
+                    // Horizontal browse settled: commit the final page now that
+                    // the drag is over (mid-drag updates were suppressed above).
+                    onSelectionChanged(selection)
+                    return
+                }
                 let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
                 guard verticalDominant else {
                     isVerticalDragLocked = false
@@ -391,7 +406,7 @@ struct PhotoPreviewView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.top, topSafeAreaInset() + 8)
         .offset(y: (isZoomed || isFlipActive) ? -14 : 0)
         .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)

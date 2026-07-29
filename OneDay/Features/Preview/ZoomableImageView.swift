@@ -36,15 +36,12 @@ struct ZoomableImageView: UIViewRepresentable {
         scrollView.backgroundColor = .clear
         scrollView.contentInsetAdjustmentBehavior = .never
 
-        // The zooming view fills the scroll view bounds (this is what made zoom
-        // robust before the border existed). The white card is centered inside it
-        // and scales as a whole, so border + caption scale proportionally.
-        let container = context.coordinator.container
-        scrollView.addSubview(container)
-
+        // The whole white card (image + border + caption) is the zooming view,
+        // so pinch/double-tap scales it as one unit and the border grows
+        // proportionally with the photo. Centering is handled with contentInset.
         let card = context.coordinator.card
         card.backgroundColor = UIColor(cardColor)
-        container.addSubview(card)
+        scrollView.addSubview(card)
 
         let imageView = context.coordinator.imageView
         imageView.image = image
@@ -93,7 +90,6 @@ struct ZoomableImageView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onZoomChanged: onZoomChanged, onEditCaption: onEditCaption) }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
-        let container = UIView()
         let card = UIView()
         let imageView = UIImageView()
         let captionLabel = UILabel()
@@ -106,7 +102,6 @@ struct ZoomableImageView: UIViewRepresentable {
         let onZoomChanged: (Bool) -> Void
         let onEditCaption: (() -> Void)?
         private var wasZoomed = false
-        private var isZoomInteractionActive = false
 
         init(onZoomChanged: @escaping (Bool) -> Void, onEditCaption: (() -> Void)?) {
             self.onZoomChanged = onZoomChanged
@@ -126,64 +121,58 @@ struct ZoomableImageView: UIViewRepresentable {
             captionLabel.isHidden = view.caption?.isEmpty ?? true
         }
 
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? { container }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { card }
 
-        /// Container fills the viewport; the white card is centered inside it.
-        /// While zoomed we only keep the card centered and never touch the
-        /// container frame / contentSize, so we don't fight the zoom.
+        /// Lays the card out at its rest (scale 1) geometry and keeps it
+        /// centered. While zoomed the scroll view owns the card's transform, so
+        /// we only re-center and never rewrite the card frame.
         func relayout(_ scrollView: UIScrollView) {
             let size = scrollView.bounds.size
             guard size.width > 0, size.height > 0, displaySize.width > 0 else { return }
-            let zoomVisualActive = isZoomInteractionActive
-                || scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
-            let activeSideBorder: CGFloat = zoomVisualActive ? 0 : sideBorder
-            let activeTopBorder: CGFloat = zoomVisualActive ? 0 : topBorder
-            let activeCaptionHeight: CGFloat = zoomVisualActive ? 0 : captionHeight
 
-            if abs(scrollView.zoomScale - 1) < 0.001 {
-                container.frame = CGRect(origin: .zero, size: size)
-                scrollView.contentSize = size
+            if abs(scrollView.zoomScale - scrollView.minimumZoomScale) < 0.001 {
+                card.frame = CGRect(origin: .zero, size: displaySize)
+                scrollView.contentSize = displaySize
+
+                let imageH = displaySize.height - topBorder - captionHeight
+                imageView.frame = CGRect(x: sideBorder, y: topBorder,
+                                         width: displaySize.width - sideBorder * 2,
+                                         height: max(imageH, 0))
+
+                let hasCaption = !(caption?.isEmpty ?? true)
+                captionLabel.isHidden = !hasCaption
+                if hasCaption {
+                    captionLabel.frame = CGRect(
+                        x: sideBorder,
+                        y: displaySize.height - captionHeight,
+                        width: displaySize.width - sideBorder * 2,
+                        height: captionHeight
+                    )
+                }
             }
-            card.bounds = CGRect(origin: .zero, size: displaySize)
-            card.center = CGPoint(x: container.bounds.midX, y: container.bounds.midY)
+            centerContent(scrollView)
+        }
 
-            let imageH = displaySize.height - activeTopBorder - activeCaptionHeight
-            imageView.frame = CGRect(x: activeSideBorder, y: activeTopBorder,
-                                     width: displaySize.width - activeSideBorder * 2,
-                                     height: max(imageH, 0))
-
-            let hasCaption = !(caption?.isEmpty ?? true) && !zoomVisualActive
-            captionLabel.isHidden = !hasCaption
-            if hasCaption {
-                captionLabel.frame = CGRect(
-                    x: activeSideBorder,
-                    y: displaySize.height - activeCaptionHeight,
-                    width: displaySize.width - activeSideBorder * 2,
-                    height: activeCaptionHeight
-                )
-            }
+        /// Centers the card while it is smaller than the viewport (scale 1), and
+        /// lets it pan freely once zoomed larger.
+        private func centerContent(_ scrollView: UIScrollView) {
+            let offsetX = max((scrollView.bounds.width - scrollView.contentSize.width) / 2, 0)
+            let offsetY = max((scrollView.bounds.height - scrollView.contentSize.height) / 2, 0)
+            scrollView.contentInset = UIEdgeInsets(top: offsetY, left: offsetX,
+                                                   bottom: offsetY, right: offsetX)
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            relayout(scrollView)
+            centerContent(scrollView)
             let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
                 onZoomChanged(zoomed)
             }
         }
-        func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
-            isZoomInteractionActive = true
-            relayout(scrollView)
-            if !wasZoomed {
-                wasZoomed = true
-                onZoomChanged(true)
-            }
-        }
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-            isZoomInteractionActive = false
-            relayout(scrollView)
+            centerContent(scrollView)
             let zoomed = scale > scrollView.minimumZoomScale + 0.01
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
@@ -200,7 +189,7 @@ struct ZoomableImageView: UIViewRepresentable {
             if scrollView.zoomScale > scrollView.minimumZoomScale + 0.01 {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
             } else {
-                let point = gesture.location(in: container)
+                let point = gesture.location(in: card)
                 let targetScale: CGFloat = 2.5
                 let w = scrollView.bounds.width / targetScale
                 let h = scrollView.bounds.height / targetScale
