@@ -62,30 +62,28 @@ struct PreviewPageView: View {
     var body: some View {
         GeometryReader { geo in
             let card = cardSize(in: geo.size)
-            let infoReservedHeight: CGFloat = 108
             let pageWidth = max(1, geo.size.width)
             let rawProgress = geo.frame(in: .global).minX / pageWidth
             let swipeProgress = adjustedSwipeProgress(from: rawProgress)
             let swipeOffsetX = swipeHorizontalOffsetX(progress: rawProgress, pageWidth: pageWidth)
             let outgoingOpacity = outgoingPageOpacity(progress: rawProgress)
-            VStack(spacing: 20) {
-                Spacer(minLength: 6)
+            ZStack {
+                // The zoomable card fills the whole page so a pinch / double-tap
+                // can magnify the photo edge-to-edge. At rest (scale 1) the
+                // bordered card is centered inside at its display size.
                 flippableCard(card: card, swipeProgress: swipeProgress)
-                    .background(
-                        GeometryReader { g in
-                            Color.clear.preference(
-                                key: HeroCardFrameKey.self,
-                                value: [item.id: g.frame(in: .named(heroCoordinateSpace))])
-                        }
-                    )
                     .scaleEffect(photoScale, anchor: .center)
                     .offset(x: photoOffsetX + swipeOffsetX)
                     .offset(y: photoOffsetY)
                     .opacity(outgoingOpacity)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: max(card.height + 10, geo.size.height - infoReservedHeight))
-                infoBlock
-                Spacer(minLength: 6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Info floats at the bottom and fades out while zoomed / flipping.
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    infoBlock
+                }
+                .padding(.bottom, bottomSafeAreaInset() + 12)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .task(id: item.id) {
@@ -130,14 +128,32 @@ struct PreviewPageView: View {
                     onFlipBackRequest()
                 }
         }
-        .frame(width: card.width, height: card.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Report the *card* rect (not the full-screen area) for the hero
+        // fly-back. Non-interactive so it never blocks zoom / tap gestures.
+        .overlay {
+            Color.clear
+                .frame(width: card.width, height: card.height)
+                .background(
+                    GeometryReader { g in
+                        Color.clear.preference(
+                            key: HeroCardFrameKey.self,
+                            value: [item.id: g.frame(in: .named(heroCoordinateSpace))])
+                    }
+                )
+                .allowsHitTesting(false)
+        }
         .overlay {
             flipHighlightOverlay
+                .frame(width: card.width, height: card.height)
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .allowsHitTesting(false)
         }
         .overlay {
             swipeGlossOverlay(progress: swipeProgress)
+                .frame(width: card.width, height: card.height)
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .allowsHitTesting(false)
         }
         .rotation3DEffect(
             .degrees(swipeYawAngle(progress: swipeProgress)),
@@ -302,6 +318,7 @@ struct PreviewPageView: View {
                 captionColor: captionColor,
                 onEditCaption: nil
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView().tint(.white)
         }

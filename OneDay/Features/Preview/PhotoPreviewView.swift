@@ -254,7 +254,10 @@ struct PhotoPreviewView: View {
                 if abs(t.width) > 12, abs(t.width) > abs(t.height) {
                     observedHorizontalSwipe = true
                 }
-                if !isVerticalDragLocked {
+                if !isVerticalDragLocked && !observedHorizontalSwipe {
+                    // Once this drag has been recognized as a horizontal browse,
+                    // never switch it into the up/down dismiss/delete mode, even
+                    // if the finger later moves vertically (until it lifts).
                     let enoughDistance = abs(t.height) > 8 || abs(t.width) > 8
                     if enoughDistance && abs(t.height) > abs(t.width) {
                         isVerticalDragLocked = true
