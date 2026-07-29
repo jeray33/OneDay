@@ -44,6 +44,9 @@ struct PhotoPreviewView: View {
     @State private var dragStartSelection: String?
     @State private var isVerticalDragLocked = false
     @State private var verticalDragItemID: String?
+    @State private var undoItemID: String?
+    @State private var undoOffset: CGSize = .zero
+    @State private var undoScale: CGFloat = 1
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
          sessionOpacity: Double = 1, cardOpacity: Double = 1,
@@ -136,6 +139,7 @@ struct PhotoPreviewView: View {
             .simultaneousGesture(dismissDrag)
 
             verticalDragOverlay
+            undoRestoreOverlay
         }
         .overlay(alignment: .top) { topBar }
         .overlay(alignment: .bottom) { bottomControls }
@@ -470,6 +474,18 @@ struct PhotoPreviewView: View {
                         .background(.black.opacity(0.35), in: Circle())
                         .contentTransition(.symbolEffect(.replace))
                 }
+                if !pendingDeleteIDs.isEmpty {
+                    Button {
+                        undoLastStaged()
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.black.opacity(0.35), in: Circle())
+                    }
+                    .disabled(undoItemID != nil || isStagingDelete)
+                }
                 Spacer()
                 Button {
                     Task { await hideCurrentItem() }
@@ -674,6 +690,55 @@ struct PhotoPreviewView: View {
             .opacity(cardOpacity)
             .ignoresSafeArea()
             .allowsHitTesting(false)
+        }
+    }
+
+    /// Reverse of the staging animation: the last staged photo flies back down
+    /// from the top-shrunken position to its resting state.
+    @ViewBuilder
+    private var undoRestoreOverlay: some View {
+        if let undoID = undoItemID,
+           let item = allItems.first(where: { $0.id == undoID }) {
+            PreviewPageView(
+                item: item,
+                model: model,
+                onZoomChanged: { _ in },
+                onEditCaption: { _ in },
+                photoOffsetX: undoOffset.width,
+                photoOffsetY: undoOffset.height,
+                photoScale: undoScale,
+                infoOpacity: 0,
+                isZoomed: false,
+                flipAngle: 0,
+                swipeEffectConfig: swipeEffectConfig,
+                onFlipRequest: {},
+                onFlipBackRequest: {}
+            )
+            .opacity(cardOpacity)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func undoLastStaged() {
+        guard undoItemID == nil, !isStagingDelete,
+              let lastID = pendingDeleteIDs.last,
+              allItems.contains(where: { $0.id == lastID }) else { return }
+        undoItemID = lastID
+        undoOffset = CGSize(width: 0, height: -360)
+        undoScale = 0.08
+        withAnimation(.easeOut(duration: 0.4)) {
+            undoOffset = .zero
+            undoScale = 1
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let feedback = UIImpactFeedbackGenerator(style: .light)
+            feedback.prepare()
+            feedback.impactOccurred(intensity: 0.7)
+            pendingDeleteIDs.removeAll { $0 == lastID }
+            selection = lastID
+            undoItemID = nil
         }
     }
 
