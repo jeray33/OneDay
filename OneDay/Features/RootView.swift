@@ -16,6 +16,7 @@ struct RootView: View {
     @State private var tunnelStartDate: Date?
     @State private var rewindHomeID = UUID()
     @State private var rewindPreparing = false
+    @State private var rewindPreparationID = UUID()
     @State private var preparing = false
     @State private var navLoading = false
     @State private var historyEntries: [TodayInHistoryEntry] = []
@@ -158,6 +159,8 @@ struct RootView: View {
         .onChange(of: rewindModeRaw) { _, newValue in
             let mode = RewindMode(rawValue: newValue) ?? .flash
             if mode != .rewind, phase == .home {
+                rewindPreparationID = UUID()
+                rewindPreparing = false
                 tunnelLayers = []
                 dayModel = nil
                 tunnelStartDate = nil
@@ -179,11 +182,18 @@ struct RootView: View {
 
     private func prepareRewind() async {
         guard rewindMode == .rewind else { return }
-        guard tunnelLayers.isEmpty, !rewindPreparing else { return }
+        guard tunnelLayers.isEmpty else { return }
+        let preparationID = UUID()
+        rewindPreparationID = preparationID
         rewindPreparing = true
-        defer { rewindPreparing = false }
+        defer {
+            if rewindPreparationID == preparationID {
+                rewindPreparing = false
+            }
+        }
 
         let status = await PhotoLibraryService.shared.authorize()
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
         guard status == .authorized || status == .limited else {
             showPermissionAlert = true
             return
@@ -193,23 +203,20 @@ struct RootView: View {
             minPhotos: tunnelMinPhotos,
             photosPerDay: tunnelPhotosPerDay
         )
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
         let sortedGroup = sortRewindGroup(group, by: rewindSortOrder)
-        guard !sortedGroup.isEmpty, !Task.isCancelled else {
-            if !Task.isCancelled { showEmptyAlert = true }
+        guard !sortedGroup.isEmpty else {
+            showEmptyAlert = true
             return
         }
 
+        let photoScale = tunnelPhotoScale
         let initialGroup = Array(sortedGroup.prefix(tunnelInitialLayerCount))
         let initialAssets = initialGroup.flatMap(\.assets)
         let initialStages = [
             ImageLoader.LoadStage(
                 size: tunnelPreviewSize,
                 quality: .fast,
-                priority: .userInitiated
-            ),
-            ImageLoader.LoadStage(
-                size: tunnelHighQualitySize,
-                quality: .highQuality,
                 priority: .userInitiated
             )
         ]
@@ -221,11 +228,11 @@ struct RootView: View {
             stages: initialStages,
             maxConcurrent: tunnelLoadConcurrency
         ) {
-            guard !Task.isCancelled else { return }
+            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
             initialLayers = Self.makeTunnelLayers(
                 initialGroup,
                 images: stage.images,
-                photoScale: tunnelPhotoScale,
+                photoScale: photoScale,
                 preserving: initialLayers
             )
             guard let anchor = initialLayers.first, !anchor.photos.isEmpty else { continue }
@@ -253,8 +260,9 @@ struct RootView: View {
             didPresentTunnel = true
         }
 
-        guard didPresentTunnel, !Task.isCancelled else {
-            if !Task.isCancelled { showEmptyAlert = true }
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+        guard didPresentTunnel else {
+            showEmptyAlert = true
             return
         }
 
@@ -270,7 +278,7 @@ struct RootView: View {
         // Populate every remaining day quickly so the camera never has to wait
         // for far-away high-quality images before the tunnel can be explored.
         for batch in remainingBatches {
-            guard !Task.isCancelled else { return }
+            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
             let images = await ImageLoader.shared.thumbnails(
                 assets: batch.flatMap(\.assets),
                 size: tunnelPreviewSize,
@@ -278,22 +286,40 @@ struct RootView: View {
                 priority: .normal,
                 maxConcurrent: tunnelLoadConcurrency
             )
+            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
             let loaded = Self.makeTunnelLayers(
                 batch,
                 images: images,
-                photoScale: tunnelPhotoScale,
+                photoScale: photoScale,
                 preserving: tunnelLayers
             )
             mergeTunnelLayers(loaded)
         }
 
-        guard !Task.isCancelled else { return }
+        // Once every day has a preview, sharpen the visible opening layers first.
+        let initialHighQualityImages = await ImageLoader.shared.thumbnails(
+            assets: initialAssets,
+            size: tunnelHighQualitySize,
+            quality: .highQuality,
+            priority: .userInitiated,
+            maxConcurrent: tunnelLoadConcurrency
+        )
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+        let sharpenedInitialLayers = Self.makeTunnelLayers(
+            initialGroup,
+            images: initialHighQualityImages,
+            photoScale: photoScale,
+            preserving: tunnelLayers
+        )
+        mergeTunnelLayers(sharpenedInitialLayers)
+
         eligibleDays = await PhotoLibraryService.shared.eligibleDays()
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
 
         // Upgrade previews in small, low-priority batches. The shared loader
         // reuses cached results and cancellation propagates when the mode changes.
         for batch in remainingBatches {
-            guard !Task.isCancelled else { return }
+            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
             let images = await ImageLoader.shared.thumbnails(
                 assets: batch.flatMap(\.assets),
                 size: tunnelHighQualitySize,
@@ -301,10 +327,11 @@ struct RootView: View {
                 priority: .background,
                 maxConcurrent: tunnelLoadConcurrency
             )
+            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
             let loaded = Self.makeTunnelLayers(
                 batch,
                 images: images,
-                photoScale: tunnelPhotoScale,
+                photoScale: photoScale,
                 preserving: tunnelLayers
             )
             mergeTunnelLayers(loaded)
