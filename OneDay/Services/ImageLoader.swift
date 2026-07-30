@@ -28,13 +28,16 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         let size: CGSize
         let quality: LoadQuality
         let priority: LoadPriority
+        let contentMode: PHImageContentMode
 
         init(size: CGSize,
              quality: LoadQuality,
-             priority: LoadPriority = .normal) {
+             priority: LoadPriority = .normal,
+             contentMode: PHImageContentMode = .aspectFill) {
             self.size = size
             self.quality = quality
             self.priority = priority
+            self.contentMode = contentMode
         }
     }
 
@@ -112,7 +115,9 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                    contentMode: PHImageContentMode = .aspectFill) async -> UIImage? {
         let quality: LoadQuality = highQuality ? .highQuality : .fast
         return await requestImage(asset: asset,
-                                  targetSize: pixelSize(for: size),
+                                  targetSize: pixelSize(for: size,
+                                                        asset: asset,
+                                                        contentMode: contentMode),
                                   contentMode: contentMode,
                                   quality: quality,
                                   allowsNetworkAccess: true)
@@ -124,6 +129,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                     size: CGSize,
                     quality: LoadQuality = .fast,
                     priority: LoadPriority = .normal,
+                    contentMode: PHImageContentMode = .aspectFill,
                     allowsNetworkAccess: Bool = true,
                     maxConcurrent: Int = 6) async -> [UIImage?] {
         guard !assets.isEmpty else { return [] }
@@ -138,8 +144,10 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                     group.addTask(priority: priority.taskPriority) {
                         let image = await self.requestImage(
                             asset: assets[index],
-                            targetSize: self.pixelSize(for: size),
-                            contentMode: .aspectFill,
+                            targetSize: self.pixelSize(for: size,
+                                                       asset: assets[index],
+                                                       contentMode: contentMode),
+                            contentMode: contentMode,
                             quality: quality,
                             allowsNetworkAccess: allowsNetworkAccess
                         )
@@ -169,6 +177,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                         size: stage.size,
                         quality: stage.quality,
                         priority: stage.priority,
+                        contentMode: stage.contentMode,
                         allowsNetworkAccess: allowsNetworkAccess,
                         maxConcurrent: maxConcurrent
                     )
@@ -329,6 +338,27 @@ nonisolated final class ImageLoader: @unchecked Sendable {
     private func pixelSize(for size: CGSize) -> CGSize {
         CGSize(width: max(size.width, 1) * 2,
                height: max(size.height, 1) * 2)
+    }
+
+    /// `.aspectFit` requests use a per-asset target whose pixels have the same
+    /// aspect ratio as the original photo. This keeps thumbnails lightweight
+    /// without relying on PhotoKit's sometimes square/cropped preview geometry.
+    private func pixelSize(for size: CGSize,
+                           asset: PHAsset,
+                           contentMode: PHImageContentMode) -> CGSize {
+        let bounds = pixelSize(for: size)
+        guard contentMode == .aspectFit,
+              asset.pixelWidth > 0,
+              asset.pixelHeight > 0 else { return bounds }
+
+        let aspect = CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
+        let boundsAspect = bounds.width / bounds.height
+        if aspect >= boundsAspect {
+            return CGSize(width: bounds.width,
+                          height: max((bounds.width / aspect).rounded(.up), 1))
+        }
+        return CGSize(width: max((bounds.height * aspect).rounded(.up), 1),
+                      height: bounds.height)
     }
 
     private func store(_ image: UIImage, forKey key: String) {

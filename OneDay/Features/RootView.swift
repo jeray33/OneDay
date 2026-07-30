@@ -217,7 +217,8 @@ struct RootView: View {
             ImageLoader.LoadStage(
                 size: tunnelPreviewSize,
                 quality: .fast,
-                priority: .userInitiated
+                priority: .userInitiated,
+                contentMode: .aspectFit
             )
         ]
 
@@ -284,6 +285,7 @@ struct RootView: View {
                 size: tunnelPreviewSize,
                 quality: .fast,
                 priority: .normal,
+                contentMode: .aspectFit,
                 maxConcurrent: tunnelLoadConcurrency
             )
             guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
@@ -302,6 +304,7 @@ struct RootView: View {
             size: tunnelHighQualitySize,
             quality: .highQuality,
             priority: .userInitiated,
+            contentMode: .aspectFit,
             maxConcurrent: tunnelLoadConcurrency
         )
         guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
@@ -325,6 +328,7 @@ struct RootView: View {
                 size: tunnelHighQualitySize,
                 quality: .highQuality,
                 priority: .background,
+                contentMode: .aspectFit,
                 maxConcurrent: tunnelLoadConcurrency
             )
             guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
@@ -373,7 +377,9 @@ struct RootView: View {
                             size: existing.size
                         ))
                     } else {
-                        let aspect = image.size.width / max(image.size.height, 1)
+                        let aspect = asset.pixelHeight > 0
+                            ? CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
+                            : image.size.width / max(image.size.height, 1)
                         let longSide = photoScale.base + CGFloat.random(in: -12...12)
                         let size: CGSize = aspect >= 1
                             ? CGSize(width: longSide, height: longSide / aspect)
