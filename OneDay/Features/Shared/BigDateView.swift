@@ -3,6 +3,7 @@ import SwiftUI
 struct BigDateView: View {
     let date: Date
     var compact: Bool = false
+    var showsWeekday: Bool = true
     @AppStorage(CoverDateFont.storageKey) private var coverDateFontRaw = CoverDateFont.impact.rawValue
 
     private var size: CGFloat { compact ? 30 : 58 }
@@ -19,7 +20,7 @@ struct BigDateView: View {
                 .minimumScaleFactor(0.5)
                 .contentTransition(.numericText())
 
-            if !compact {
+            if !compact && showsWeekday {
                 Text(DateText.weekday(date))
                     .font(Theme.serif(17, weight: .regular))
                     .tracking(4)

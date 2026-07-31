@@ -100,7 +100,7 @@ struct TunnelRewindView: View {
     @State private var pendingLandDate: Date?
 
     @State private var displayDate: Date
-    @State private var topLabel = "回到"
+    @State private var topLabel = ""
     @State private var isFinishing = false
     @State private var hasStarted = false
     @State private var settingsShown = false
@@ -149,6 +149,22 @@ struct TunnelRewindView: View {
                 background.color.ignoresSafeArea()
                 Canvas { context, size in
                     draw(&context, size: size)
+                }
+                .progressiveBlur(radius: 18, maxSampleCount: 18) { geometry, context in
+                    context.fill(
+                        Path(geometry.frame(in: .local)),
+                        with: .linearGradient(
+                            Gradient(stops: [
+                                .init(color: .white, location: 0.00),
+                                .init(color: .clear, location: 0.23),
+                                .init(color: .clear, location: 0.77),
+                                .init(color: .white, location: 1.00)
+                            ]),
+                            startPoint: CGPoint(x: geometry.size.width / 2, y: 0),
+                            endPoint: CGPoint(x: geometry.size.width / 2,
+                                              y: geometry.size.height)
+                        )
+                    )
                 }
                 .ignoresSafeArea()
                 if background.isDark { vignette }
@@ -470,12 +486,14 @@ struct TunnelRewindView: View {
 
     private var dateOverlay: some View {
         VStack(spacing: 30) {
-            Text(topLabel)
-                .font(Theme.serif(16))
-                .tracking(6)
-                .foregroundStyle(.secondary)
-                .animation(.easeInOut(duration: 0.15), value: topLabel)
-            BigDateView(date: displayDate)
+            if !topLabel.isEmpty {
+                Text(topLabel)
+                    .font(Theme.serif(16))
+                    .tracking(6)
+                    .foregroundStyle(.secondary)
+                    .animation(.easeInOut(duration: 0.15), value: topLabel)
+            }
+            BigDateView(date: displayDate, showsWeekday: false)
                 .matchedGeometryEffect(id: "flowDate", in: dateNamespace, isSource: true)
                 .shadow(color: background.color.opacity(0.9), radius: 14)
         }
