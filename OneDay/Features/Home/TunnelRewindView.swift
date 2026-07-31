@@ -44,7 +44,6 @@ struct TunnelPhoto: Identifiable {
 struct TunnelRewindView: View {
     let model: DayViewModel
     let layers: [TunnelLayer]
-    let control: TunnelControl
     let dateNamespace: Namespace.ID
     var startDate: Date? = nil
     var onLand: (TunnelDayRequest) -> Void
@@ -53,7 +52,6 @@ struct TunnelRewindView: View {
 
     // MARK: Live-editable settings persisted via @AppStorage
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
-    @AppStorage("OneDay.tunnelControl") private var tunnelControlRaw = TunnelControl.auto.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
     @AppStorage("OneDay.tunnelBackground") private var backgroundRaw = TunnelBackground.dark.rawValue
     @AppStorage("OneDay.tunnelTextPosition") private var textPositionRaw = TunnelTextPosition.center.rawValue
@@ -87,7 +85,7 @@ struct TunnelRewindView: View {
     private let rampTime: Double = 0.6       // ease-in of camera velocity
 
     // MARK: Motion state
-    private enum Mode { case awaitingStart, autoPlay, manualIdle, manualDrag, momentum, settling, done }
+    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, done }
 
     @State private var progress: Double
     @State private var clock: Double = 0
@@ -100,7 +98,6 @@ struct TunnelRewindView: View {
     @State private var pendingLandDate: Date?
 
     @State private var displayDate: Date
-    @State private var topLabel = ""
     @State private var isFinishing = false
     @State private var hasStarted = false
     @State private var settingsShown = false
@@ -109,13 +106,12 @@ struct TunnelRewindView: View {
     @State private var referencePitch: Double?
     @State private var tiltOffset: CGSize = .zero
 
-    init(model: DayViewModel, layers: [TunnelLayer], control: TunnelControl,
+    init(model: DayViewModel, layers: [TunnelLayer],
          dateNamespace: Namespace.ID,
          startDate: Date? = nil,
          onLand: @escaping (TunnelDayRequest) -> Void) {
         self.model = model
         self.layers = layers
-        self.control = control
         self.dateNamespace = dateNamespace
         self.startDate = startDate
         self.onLand = onLand
@@ -126,7 +122,7 @@ struct TunnelRewindView: View {
             .flatMap(TunnelDepthSpacing.init(rawValue:)) ?? .standard
         let start = Double(startIndex) * storedSpacing.factor - 1.0
         _progress = State(initialValue: start)
-        _mode = State(initialValue: control == .auto ? .awaitingStart : .manualIdle)
+        _mode = State(initialValue: .manualIdle)
         let initialDate = layers.indices.contains(startIndex) ? layers[startIndex].date : model.date
         _displayDate = State(initialValue: initialDate)
     }
@@ -168,6 +164,12 @@ struct TunnelRewindView: View {
                 }
                 .ignoresSafeArea()
                 if background.isDark { vignette }
+                // Gesture surface: transparent layer below interactive controls
+                // so button taps don't bleed into drag/tap gestures.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(mode == .manualIdle || mode == .manualDrag || mode == .momentum ? dragGesture : nil)
+                    .onTapGesture { if mode == .autoPlay { handleTap() } }
                 if textPosition == .bottom {
                     VStack {
                         Spacer()
@@ -177,10 +179,28 @@ struct TunnelRewindView: View {
                 } else {
                     dateOverlay
                 }
-                hint
-                if control == .auto, mode == .awaitingStart {
-                    startButton
+                VStack {
+                    Spacer()
+                    if mode == .manualIdle {
+                        playButton
+                            .padding(.bottom, 40)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    }
                 }
+                .animation(.easeInOut(duration: 0.3), value: mode)
+                // Fixed bottom hint
+                VStack {
+                    //Spacer()
+                    if mode != .settling && mode != .done {
+                        Text(hintText)
+                            .font(Theme.serif(12))
+                            .foregroundStyle(.tertiary)
+                            //.padding(.bottom, 24)
+                            .padding(.top, 24)
+                    }
+                    Spacer()
+                }
+                .allowsHitTesting(false)
                 VStack {
                     HStack {
                         modeMenu
@@ -193,9 +213,6 @@ struct TunnelRewindView: View {
                 .padding(.horizontal, 16)
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .contentShape(Rectangle())
-            .gesture(control == .manual ? dragGesture : nil)
-            .onTapGesture { if control != .manual && mode == .autoPlay { handleTap() } }
             .environment(\.colorScheme, background.scheme)
         }
         .opacity(isFinishing ? 0 : 1)
@@ -316,31 +333,21 @@ struct TunnelRewindView: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .frame(width: 38, height: 38)
-                .background(.ultraThinMaterial, in: Circle())
+                .glassEffect(.regular.interactive(), in: .circle)
         }
     }
 
-    private var startButton: some View {
-        VStack {
-            Spacer()
-            Button {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                autoElapsed = 0
-                mode = .autoPlay
-            } label: {
-                Text("时光穿梭")
-                    .font(Theme.serif(20, weight: .semibold))
-                    .tracking(6)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 60)
-                    .background(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(Theme.ink)
-                    )
-            }
-            .padding(.horizontal, 40)
-            .padding(.bottom, 60)
+    private var playButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            autoElapsed = 0
+            mode = .autoPlay
+        } label: {
+            Image(systemName: "play.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+                .frame(width: 56, height: 44)
+                .glassEffect(.regular.interactive(), in: .capsule)
         }
     }
 
@@ -352,7 +359,7 @@ struct TunnelRewindView: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .frame(width: 38, height: 38)
-                .background(.ultraThinMaterial, in: Circle())
+                .glassEffect(.regular.interactive(), in: .circle)
         }
         .popover(isPresented: $settingsShown, arrowEdge: .top) {
             settingsPanel
@@ -363,15 +370,6 @@ struct TunnelRewindView: View {
     private var settingsPanel: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
-                settingGroup("控制方式") {
-                    Picker("", selection: Binding(
-                        get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
-                        set: { tunnelControlRaw = $0.rawValue }
-                    )) {
-                        ForEach(TunnelControl.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                }
                 settingGroup("排序") {
                     Picker("", selection: Binding(
                         get: { rewindSortOrder },
@@ -486,13 +484,6 @@ struct TunnelRewindView: View {
 
     private var dateOverlay: some View {
         VStack(spacing: 30) {
-            if !topLabel.isEmpty {
-                Text(topLabel)
-                    .font(Theme.serif(16))
-                    .tracking(6)
-                    .foregroundStyle(.secondary)
-                    .animation(.easeInOut(duration: 0.15), value: topLabel)
-            }
             BigDateView(date: displayDate, showsWeekday: false)
                 .matchedGeometryEffect(id: "flowDate", in: dateNamespace, isSource: true)
                 .shadow(color: background.color.opacity(0.9), radius: 14)
@@ -500,17 +491,15 @@ struct TunnelRewindView: View {
         .allowsHitTesting(false)
     }
 
-    private var hint: some View {
-        VStack {
-            Spacer()
-            if mode != .settling && mode != .done && mode != .awaitingStart {
-                Text(control == .manual ? "上下滑动穿梭 · 点击进入这一天" : "点击屏幕，停在某一天")
-                    .font(Theme.serif(13))
-                    .foregroundStyle(.tertiary)
-                    .padding(.bottom, 50)
-            }
+    private var hintText: String {
+        switch mode {
+        case .autoPlay:
+            return "点击屏幕，停在某一天"
+        case .manualDrag, .momentum:
+            return "点击进入这一天"
+        default:
+            return "上下滑动穿梭，或点播放自动穿梭"
         }
-        .allowsHitTesting(false)
     }
 
     // MARK: Controls
@@ -529,12 +518,15 @@ struct TunnelRewindView: View {
                 progress = clampTravel(dragStartProgress + Double(delta))
             }
             .onEnded { value in
-                if mode == .manualDrag {
+                switch mode {
+                case .manualDrag:
                     velocity = Double(-value.predictedEndTranslation.height / 150.0) * 2.2
                     mode = .momentum
-                } else {
+                case .manualIdle:
                     // Treated as a tap: enter the day currently in focus.
                     handleTap()
+                default:
+                    break
                 }
             }
     }
@@ -597,7 +589,7 @@ struct TunnelRewindView: View {
                     mode = .manualIdle
                 }
             }
-        case .awaitingStart, .manualDrag, .manualIdle, .done:
+        case .manualDrag, .manualIdle, .done:
             break
         }
     }
@@ -606,7 +598,9 @@ struct TunnelRewindView: View {
         let idx = focusIndex(progress)
         guard idx != lastFocus, idx >= 0, idx < count else { return }
         lastFocus = idx
-        displayDate = layers[idx].date
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            displayDate = layers[idx].date
+        }
         if mode != .settling && mode != .done {
             SoundEffects.tick()
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
@@ -623,8 +617,9 @@ struct TunnelRewindView: View {
 
     private func finish(on date: Date) async {
         let day = Calendar.current.startOfDay(for: date)
-        displayDate = day
-        topLabel = DateText.relativeCaption(day) ?? "那一天"
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+            displayDate = day
+        }
         SoundEffects.settle()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 

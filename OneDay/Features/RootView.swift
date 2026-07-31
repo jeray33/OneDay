@@ -26,12 +26,10 @@ struct RootView: View {
     @State private var showEmptyAlert = false
     @Namespace private var dateNamespace
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
-    @AppStorage("OneDay.tunnelControl") private var tunnelControlRaw = TunnelControl.auto.rawValue
     @AppStorage("OneDay.tunnelPhotoScale") private var tunnelPhotoScaleRaw = TunnelPhotoScale.medium.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
 
     private var rewindMode: RewindMode { RewindMode(rawValue: rewindModeRaw) ?? .flash }
-    private var tunnelControl: TunnelControl { TunnelControl(rawValue: tunnelControlRaw) ?? .auto }
     private var tunnelPhotoScale: TunnelPhotoScale { TunnelPhotoScale(rawValue: tunnelPhotoScaleRaw) ?? .medium }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
 
@@ -53,7 +51,6 @@ struct RootView: View {
                         TunnelRewindView(
                             model: dayModel,
                             layers: tunnelLayers,
-                            control: tunnelControl,
                             dateNamespace: dateNamespace,
                             startDate: tunnelStartDate,
                             onLand: { req in
@@ -164,11 +161,6 @@ struct RootView: View {
                 tunnelLayers = []
                 dayModel = nil
                 tunnelStartDate = nil
-            }
-        }
-        .onChange(of: tunnelControlRaw) { _, _ in
-            if rewindMode == .rewind, phase == .home, !tunnelLayers.isEmpty {
-                rewindHomeID = UUID()
             }
         }
         .onChange(of: rewindSortOrderRaw) { _, _ in

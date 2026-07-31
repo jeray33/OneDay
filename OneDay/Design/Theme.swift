@@ -440,23 +440,6 @@ enum RewindSortOrder: String, CaseIterable, Identifiable {
 }
 
 /// Control style for the tunnel rewind mode.
-enum TunnelControl: String, CaseIterable, Identifiable {
-    case auto, manual
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .auto:   return "自动穿梭"
-        case .manual: return "手动滑动"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .auto:   return "play.circle"
-        case .manual: return "hand.draw"
-        }
-    }
-}
-
 /// Backdrop for the tunnel rewind mode. Dark reads more cinematic (photos pop,
 /// depth-of-field + vignette are stronger); light matches the rest of the app.
 enum TunnelBackground: String, CaseIterable, Identifiable {
