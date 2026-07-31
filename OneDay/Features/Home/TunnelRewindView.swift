@@ -2,6 +2,7 @@ import SwiftUI
 import Photos
 import UIKit
 import QuartzCore
+import CoreMotion
 
 /// The day the tunnel landed on, handed back to the host synchronously.
 /// Arguments passed through a stored `async` closure get zeroed to the reference
@@ -47,6 +48,8 @@ struct TunnelRewindView: View {
     let dateNamespace: Namespace.ID
     var startDate: Date? = nil
     var onLand: (TunnelDayRequest) -> Void
+
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     // MARK: Live-editable settings persisted via @AppStorage
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
@@ -101,6 +104,10 @@ struct TunnelRewindView: View {
     @State private var isFinishing = false
     @State private var hasStarted = false
     @State private var settingsShown = false
+    @State private var motionManager = CMMotionManager()
+    @State private var referenceRoll: Double?
+    @State private var referencePitch: Double?
+    @State private var tiltOffset: CGSize = .zero
 
     init(model: DayViewModel, layers: [TunnelLayer], control: TunnelControl,
          dateNamespace: Namespace.ID,
@@ -180,6 +187,8 @@ struct TunnelRewindView: View {
             guard !hasStarted else { return }
             hasStarted = true
             SoundEffects.warmUp()
+            startDeviceMotion()
+            defer { stopDeviceMotion() }
             await runLoop()
         }
     }
@@ -191,8 +200,7 @@ struct TunnelRewindView: View {
         // Smaller reference radius keeps photos framed inside the screen.
         let ref = Double(min(size.width, size.height)) * 0.5
         let baseCenter = CGPoint(x: size.width / 2, y: size.height / 2)
-        // Gentle handheld position drift (no photo rotation).
-        let drift = CGSize(width: sin(clock * 0.55) * 12, height: cos(clock * 0.43) * 9)
+        let drift = combinedDrift
 
         struct Proj {
             let image: UIImage
@@ -218,8 +226,15 @@ struct TunnelRewindView: View {
                 let opacity = fog(depth) * smoothstep(overflow.fadeEnd, overflow.fadeStart, scale)
                 guard opacity > 0.01 else { continue }
                 let screenR = photo.radius * spread.factor * ref * scale
-                let pos = CGPoint(x: baseCenter.x + drift.width + CGFloat(cos(photo.angle) * screenR),
-                                  y: baseCenter.y + drift.height + CGFloat(sin(photo.angle) * screenR))
+                // The same depth curve drives ambient drift and device tilt:
+                // near photos move faster, while distant photos move less.
+                let driftScale = CGFloat(min(max(scale, 0.10), 2.40))
+                let pos = CGPoint(
+                    x: baseCenter.x + drift.width * driftScale
+                        + CGFloat(cos(photo.angle) * screenR),
+                    y: baseCenter.y + drift.height * driftScale
+                        + CGFloat(sin(photo.angle) * screenR)
+                )
                 let w = photo.size.width * CGFloat(scale)
                 let h = photo.size.height * CGFloat(scale)
                 let rect = CGRect(x: pos.x - w / 2, y: pos.y - h / 2, width: w, height: h)
@@ -330,104 +345,107 @@ struct TunnelRewindView: View {
     }
 
     private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            settingGroup("控制方式") {
-                Picker("", selection: Binding(
-                    get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
-                    set: { tunnelControlRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelControl.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("排序") {
-                Picker("", selection: Binding(
-                    get: { rewindSortOrder },
-                    set: { rewindSortOrderRaw = $0.rawValue }
-                )) {
-                    ForEach(RewindSortOrder.allCases) { order in
-                        Text(order.label).tag(order)
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
+                settingGroup("控制方式") {
+                    Picker("", selection: Binding(
+                        get: { TunnelControl(rawValue: tunnelControlRaw) ?? .auto },
+                        set: { tunnelControlRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelControl.allCases) { Text($0.label).tag($0) }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            Divider()
-            settingGroup("背景色") {
-                Picker("", selection: Binding(
-                    get: { background }, set: { backgroundRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelBackground.allCases) { Text($0.label).tag($0) }
+                settingGroup("排序") {
+                    Picker("", selection: Binding(
+                        get: { rewindSortOrder },
+                        set: { rewindSortOrderRaw = $0.rawValue }
+                    )) {
+                        ForEach(RewindSortOrder.allCases) { order in
+                            Text(order.label).tag(order)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("文字位置") {
-                Picker("", selection: Binding(
-                    get: { textPosition }, set: { textPositionRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelTextPosition.allCases) { Text($0.label).tag($0) }
+                Divider()
+                settingGroup("背景色") {
+                    Picker("", selection: Binding(
+                        get: { background }, set: { backgroundRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelBackground.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
+                settingGroup("文字位置") {
+                    Picker("", selection: Binding(
+                        get: { textPosition }, set: { textPositionRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelTextPosition.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
 
-            Divider()
-            Text("画面调节")
-                .font(.headline)
+                Divider()
+                Text("画面调节")
+                    .font(.headline)
 
-            settingGroup("扩散范围") {
-                Picker("", selection: Binding(
-                    get: { spread }, set: { spreadRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelSpread.allCases) { Text($0.label).tag($0) }
+                settingGroup("扩散范围") {
+                    Picker("", selection: Binding(
+                        get: { spread }, set: { spreadRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelSpread.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("照片大小") {
-                Picker("", selection: Binding(
-                    get: { TunnelPhotoScale(rawValue: photoScaleRaw) ?? .medium },
-                    set: { photoScaleRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelPhotoScale.allCases) { Text($0.label).tag($0) }
+                settingGroup("照片大小") {
+                    Picker("", selection: Binding(
+                        get: { TunnelPhotoScale(rawValue: photoScaleRaw) ?? .medium },
+                        set: { photoScaleRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelPhotoScale.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("纵深间距") {
-                Picker("", selection: Binding(
-                    get: { depthSpacing },
-                    set: { applyDepthSpacing($0) }
-                )) {
-                    ForEach(TunnelDepthSpacing.allCases) { Text($0.label).tag($0) }
+                settingGroup("纵深间距") {
+                    Picker("", selection: Binding(
+                        get: { depthSpacing },
+                        set: { applyDepthSpacing($0) }
+                    )) {
+                        ForEach(TunnelDepthSpacing.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("同日照片间距") {
-                Picker("", selection: Binding(
-                    get: { photoDepthSpacing },
-                    set: { photoDepthSpacingRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelPhotoDepthSpacing.allCases) { Text($0.label).tag($0) }
+                settingGroup("同日照片间距") {
+                    Picker("", selection: Binding(
+                        get: { photoDepthSpacing },
+                        set: { photoDepthSpacingRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelPhotoDepthSpacing.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("速度层次") {
-                Picker("", selection: Binding(
-                    get: { speedContrast },
-                    set: { speedContrastRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelSpeedContrast.allCases) { Text($0.label).tag($0) }
+                settingGroup("景深速度差") {
+                    Picker("", selection: Binding(
+                        get: { speedContrast },
+                        set: { speedContrastRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelSpeedContrast.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            settingGroup("冲屏程度") {
-                Picker("", selection: Binding(
-                    get: { overflow }, set: { overflowRaw = $0.rawValue }
-                )) {
-                    ForEach(TunnelOverflow.allCases) { Text($0.label).tag($0) }
+                settingGroup("冲屏程度") {
+                    Picker("", selection: Binding(
+                        get: { overflow }, set: { overflowRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelOverflow.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
+            .padding(20)
         }
-        .padding(20)
-        .frame(width: 330)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 330, height: verticalSizeClass == .compact ? 300 : 620)
     }
 
     @ViewBuilder
@@ -524,6 +542,7 @@ struct TunnelRewindView: View {
             let dt = min(now - last, 1.0 / 30.0)
             last = now
             clock += dt
+            updateDeviceTilt(dt)
             guard !settingsShown else { continue }
             step(dt)
             updateFocus()
@@ -591,12 +610,59 @@ struct TunnelRewindView: View {
         SoundEffects.settle()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-        let drift = CGSize(width: sin(clock * 0.55) * 12, height: cos(clock * 0.43) * 9)
+        let drift = combinedDrift
         try? await Task.sleep(nanoseconds: 400_000_000)
         onLand(TunnelDayRequest(day, drift: drift))
     }
 
     // MARK: Math helpers
+
+    private var ambientDrift: CGSize {
+        CGSize(width: sin(clock * 0.55) * 12,
+               height: cos(clock * 0.43) * 9)
+    }
+
+    private var combinedDrift: CGSize {
+        CGSize(width: ambientDrift.width + tiltOffset.width,
+               height: ambientDrift.height + tiltOffset.height)
+    }
+
+    private func startDeviceMotion() {
+        guard motionManager.isDeviceMotionAvailable else { return }
+        motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical)
+    }
+
+    private func stopDeviceMotion() {
+        motionManager.stopDeviceMotionUpdates()
+        referenceRoll = nil
+        referencePitch = nil
+        tiltOffset = .zero
+    }
+
+    private func updateDeviceTilt(_ dt: Double) {
+        guard let attitude = motionManager.deviceMotion?.attitude else { return }
+        guard let referenceRoll, let referencePitch else {
+            self.referenceRoll = attitude.roll
+            self.referencePitch = attitude.pitch
+            return
+        }
+
+        let roll = min(max(angleDelta(attitude.roll, referenceRoll), -0.45), 0.45)
+        let pitch = min(max(angleDelta(attitude.pitch, referencePitch), -0.45), 0.45)
+        let target = CGSize(width: CGFloat(-roll * 42),
+                            height: CGFloat(-pitch * 42))
+        let smoothing = CGFloat(1 - exp(-dt / 0.10))
+        tiltOffset.width += (target.width - tiltOffset.width) * smoothing
+        tiltOffset.height += (target.height - tiltOffset.height) * smoothing
+    }
+
+    private func angleDelta(_ angle: Double, _ reference: Double) -> Double {
+        var delta = (angle - reference).truncatingRemainder(dividingBy: 2 * .pi)
+        if delta > .pi { delta -= 2 * .pi }
+        if delta < -.pi { delta += 2 * .pi }
+        return delta
+    }
 
     /// Preserve the current point between days when spacing changes in the live
     /// settings preview, rather than jumping the camera to another date.

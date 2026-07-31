@@ -520,7 +520,8 @@ enum TunnelPhotoDepthSpacing: String, CaseIterable, Identifiable {
     var factor: Double { [0.45, 1.0, 1.45, 1.95, 2.50][idx] }
 }
 
-/// Strength of the perspective speed difference between near and far photos.
+/// Shared near/far speed difference for travel, ambient drift and device-tilt
+/// parallax in the tunnel.
 enum TunnelSpeedContrast: String, CaseIterable, Identifiable {
     case calm, gentle, natural, strong, extreme
     var id: String { rawValue }
