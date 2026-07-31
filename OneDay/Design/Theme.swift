@@ -499,6 +499,38 @@ enum TunnelPhotoScale: String, CaseIterable, Identifiable {
     var base: CGFloat { [104, 128, 150, 176, 204][idx] }
 }
 
+/// Distance between adjacent day planes along the tunnel's depth axis.
+enum TunnelDepthSpacing: String, CaseIterable, Identifiable {
+    case compact, standard, spacious, deep, farthest
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 1 }
+    var label: String { ["紧凑", "标准", "舒展", "深远", "极远"][idx] }
+    /// The previous tunnel used one depth unit between days, now represented by
+    /// `standard`, so existing visuals remain unchanged by default.
+    var factor: Double { [0.72, 1.0, 1.32, 1.68, 2.08][idx] }
+}
+
+/// Depth spread among the photos belonging to the same day plane.
+enum TunnelPhotoDepthSpacing: String, CaseIterable, Identifiable {
+    case clustered, standard, staggered, spacious, deep
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 1 }
+    var label: String { ["聚拢", "标准", "错落", "舒展", "深远"][idx] }
+    /// One reproduces the previous per-photo depth offsets.
+    var factor: Double { [0.45, 1.0, 1.45, 1.95, 2.50][idx] }
+}
+
+/// Strength of the perspective speed difference between near and far photos.
+enum TunnelSpeedContrast: String, CaseIterable, Identifiable {
+    case calm, gentle, natural, strong, extreme
+    var id: String { rawValue }
+    private var idx: Int { Self.allCases.firstIndex(of: self) ?? 2 }
+    var label: String { ["平缓", "柔和", "自然", "强烈", "极致"][idx] }
+    /// Applied to projection depth. One reproduces the previous perspective;
+    /// larger values make near photos rush faster while far photos drift slower.
+    var projectionExponent: Double { [0.72, 0.86, 1.0, 1.18, 1.38][idx] }
+}
+
 /// How large a photo may grow before it fades out, i.e. how much it spills past
 /// the screen edges.
 enum TunnelOverflow: String, CaseIterable, Identifiable {

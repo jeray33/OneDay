@@ -56,11 +56,19 @@ struct TunnelRewindView: View {
     @AppStorage("OneDay.tunnelTextPosition") private var textPositionRaw = TunnelTextPosition.center.rawValue
     @AppStorage("OneDay.tunnelSpread") private var spreadRaw = TunnelSpread.medium.rawValue
     @AppStorage("OneDay.tunnelPhotoScale") private var photoScaleRaw = TunnelPhotoScale.medium.rawValue
+    @AppStorage("OneDay.tunnelDepthSpacing") private var depthSpacingRaw = TunnelDepthSpacing.standard.rawValue
+    @AppStorage("OneDay.tunnelPhotoDepthSpacing") private var photoDepthSpacingRaw = TunnelPhotoDepthSpacing.standard.rawValue
+    @AppStorage("OneDay.tunnelSpeedContrast") private var speedContrastRaw = TunnelSpeedContrast.natural.rawValue
     @AppStorage("OneDay.tunnelOverflow") private var overflowRaw = TunnelOverflow.medium.rawValue
 
     private var background: TunnelBackground { TunnelBackground(rawValue: backgroundRaw) ?? .dark }
     private var textPosition: TunnelTextPosition { TunnelTextPosition(rawValue: textPositionRaw) ?? .center }
     private var spread: TunnelSpread { TunnelSpread(rawValue: spreadRaw) ?? .medium }
+    private var depthSpacing: TunnelDepthSpacing { TunnelDepthSpacing(rawValue: depthSpacingRaw) ?? .standard }
+    private var photoDepthSpacing: TunnelPhotoDepthSpacing {
+        TunnelPhotoDepthSpacing(rawValue: photoDepthSpacingRaw) ?? .standard
+    }
+    private var speedContrast: TunnelSpeedContrast { TunnelSpeedContrast(rawValue: speedContrastRaw) ?? .natural }
     private var overflow: TunnelOverflow { TunnelOverflow(rawValue: overflowRaw) ?? .medium }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
 
@@ -107,7 +115,9 @@ struct TunnelRewindView: View {
         let startIndex = startDate.flatMap { d in
             layers.firstIndex { Calendar.current.isDate($0.date, inSameDayAs: d) }
         } ?? 0
-        let start = Double(startIndex) - 1.0   // = snapProgress(for: startIndex), 1.0 = focal
+        let storedSpacing = UserDefaults.standard.string(forKey: "OneDay.tunnelDepthSpacing")
+            .flatMap(TunnelDepthSpacing.init(rawValue:)) ?? .standard
+        let start = Double(startIndex) * storedSpacing.factor - 1.0
         _progress = State(initialValue: start)
         _mode = State(initialValue: control == .auto ? .awaitingStart : .manualIdle)
         let initialDate = layers.indices.contains(startIndex) ? layers[startIndex].date : model.date
@@ -116,13 +126,15 @@ struct TunnelRewindView: View {
 
     private var count: Int { layers.count }
     private var progressStart: Double { -focal }
-    private var landProgress: Double { Double(max(count - 1, 0)) - focal }
+    private var landProgress: Double { Double(max(count - 1, 0)) * depthSpacing.factor - focal }
 
     private func focusIndex(_ p: Double) -> Int {
         guard count > 0 else { return 0 }
-        return min(max(Int((p + focal).rounded()), 0), count - 1)
+        return min(max(Int(((p + focal) / depthSpacing.factor).rounded()), 0), count - 1)
     }
-    private func snapProgress(for index: Int) -> Double { Double(index) - focal }
+    private func snapProgress(for index: Int) -> Double {
+        Double(index) * depthSpacing.factor - focal
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -193,10 +205,14 @@ struct TunnelRewindView: View {
         var projected: [Proj] = []
         for (i, layer) in layers.enumerated() {
             for photo in layer.photos {
-                let z = Double(i) + photo.zJitter
+                let z = Double(i) * depthSpacing.factor
+                    + photo.zJitter * photoDepthSpacing.factor
                 let depth = z - progress
                 guard depth > nearCull, depth < farVisible else { continue }
-                let scale = focal / depth
+                // Keep the focus plane fixed at scale 1 while adjusting how
+                // strongly perspective separates near and far movement.
+                let projectionDepth = focal * pow(depth / focal, speedContrast.projectionExponent)
+                let scale = focal / projectionDepth
                 // Fade a photo out before it grows large enough to spill off screen;
                 // the threshold is the user's "冲屏程度" setting.
                 let opacity = fog(depth) * smoothstep(overflow.fadeEnd, overflow.fadeStart, scale)
@@ -371,6 +387,33 @@ struct TunnelRewindView: View {
                     set: { photoScaleRaw = $0.rawValue }
                 )) {
                     ForEach(TunnelPhotoScale.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            settingGroup("纵深间距") {
+                Picker("", selection: Binding(
+                    get: { depthSpacing },
+                    set: { applyDepthSpacing($0) }
+                )) {
+                    ForEach(TunnelDepthSpacing.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            settingGroup("同日照片间距") {
+                Picker("", selection: Binding(
+                    get: { photoDepthSpacing },
+                    set: { photoDepthSpacingRaw = $0.rawValue }
+                )) {
+                    ForEach(TunnelPhotoDepthSpacing.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            settingGroup("速度层次") {
+                Picker("", selection: Binding(
+                    get: { speedContrast },
+                    set: { speedContrastRaw = $0.rawValue }
+                )) {
+                    ForEach(TunnelSpeedContrast.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented)
             }
@@ -554,6 +597,19 @@ struct TunnelRewindView: View {
     }
 
     // MARK: Math helpers
+
+    /// Preserve the current point between days when spacing changes in the live
+    /// settings preview, rather than jumping the camera to another date.
+    private func applyDepthSpacing(_ newSpacing: TunnelDepthSpacing) {
+        let oldFactor = depthSpacing.factor
+        guard newSpacing.factor != oldFactor else { return }
+        let ratio = newSpacing.factor / oldFactor
+        progress = (progress + focal) * ratio - focal
+        settleTarget = (settleTarget + focal) * ratio - focal
+        dragStartProgress = (dragStartProgress + focal) * ratio - focal
+        velocity *= ratio
+        depthSpacingRaw = newSpacing.rawValue
+    }
 
     private func clampTravel(_ p: Double) -> Double {
         min(max(p, progressStart), landProgress)
