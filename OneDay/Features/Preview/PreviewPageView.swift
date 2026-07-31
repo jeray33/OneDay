@@ -367,7 +367,7 @@ struct PreviewPageView: View {
 
     private func cardSize(in size: CGSize) -> CGSize {
         let sideMargin: CGFloat = 20
-        let verticalMargin: CGFloat = 20
+        let verticalMargin: CGFloat = 48
         let reservedInfoHeight: CGFloat = 64
         let maxImageWidth = max(1, size.width - sideMargin * 2 - sideBorder * 2)
         let maxImageHeight = max(1, size.height - verticalMargin * 2 - topBorder - baseBottomBorder - reservedInfoHeight)

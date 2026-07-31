@@ -353,25 +353,22 @@ struct PhotoPreviewView: View {
             Spacer(minLength: 4)
             if let item = currentItem {
                 Menu {
-                    Menu("照片操作") {
-                        Button {
-                            editingItem = item
-                        } label: {
-                            Label("编辑说明", systemImage: "pencil")
-                        }
-                        Button {
-                            albumItem = item
-                        } label: {
-                            Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
-                        }
+                    Button {
+                        editingItem = item
+                    } label: {
+                        Label("编辑说明", systemImage: "pencil")
                     }
-                    Menu("显示与布局") {
-                        Toggle(isOn: Binding(
-                            get: { model.showAlbumTagBar },
-                            set: { model.showAlbumTagBar = $0 }
-                        )) {
-                            Label("相簿标签栏", systemImage: "rectangle.stack")
-                        }
+                    Button {
+                        albumItem = item
+                    } label: {
+                        Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
+                    }
+                    Divider()
+                    Toggle(isOn: Binding(
+                        get: { model.showAlbumTagBar },
+                        set: { model.showAlbumTagBar = $0 }
+                    )) {
+                        Label("相簿标签栏", systemImage: "rectangle.stack")
                     }
                     Menu("横滑视觉效果") {
                         Toggle(isOn: $swipeYawEnabled) {
@@ -409,7 +406,9 @@ struct PhotoPreviewView: View {
                     }
                 } label: {
                     icon("ellipsis")
+                        .contentShape(.circle)
                 }
+                .menuStyle(.borderlessButton)
             }
         }
         .padding(.horizontal, 16)
