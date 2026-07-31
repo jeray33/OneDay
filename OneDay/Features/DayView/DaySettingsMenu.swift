@@ -254,6 +254,23 @@ struct DaySettingsMenu: View {
                     get: { model.showPhotoMap },
                     set: { model.showPhotoMap = $0 }
                 ))
+                Toggle("顶部渐变模糊", isOn: Binding(
+                    get: { model.mapProgressiveBlurEnabled },
+                    set: { model.mapProgressiveBlurEnabled = $0 }
+                ))
+                Menu("地图融合") {
+                    ForEach(MapBlendMode.allCases) { mode in
+                        Button {
+                            model.mapBlendMode = mode
+                        } label: {
+                            if model.mapBlendMode == mode {
+                                Label(mode.label, systemImage: "checkmark")
+                            } else {
+                                Text(mode.label)
+                            }
+                        }
+                    }
+                }
             }
             Toggle("显示说明文字", isOn: Binding(
                 get: { model.showPhotoCaptions },
@@ -272,7 +289,7 @@ struct DaySettingsMenu: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .frame(width: 38, height: 38)
-                .background(.ultraThinMaterial, in: Circle())
+                .glassEffect(.regular.interactive(), in: .circle)
         }
     }
 
@@ -369,7 +386,7 @@ struct DayTopBar: View {
                             .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(tint)
                             .frame(width: 38, height: 38)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .glassEffect(.regular.interactive(), in: .circle)
                     }
                 }
                 Spacer()

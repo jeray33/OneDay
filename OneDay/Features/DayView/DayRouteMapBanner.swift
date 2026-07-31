@@ -2,15 +2,28 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-/// Full-width, fixed-height trajectory map banner shown at the top of the
-/// photo page. Renders a grayscale `MKMapSnapshotter` image blended (multiply
-/// on light pages, screen on dark pages) into the page background, with the
-/// day's trajectory drawn on a Canvas in the brand blues. The bottom 40%
-/// fades to transparent via a linear mask so the map dissolves into the page.
+/// Full-width trajectory map banner shown at the top of the photo page.
+/// Renders a grayscale `MKMapSnapshotter` image blended into the page background
+/// using the user's chosen `MapBlendMode`, with the day's trajectory drawn on a
+/// Canvas in the brand blues. The bottom 40% fades to transparent via a linear
+/// mask so the map dissolves into the page. Below the map, a location track text
+/// shows the sequence of stop names and a large date title; when there are
+/// multiple stops, each dot is enlarged and drawn with its sequence number.
 struct DayRouteMapBanner: View {
     let locations: [CLLocation]
     /// Route stop centroids (one dot per stop) to avoid hundreds of dots.
     let stopCoordinates: [CLLocationCoordinate2D]
+    /// Display names for each stop, used to render the location track text below the map.
+    let stopNames: [String?]
+    /// The day's date rendered as a big title below the track text.
+    let date: Date
+    let dateFont: Font
+    /// How the grayscale map blends into the page background.
+    let blendMode: MapBlendMode
+    /// The page background color used to pre-blend the map snapshot.
+    let backgroundColor: Color
+    /// Whether to apply the top-edge progressive blur to the map.
+    let progressiveBlurEnabled: Bool
     let isDarkPage: Bool
 
     @State private var snapshot: UIImage?
@@ -21,20 +34,27 @@ struct DayRouteMapBanner: View {
         locations.map(\.coordinate)
     }
 
+    private var showNumberedDots: Bool { stopPoints.count > 1 }
+
     var body: some View {
         if locations.isEmpty {
             EmptyView()
         } else {
-            GeometryReader { geo in
-                content(in: geo.size)
-                    .task(id: taskKey(geo.size)) { await makeSnapshot(size: geo.size) }
+            VStack(spacing: 0) {
+                GeometryReader { geo in
+                    content(in: geo.size)
+                        .task(id: taskKey(geo.size)) { await makeSnapshot(size: geo.size) }
+                }
+                .frame(height: 240)
+
+                trackText
+                dateTitle
             }
-            .frame(height: 240)
         }
     }
 
     private func taskKey(_ size: CGSize) -> String {
-        "\(locations.count)-\(stopCoordinates.count)-\(Int(size.width))x\(Int(size.height))"
+        "\(locations.count)-\(stopCoordinates.count)-\(blendMode.rawValue)-\(colorString(backgroundColor))-\(Int(size.width))x\(Int(size.height))"
     }
 
     @ViewBuilder
@@ -45,15 +65,28 @@ struct DayRouteMapBanner: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: size.width, height: size.height)
-                    .saturation(0)
-                    .if(isDarkPage) { $0.colorInvert().blendMode(.screen) }
-                    .if(!isDarkPage) { $0.blendMode(.multiply) }
 
                 trajectoryLayer(in: size)
             }
         }
         .frame(width: size.width, height: size.height)
         .clipped()
+        // Soft top-edge blur so the map dissolves into the top overlay / status bar.
+        .if(progressiveBlurEnabled) { view in
+            view.progressiveBlur(radius: 12, maxSampleCount: 12) { geometry, context in
+                context.fill(
+                    Path(geometry.frame(in: .local)),
+                    with: .linearGradient(
+                        Gradient(stops: [
+                            .init(color: .white, location: 0.00),
+                            .init(color: .clear, location: 0.15)
+                        ]),
+                        startPoint: CGPoint(x: geometry.size.width / 2, y: 0),
+                        endPoint: CGPoint(x: geometry.size.width / 2, y: geometry.size.height)
+                    )
+                )
+            }
+        }
         // Bottom 40% fades from opaque to transparent, dissolving into the page.
         .mask(
             LinearGradient(
@@ -87,14 +120,45 @@ struct DayRouteMapBanner: View {
                                style: StrokeStyle(lineWidth: 4.0, lineCap: .round, lineJoin: .round))
             }
 
-            for p in stopPoints {
-                let r: CGFloat = 4.5
+            for (index, p) in stopPoints.enumerated() {
+                let r: CGFloat = showNumberedDots ? 8.0 : 4.5
                 let dotRect = CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)
                 context.fill(Path(ellipseIn: dotRect), with: .color(fillColor))
                 context.stroke(Path(ellipseIn: dotRect), with: .color(.white), lineWidth: 1.5)
+
+                if showNumberedDots {
+                    let number = Text("\(index + 1)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white)
+                    context.draw(number, at: p, anchor: .center)
+                }
             }
         }
         .frame(width: size.width, height: size.height)
+    }
+
+    private var trackText: some View {
+        let names = stopNames.enumerated().map { index, name in
+            name ?? "地点\(index + 1)"
+        }
+        return Text(names.joined(separator: " → "))
+            .font(Theme.serif(12, weight: .regular))
+            .foregroundStyle(Theme.ink)
+            .multilineTextAlignment(.leading)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var dateTitle: some View {
+        Text(DateText.dottedDate(date))
+            .font(dateFont)
+            .foregroundStyle(Theme.ink)
+            .padding(.top, 0)
+            .padding(.bottom, 8)
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var outlineColor: Color { Color(red: 0x0C / 255.0, green: 0xAA / 255.0, blue: 0xEE / 255.0) }
@@ -120,11 +184,65 @@ struct DayRouteMapBanner: View {
         guard let result else { return }
         let lines = coordinates.map { result.point(for: $0) }
         let stops = stopCoordinates.map { result.point(for: $0) }
+        let grayscale = grayscaleImage(from: result.image)
+        let mode = isDarkPage ? blendMode.darkBlendMode : blendMode.lightBlendMode
+        let blended = blendImage(grayscale, with: backgroundColor, mode: mode)
         await MainActor.run {
-            self.snapshot = result.image
+            self.snapshot = blended
             self.linePoints = lines
             self.stopPoints = stops
         }
+    }
+
+    /// Desaturates the map snapshot so the map blends cleanly with the page background.
+    private func grayscaleImage(from image: UIImage) -> UIImage {
+        guard let ciImage = CIImage(image: image) else { return image }
+        let filter = CIFilter(name: "CIColorControls")!
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(0.0, forKey: kCIInputSaturationKey)
+        guard let output = filter.outputImage,
+              let cgImage = CIContext().createCGImage(output, from: output.extent) else {
+            return image
+        }
+        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    /// Blends the grayscale map snapshot with a solid page background color using
+    /// Core Image so the map appears fused into the page, not layered on top of it.
+    private func blendImage(_ image: UIImage, with color: Color, mode: BlendMode) -> UIImage {
+        guard let inputImage = CIImage(image: image) else { return image }
+        let background = solidColorImage(color: UIColor(color), extent: inputImage.extent)
+
+        let filterName: String
+        switch mode {
+        case .multiply:     filterName = "CIMultiplyCompositing"
+        case .screen:       filterName = "CIScreenBlendMode"
+        case .overlay:      filterName = "CIOverlayBlendMode"
+        case .softLight:    filterName = "CISoftLightBlendMode"
+        case .colorBurn:    filterName = "CIColorBurnBlendMode"
+        case .colorDodge:   filterName = "CIColorDodgeBlendMode"
+        default:            filterName = "CISourceOverCompositing"
+        }
+
+        let filter = CIFilter(name: filterName)!
+        filter.setValue(inputImage, forKey: kCIInputImageKey)
+        filter.setValue(background, forKey: kCIInputBackgroundImageKey)
+        guard let output = filter.outputImage,
+              let cgImage = CIContext().createCGImage(output, from: output.extent) else {
+            return image
+        }
+        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+    }
+
+    private func solidColorImage(color: UIColor, extent: CGRect) -> CIImage {
+        CIImage(color: CIColor(color: color)).cropped(to: extent)
+    }
+
+    private func colorString(_ color: Color) -> String {
+        let uiColor = UIColor(color)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard uiColor.getRed(&r, green: &g, blue: &b, alpha: &a) else { return "unknown" }
+        return String(format: "%02X%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255), Int(a * 255))
     }
 
     // MARK: Region
@@ -138,12 +256,12 @@ struct DayRouteMapBanner: View {
         }
         let latCenter = (minLat + maxLat) / 2
         let lonCenter = (minLon + maxLon) / 2
-        // Pad bounds; leave ~30% extra latitude headroom toward the south so the
-        // trajectory sits in the upper, non-fading 60% of the banner.
-        let latDelta = max((maxLat - minLat) * 1.8, 0.008)
+        // Pad bounds; keep the trajectory in the upper, non-fading 60% of the
+        // banner while leaving a bit more breathing room toward the bottom edge.
+        let latDelta = max((maxLat - minLat) * 2.0, 0.008)
         let lonDelta = max((maxLon - minLon) * 1.8, 0.008)
         let shiftedCenter = CLLocationCoordinate2D(
-            latitude: latCenter + latDelta * 0.15,
+            latitude: latCenter + latDelta * 0.10,
             longitude: lonCenter
         )
         return MKCoordinateRegion(

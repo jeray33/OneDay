@@ -454,9 +454,9 @@ struct PhotoPreviewView: View {
     private func icon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 16, weight: .bold))
-            .foregroundStyle(.white)
+            .foregroundStyle(.black)
             .frame(width: 40, height: 40)
-            .background(.black.opacity(0.35), in: Circle())
+            .glassEffect(.regular.interactive(), in: .circle)
     }
 
     @ViewBuilder
@@ -469,9 +469,9 @@ struct PhotoPreviewView: View {
                     let fav = model.isFavorite(item)
                     Image(systemName: fav ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(fav ? Theme.accent : .white)
+                        .foregroundStyle(fav ? Theme.accent : .black)
                         .frame(width: 40, height: 40)
-                        .background(.black.opacity(0.35), in: Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                         .contentTransition(.symbolEffect(.replace))
                 }
                 if !pendingDeleteIDs.isEmpty {
@@ -480,9 +480,9 @@ struct PhotoPreviewView: View {
                     } label: {
                         Image(systemName: "arrow.uturn.backward")
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.black)
                             .frame(width: 40, height: 40)
-                            .background(.black.opacity(0.35), in: Circle())
+                            .glassEffect(.regular.interactive(), in: .circle)
                     }
                     .disabled(undoItemID != nil || isStagingDelete)
                 }
@@ -492,9 +492,9 @@ struct PhotoPreviewView: View {
                 } label: {
                     Image(systemName: "eye.slash")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.black)
                         .frame(width: 40, height: 40)
-                        .background(.black.opacity(0.35), in: Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
                 .disabled(isMutatingHidden)
                 Button {
@@ -502,9 +502,9 @@ struct PhotoPreviewView: View {
                 } label: {
                     Image(systemName: model.showAlbumTagBar ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.plus")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.black)
                         .frame(width: 40, height: 40)
-                        .background(.black.opacity(0.35), in: Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
             }
             .padding(.horizontal, 16)

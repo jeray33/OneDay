@@ -54,18 +54,25 @@ struct DayMagazineView: View {
             ScrollViewReader { proxy in
               ZStack {
                 ScrollView {
-                    VStack(spacing: model.sectionTintActive ? 0 : 96) {
+                    VStack(spacing: 0) {
                         Color.clear.frame(height: 0).id("scroll_top")
 
                         if model.showsPhotoMap {
                             DayRouteMapBanner(locations: model.routeLocations,
                                               stopCoordinates: model.routeStopCoordinates,
+                                              stopNames: model.routeStops.map(\.name),
+                                              date: model.date,
+                                              dateFont: model.coverDateFont.font(SectionTitleSize.small.size),
+                                              blendMode: model.mapBlendMode,
+                                              backgroundColor: model.pageBackgroundColor,
+                                              progressiveBlurEnabled: model.mapProgressiveBlurEnabled,
                                               isDarkPage: model.pageColorScheme == .dark)
-                                .frame(width: geo.size.width, height: 240)
+                                .frame(width: geo.size.width)
                         }
 
                         ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
                             sectionView(section, index: sIdx, contentWidth: contentWidth)
+                                .padding(.top, sectionTopSpacing(for: sIdx))
                         }
 
                         VStack(spacing: 0) {
@@ -190,7 +197,8 @@ struct DayMagazineView: View {
             }
         }
         .padding(.horizontal, 28)
-        .padding(.vertical, 36)
+        .padding(.top, 96)
+        .padding(.bottom, 36)
         .frame(maxWidth: .infinity)
         .revealFade(shouldRevealContent, delay: 0.5)
     }
@@ -256,7 +264,7 @@ struct DayMagazineView: View {
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(Theme.ink)
                     .frame(width: 38, height: 38)
-                    .background(.ultraThinMaterial, in: Circle())
+                    .glassEffect(.regular.interactive(), in: .circle)
             }
             if model.routeStops.count >= 2 && model.showLocationBar {
                 let stops = model.routeStops.map {
@@ -629,6 +637,13 @@ struct DayMagazineView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.4)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Spacing above each section. Segmented coloring keeps sections flush;
+    /// otherwise we keep a 64pt gap between sections and between the map's
+    /// track text and the first section title.
+    private func sectionTopSpacing(for index: Int) -> CGFloat {
+        model.sectionTintActive ? 0 : 64
     }
 
     @ViewBuilder

@@ -129,6 +129,41 @@ enum PageBackground: String, CaseIterable, Identifiable {
     }
 }
 
+/// How the grayscale trajectory map blends into the page background.
+enum MapBlendMode: String, CaseIterable, Identifiable {
+    case multiply, overlay, softLight, colorBurnDodge
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .multiply:       return "正片叠底"
+        case .overlay:        return "叠加"
+        case .softLight:      return "柔光"
+        case .colorBurnDodge: return "颜色加深/减淡"
+        }
+    }
+
+    /// Blend mode applied on light pages.
+    var lightBlendMode: BlendMode {
+        switch self {
+        case .multiply:       return .multiply
+        case .overlay:        return .overlay
+        case .softLight:      return .softLight
+        case .colorBurnDodge: return .colorBurn
+        }
+    }
+
+    /// Blend mode applied on dark pages (after optional color inversion).
+    var darkBlendMode: BlendMode {
+        switch self {
+        case .multiply:       return .screen
+        case .overlay:        return .overlay
+        case .softLight:      return .softLight
+        case .colorBurnDodge: return .colorDodge
+        }
+    }
+}
+
 // MARK: - Scroll transition animation config
 
 /// How much photos scale when entering/leaving the viewport.

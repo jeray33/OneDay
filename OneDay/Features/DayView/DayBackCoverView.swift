@@ -38,7 +38,7 @@ struct DayBackCoverView: View {
                     }
                     .padding(.horizontal, horizontalPadding)
                     .padding(.top, topSafeAreaInset() + 82)
-                    .padding(.bottom, 72)
+                    .padding(.bottom, 160)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollDisabled(scrollDisabled)
@@ -84,7 +84,7 @@ struct DayBackCoverView: View {
                 .foregroundStyle(Theme.ink.opacity(0.62))
                 .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
         } else {
-            VStack(alignment: .leading, spacing: 72) {
+            VStack(alignment: .leading, spacing: 36) {
                 ForEach(entries) { entry in
                     historyRow(entry, availableWidth: availableWidth)
                         .contentShape(Rectangle())

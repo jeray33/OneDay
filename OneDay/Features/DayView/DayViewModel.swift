@@ -13,7 +13,9 @@ enum SectionTitleSize: String, CaseIterable, Identifiable {
     case xsmall, small, medium, large, xlarge
     var id: String { rawValue }
     var label: String { ["最小", "较小", "适中", "较大", "最大"][Self.allCases.firstIndex(of: self) ?? 4] }
-    var size: CGFloat { [32, 38, 44, 50, 56][Self.allCases.firstIndex(of: self) ?? 4] }
+    /// Largest is now the previous "small", "large" is the previous "xsmall",
+    /// and the remaining sizes decrease in 6pt steps.
+    var size: CGFloat { [14, 20, 26, 32, 38][Self.allCases.firstIndex(of: self) ?? 4] }
 }
 
 struct ScatteredCoverPhoto: Identifiable {
@@ -75,6 +77,8 @@ final class DayViewModel {
     private static let locationBarKey    = "OneDay.locationBar"
     private static let coverModeKey      = "OneDay.coverMode"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
+    private static let mapBlendModeKey     = "OneDay.mapBlendMode"
+    private static let mapProgressiveBlurKey = "OneDay.mapProgressiveBlur"
 private static let photoMapKey       = "OneDay.photoMap"
     private static let photoCaptionsKey  = "OneDay.photoCaptions"
 private static let albumTagBarKey    = "OneDay.albumTagBar"
@@ -203,6 +207,14 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     }
     var sectionTitleSize: SectionTitleSize {
         didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
+    }
+    /// How the grayscale trajectory map blends into the page background.
+    var mapBlendMode: MapBlendMode {
+        didSet { UserDefaults.standard.set(mapBlendMode.rawValue, forKey: Self.mapBlendModeKey) }
+    }
+    /// Whether the top-edge progressive blur is applied to the map banner.
+    var mapProgressiveBlurEnabled: Bool {
+        didSet { UserDefaults.standard.set(mapProgressiveBlurEnabled, forKey: Self.mapProgressiveBlurKey) }
     }
     /// Whether to show each photo's caption/description beneath it in the photo
     /// page and in the photo preview.
@@ -335,6 +347,8 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.showPhotoMap = UserDefaults.standard.object(forKey: Self.photoMapKey) as? Bool ?? true
         self.coverMode = CoverMode(rawValue: UserDefaults.standard.string(forKey: Self.coverModeKey) ?? "") ?? .collage
         self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
+        self.mapBlendMode = MapBlendMode(rawValue: UserDefaults.standard.string(forKey: Self.mapBlendModeKey) ?? "") ?? .multiply
+        self.mapProgressiveBlurEnabled = UserDefaults.standard.object(forKey: Self.mapProgressiveBlurKey) as? Bool ?? true
 self.showPhotoCaptions = UserDefaults.standard.object(forKey: Self.photoCaptionsKey) as? Bool ?? false
 self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey) as? Bool ?? true
         let savedDisabled = UserDefaults.standard.stringArray(forKey: Self.disabledAlbumIDsKey) ?? []
