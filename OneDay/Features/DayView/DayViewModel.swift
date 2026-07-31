@@ -1042,7 +1042,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// User albums that should appear in the preview tag bar.
     func enabledAlbums() -> [AlbumInfo] {
-        userAlbums().filter { !disabledAlbumIDs.contains($0.id) }
+        var all = PhotoActionService.shared.userAlbums()
+        all.append(.hiddenAlbum)
+        return orderedAlbums(all).filter { !disabledAlbumIDs.contains($0.id) }
     }
 
     private func orderedAlbums(_ albums: [AlbumInfo]) -> [AlbumInfo] {

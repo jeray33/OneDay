@@ -29,13 +29,42 @@ struct AlbumTagBar: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.black)
                 .frame(width: 30, height: 28)
-                .background(Color(white: 0.83), in: Capsule())
+                .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("配置相簿标签")
     }
 
+    @ViewBuilder
     private func albumChip(_ album: AlbumInfo) -> some View {
+        if album.id == AlbumInfo.hiddenAlbumID {
+            hiddenAlbumChip
+        } else {
+            regularAlbumChip(album)
+        }
+    }
+
+    private var hiddenAlbumChip: some View {
+        Button {
+            onTapAlbum(.hiddenAlbum)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 10, weight: .bold))
+                Text(AlbumInfo.hiddenAlbum.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.black)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(.ultraThinMaterial, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("隐藏当前照片")
+    }
+
+    private func regularAlbumChip(_ album: AlbumInfo) -> some View {
         let inAlbum = membershipIDs.contains(album.id)
         let flashing = flashAlbumID == album.id
         return Button {
@@ -65,7 +94,7 @@ struct AlbumTagBar: View {
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(
-                Color(white: 0.83),
+                .ultraThinMaterial,
                 in: Capsule()
             )
             .overlay(

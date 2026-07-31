@@ -488,16 +488,6 @@ struct PhotoPreviewView: View {
                 }
                 Spacer()
                 Button {
-                    Task { await hideCurrentItem() }
-                } label: {
-                    Image(systemName: "eye.slash")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 40, height: 40)
-                        .glassEffect(.regular.interactive(), in: .circle)
-                }
-                .disabled(isMutatingHidden)
-                Button {
                     model.showAlbumTagBar.toggle()
                 } label: {
                     Image(systemName: model.showAlbumTagBar ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.plus")
@@ -535,10 +525,15 @@ struct PhotoPreviewView: View {
             membershipIDs = []
             return
         }
-        membershipIDs = model.albumIDs(containing: item, among: tagAlbums)
+        let realAlbums = tagAlbums.filter { $0.id != AlbumInfo.hiddenAlbumID }
+        membershipIDs = model.albumIDs(containing: item, among: realAlbums)
     }
 
     private func toggleCurrentPhoto(in album: AlbumInfo) async {
+        if album.id == AlbumInfo.hiddenAlbumID {
+            await hideCurrentItem()
+            return
+        }
         guard !isMutatingAlbum, let item = currentItem else { return }
         isMutatingAlbum = true
         defer { isMutatingAlbum = false }

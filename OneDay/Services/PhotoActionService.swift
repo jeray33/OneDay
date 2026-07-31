@@ -13,6 +13,9 @@ struct AlbumInfo: Identifiable, Hashable {
     let id: String
     let title: String
     let count: Int
+
+    static let hiddenAlbumID = "com.oneday.hidden-album"
+    static let hiddenAlbum = AlbumInfo(id: hiddenAlbumID, title: "隐藏相簿", count: 0)
 }
 
 @MainActor

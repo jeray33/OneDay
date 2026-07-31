@@ -34,12 +34,14 @@ struct AlbumConfigSheet: View {
                     ForEach(albums) { album in
                         Toggle(isOn: binding(for: album)) {
                             HStack {
-                                Image(systemName: "rectangle.stack")
+                                Image(systemName: album.id == AlbumInfo.hiddenAlbumID ? "eye.slash" : "rectangle.stack")
                                     .foregroundStyle(Theme.accent)
                                 Text(album.title)
                                 Spacer()
-                                Text("\(album.count)")
-                                    .foregroundStyle(.secondary)
+                                if album.id != AlbumInfo.hiddenAlbumID {
+                                    Text("\(album.count)")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                         .tint(Theme.accent)
@@ -80,7 +82,7 @@ struct AlbumConfigSheet: View {
                             if !next.contains(where: { $0.id == created.id }) {
                                 next.append(created)
                             } else {
-                                next = ordered(model.userAlbums(), by: albums.map(\.id) + [created.id])
+                                next = ordered(model.userAlbums() + [.hiddenAlbum], by: albums.map(\.id) + [created.id])
                             }
                             albums = next
                             newName = ""
@@ -91,7 +93,9 @@ struct AlbumConfigSheet: View {
             }
         }
         .onAppear {
-            albums = model.userAlbums()
+            var all = model.userAlbums()
+            all.append(.hiddenAlbum)
+            albums = ordered(all, by: model.albumTagOrder)
             draftDisabled = model.disabledAlbumIDs
         }
     }
