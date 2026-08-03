@@ -225,30 +225,11 @@ struct RootView: View {
         flashFrames = []
         tunnelStartDate = nil
 
-        // Load the anchor first so there is always a visible layer entering from
-        // the distance; the five random layers then finish concurrently.
-        let anchorImages = await ImageLoader.shared.thumbnails(
-            assets: initialGroup[0].assets,
-            size: tunnelPreviewSize,
-            quality: .fast,
-            priority: .userInitiated,
-            contentMode: .aspectFit,
-            maxConcurrent: tunnelLoadConcurrency
-        )
-        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
-        let loadedAnchor = Self.makeTunnelLayers(
-            [initialGroup[0]],
-            images: anchorImages,
-            photoScale: photoScale,
-            preserving: tunnelLayers
-        )
-        mergeTunnelLayers(loadedAnchor)
-        var completedOpeningLayers = 1
-        tunnelOpeningProgress = 1 / Double(max(initialGroup.count, 1))
-
+        // Load all initial layers concurrently (instead of anchor-first) so
+        // the first photos appear as early as possible.
+        var completedOpeningLayers = 0
         await withTaskGroup(of: (Int, [UIImage?]).self) { group in
-            for index in initialGroup.indices.dropFirst() {
-                let entry = initialGroup[index]
+            for (index, entry) in initialGroup.enumerated() {
                 group.addTask(priority: .userInitiated) {
                     let images = await ImageLoader.shared.thumbnails(
                         assets: entry.assets,

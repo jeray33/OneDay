@@ -116,6 +116,8 @@ struct TunnelRewindView: View {
     @State private var referencePitch: Double?
     @State private var tiltOffset: CGSize = .zero
     @State private var dateRevealProgress: Double = 0
+    @State private var hintVisible: Bool = false
+    @State private var openingEndedAt: Double = -1
 
     init(model: DayViewModel?, layers: [TunnelLayer],
          initialLoadProgress: Double = 1,
@@ -187,6 +189,11 @@ struct TunnelRewindView: View {
                 }
                 .ignoresSafeArea()
                 if background.isDark { vignette }
+                // Loading indicator before the first photos arrive
+                if openingIsActive && openingTargetProgress < 0.05 {
+                    TunnelLoader()
+                        .transition(.opacity)
+                }
                 // Gesture surface: transparent layer below interactive controls
                 // so button taps don't bleed into drag/tap gestures.
                 Color.clear
@@ -218,12 +225,13 @@ struct TunnelRewindView: View {
                 // Fixed bottom hint
                 VStack {
                     //Spacer()
-                    if mode != .settling && mode != .done {
+                    if hintVisible && mode != .settling && mode != .done {
                         Text(hintText)
                             .font(Theme.serif(12))
                             .foregroundStyle(.tertiary)
                             //.padding(.bottom, 24)
                             .padding(.top, 24)
+                            .transition(.opacity)
                     }
                     Spacer()
                 }
@@ -619,6 +627,7 @@ struct TunnelRewindView: View {
             updateDeviceTilt(dt)
             updateDateReveal(dt)
             updateOpeningMotion(dt)
+            updateHintVisibility()
             guard !settingsShown else { continue }
             step(dt)
             updateFocus()
@@ -717,6 +726,17 @@ struct TunnelRewindView: View {
         dateRevealProgress = min(1, dateRevealProgress + speed * dt)
     }
 
+    private func updateHintVisibility() {
+        if !openingIsActive && openingEndedAt < 0 {
+            openingEndedAt = clock
+        }
+        if !hintVisible && openingEndedAt >= 0 && clock - openingEndedAt > 1.0 {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                hintVisible = true
+            }
+        }
+    }
+
     private func updateOpeningMotion(_ dt: Double) {
         let target = openingActive ? openingTargetProgress : 1
         let speed = 1.0 / openingDuration
@@ -786,5 +806,84 @@ struct TunnelRewindView: View {
         guard edge0 != edge1 else { return x < edge0 ? 0 : 1 }
         let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
         return t * t * (3 - 2 * t)
+    }
+}
+
+/// 3×3 dot grid loader: 8 perimeter dots shift one step clockwise each cycle
+/// while the container pulses in size. Center dot stays fixed.
+private struct TunnelLoader: View {
+    private let dotSize: CGFloat = 4
+    private let minSize: CGFloat = 16
+    private let maxSize: CGFloat = 24
+    private let color: Color = .gray
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let phase = t.truncatingRemainder(dividingBy: 1.0)
+
+                // Size pulse: 0-35% expand, 35-65% hold, 65-100% shrink
+                let sizeP: Double
+                if phase < 0.35 {
+                    sizeP = smoothstep(phase / 0.35)
+                } else if phase < 0.65 {
+                    sizeP = 1
+                } else {
+                    sizeP = 1 - smoothstep((phase - 0.65) / 0.35)
+                }
+                let w = Double(minSize) + Double(maxSize - minSize) * sizeP
+
+                // Position shift: 0-40% at A, 40-60% transition, 60-100% at B
+                let shiftP: Double
+                if phase < 0.4 {
+                    shiftP = 0
+                } else if phase < 0.6 {
+                    shiftP = smoothstep((phase - 0.4) / 0.2)
+                } else {
+                    shiftP = 1
+                }
+
+                // Perimeter positions (counter-clockwise from top-left)
+                let posA: [(Double, Double)] = [
+                    (0, 0), (0, 0.5), (0, 1), (0.5, 1),
+                    (1, 1), (1, 0.5), (1, 0), (0.5, 0)
+                ]
+                let posB: [(Double, Double)] = [
+                    (0, 0.5), (0, 1), (0.5, 1), (1, 1),
+                    (1, 0.5), (1, 0), (0.5, 0), (0, 0)
+                ]
+
+                let d = Double(dotSize)
+                let span = w - d
+                let offX = (Double(size.width) - w) / 2
+                let offY = (Double(size.height) - w) / 2
+
+                for i in 0..<8 {
+                    let (ax, ay) = posA[i]
+                    let (bx, by) = posB[i]
+                    let x = (ax + (bx - ax) * shiftP) * span + offX
+                    let y = (ay + (by - ay) * shiftP) * span + offY
+                    context.fill(
+                        Path(CGRect(x: x, y: y, width: d, height: d)),
+                        with: .color(color)
+                    )
+                }
+
+                // Center dot
+                let cx = (Double(size.width) - d) / 2
+                let cy = (Double(size.height) - d) / 2
+                context.fill(
+                    Path(CGRect(x: cx, y: cy, width: d, height: d)),
+                    with: .color(color)
+                )
+            }
+            .frame(width: maxSize, height: maxSize)
+        }
+    }
+
+    private func smoothstep(_ t: Double) -> Double {
+        let c = min(max(t, 0), 1)
+        return c * c * (3 - 2 * c)
     }
 }
