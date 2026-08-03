@@ -15,8 +15,9 @@ struct RootView: View {
     @State private var tunnelLayers: [TunnelLayer] = []
     @State private var tunnelStartDate: Date?
     @State private var rewindHomeID = UUID()
-    @State private var rewindPreparing = false
     @State private var rewindPreparationID = UUID()
+    @State private var tunnelOpeningProgress = 0.0
+    @State private var tunnelOpeningActive = true
     @State private var preparing = false
     @State private var navLoading = false
     @State private var historyEntries: [TodayInHistoryEntry] = []
@@ -47,38 +48,33 @@ struct RootView: View {
             switch phase {
             case .home:
                 if rewindMode == .rewind {
-                    if !tunnelLayers.isEmpty, let dayModel {
-                        TunnelRewindView(
-                            model: dayModel,
-                            layers: tunnelLayers,
-                            dateNamespace: dateNamespace,
-                            startDate: tunnelStartDate,
-                            onLand: { req in
-                                let target = req.date
-                                Task {
-                                    if let model = await makeDayModel(for: target) {
-                                        if let layer = tunnelLayers.first(where: {
-                                            Calendar.current.isDate($0.date, inSameDayAs: target)
-                                        }) {
-                                            model.setTunnelCoverPhotos(from: layer, drift: req.drift)
-                                        }
-                                        self.dayModel = model
-                                        tunnelStartDate = model.date
-                                        withAnimation(.easeInOut(duration: 0.5)) {
-                                            phase = .day
-                                        }
+                    TunnelRewindView(
+                        model: dayModel,
+                        layers: tunnelLayers,
+                        initialLoadProgress: tunnelOpeningProgress,
+                        isOpening: tunnelOpeningActive,
+                        dateNamespace: dateNamespace,
+                        startDate: tunnelStartDate,
+                        onLand: { req in
+                            let target = req.date
+                            Task {
+                                if let model = await makeDayModel(for: target) {
+                                    if let layer = tunnelLayers.first(where: {
+                                        Calendar.current.isDate($0.date, inSameDayAs: target)
+                                    }) {
+                                        model.setTunnelCoverPhotos(from: layer, drift: req.drift)
+                                    }
+                                    self.dayModel = model
+                                    tunnelStartDate = model.date
+                                    withAnimation(.easeInOut(duration: 0.5)) {
+                                        phase = .day
                                     }
                                 }
                             }
-                        )
-                        .id(rewindHomeID)
-                        .transition(.opacity)
-                    } else if rewindPreparing {
-                        preparingOverlay
-                    } else {
-                        HomeView(onPickDay: pickDay)
-                            .transition(.opacity)
-                    }
+                        }
+                    )
+                    .id(rewindHomeID)
+                    .transition(.opacity)
                 } else {
                     HomeView(onPickDay: pickDay)
                         .transition(.opacity)
@@ -157,14 +153,19 @@ struct RootView: View {
             let mode = RewindMode(rawValue: newValue) ?? .flash
             if mode != .rewind, phase == .home {
                 rewindPreparationID = UUID()
-                rewindPreparing = false
+                tunnelOpeningProgress = 0
+                tunnelOpeningActive = true
                 tunnelLayers = []
                 dayModel = nil
                 tunnelStartDate = nil
+            } else if mode == .rewind, phase == .home {
+                tunnelOpeningProgress = 0
+                tunnelOpeningActive = true
             }
         }
         .onChange(of: rewindSortOrderRaw) { _, _ in
-            if rewindMode == .rewind, phase == .home, !tunnelLayers.isEmpty {
+            if rewindMode == .rewind, phase == .home,
+               !tunnelOpeningActive, !tunnelLayers.isEmpty {
                 tunnelLayers = applyRewindSort(to: tunnelLayers)
                 tunnelStartDate = nil
                 rewindHomeID = UUID()
@@ -177,10 +178,13 @@ struct RootView: View {
         guard tunnelLayers.isEmpty else { return }
         let preparationID = UUID()
         rewindPreparationID = preparationID
-        rewindPreparing = true
+        tunnelOpeningProgress = 0
+        tunnelOpeningActive = true
         defer {
             if rewindPreparationID == preparationID {
-                rewindPreparing = false
+                if tunnelOpeningProgress < 1 {
+                    tunnelOpeningActive = false
+                }
             }
         }
 
@@ -205,59 +209,92 @@ struct RootView: View {
         let photoScale = tunnelPhotoScale
         let initialGroup = Array(sortedGroup.prefix(tunnelInitialLayerCount))
         let initialAssets = initialGroup.flatMap(\.assets)
-        let initialStages = [
-            ImageLoader.LoadStage(
-                size: tunnelPreviewSize,
-                quality: .fast,
-                priority: .userInitiated,
-                contentMode: .aspectFit
-            )
-        ]
 
-        var initialLayers: [TunnelLayer] = []
-        var didPresentTunnel = false
-        for await stage in ImageLoader.shared.stagedThumbnails(
-            assets: initialAssets,
-            stages: initialStages,
-            maxConcurrent: tunnelLoadConcurrency
-        ) {
-            guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
-            initialLayers = Self.makeTunnelLayers(
-                initialGroup,
-                images: stage.images,
-                photoScale: photoScale,
-                preserving: initialLayers
-            )
-            guard let anchor = initialLayers.first, !anchor.photos.isEmpty else { continue }
-
-            if didPresentTunnel {
-                mergeTunnelLayers(initialLayers)
-                continue
-            }
-
-            let newest = sortedGroup[0].date
-            guard let items = await landingItems(on: newest) else {
-                showEmptyAlert = true
-                return
-            }
-            let initialByDate = Dictionary(
-                uniqueKeysWithValues: initialLayers.map { ($0.date, $0) }
-            )
-            dayModel = DayViewModel(date: newest, items: items)
-            tunnelLayers = sortedGroup.map { entry in
-                initialByDate[entry.date] ?? TunnelLayer(date: entry.date, photos: [])
-            }
-            flashFrames = []
-            tunnelStartDate = nil
-            rewindHomeID = UUID()
-            didPresentTunnel = true
-        }
-
-        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
-        guard didPresentTunnel else {
+        let newest = sortedGroup[0].date
+        guard let items = await landingItems(on: newest) else {
             showEmptyAlert = true
             return
         }
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+
+        // Publish the tunnel structure before requesting images. Its chrome is
+        // already on screen, and each completed opening layer can now appear
+        // immediately instead of waiting behind a separate loading page.
+        dayModel = DayViewModel(date: newest, items: items)
+        tunnelLayers = sortedGroup.map { TunnelLayer(date: $0.date, photos: []) }
+        flashFrames = []
+        tunnelStartDate = nil
+
+        // Load the anchor first so there is always a visible layer entering from
+        // the distance; the five random layers then finish concurrently.
+        let anchorImages = await ImageLoader.shared.thumbnails(
+            assets: initialGroup[0].assets,
+            size: tunnelPreviewSize,
+            quality: .fast,
+            priority: .userInitiated,
+            contentMode: .aspectFit,
+            maxConcurrent: tunnelLoadConcurrency
+        )
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+        let loadedAnchor = Self.makeTunnelLayers(
+            [initialGroup[0]],
+            images: anchorImages,
+            photoScale: photoScale,
+            preserving: tunnelLayers
+        )
+        mergeTunnelLayers(loadedAnchor)
+        var completedOpeningLayers = 1
+        tunnelOpeningProgress = 1 / Double(max(initialGroup.count, 1))
+
+        await withTaskGroup(of: (Int, [UIImage?]).self) { group in
+            for index in initialGroup.indices.dropFirst() {
+                let entry = initialGroup[index]
+                group.addTask(priority: .userInitiated) {
+                    let images = await ImageLoader.shared.thumbnails(
+                        assets: entry.assets,
+                        size: tunnelPreviewSize,
+                        quality: .fast,
+                        priority: .userInitiated,
+                        contentMode: .aspectFit,
+                        maxConcurrent: 1
+                    )
+                    return (index, images)
+                }
+            }
+
+            for await (index, images) in group {
+                guard rewindPreparationID == preparationID,
+                      !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                let loaded = Self.makeTunnelLayers(
+                    [initialGroup[index]],
+                    images: images,
+                    photoScale: photoScale,
+                    preserving: tunnelLayers
+                )
+                mergeTunnelLayers(loaded)
+                completedOpeningLayers += 1
+                tunnelOpeningProgress = Double(completedOpeningLayers)
+                    / Double(max(initialGroup.count, 1))
+            }
+        }
+
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+        guard let anchor = tunnelLayers.first, !anchor.photos.isEmpty else {
+            tunnelLayers = []
+            dayModel = nil
+            showEmptyAlert = true
+            return
+        }
+        tunnelOpeningProgress = 1
+        tunnelOpeningActive = false
+
+        // Let the six opening layers finish their smooth approach before later
+        // batches begin appearing behind them.
+        try? await Task.sleep(nanoseconds: 650_000_000)
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
 
         let remainingGroup = Array(sortedGroup.dropFirst(initialGroup.count))
         let remainingBatches = stride(
@@ -397,14 +434,6 @@ struct RootView: View {
     private func mergeTunnelLayers(_ loaded: [TunnelLayer]) {
         let loadedByDate = Dictionary(uniqueKeysWithValues: loaded.map { ($0.date, $0) })
         tunnelLayers = tunnelLayers.map { loadedByDate[$0.date] ?? $0 }
-    }
-
-    private var preparingOverlay: some View {
-        ZStack {
-            Theme.paper.ignoresSafeArea()
-            ProgressView().tint(Theme.ink)
-        }
-        .transition(.opacity)
     }
 
     private func pickDay() {

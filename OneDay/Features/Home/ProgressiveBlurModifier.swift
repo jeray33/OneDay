@@ -37,7 +37,7 @@ extension View {
 }
 
 extension VisualEffect {
-    func progressiveBlur(
+    nonisolated func progressiveBlur(
         radius: CGFloat,
         maxSampleCount: Int = 25,
         verticalPassFirst: Bool = false,

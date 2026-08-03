@@ -42,8 +42,10 @@ struct TunnelPhoto: Identifiable {
 /// past the screen edges. Depth-of-field keeps the focus plane crisp while near and
 /// far photos blur; constant camera velocity yields natural acceleration + stagger.
 struct TunnelRewindView: View {
-    let model: DayViewModel
+    let model: DayViewModel?
     let layers: [TunnelLayer]
+    let initialLoadProgress: Double
+    let isOpening: Bool
     let dateNamespace: Namespace.ID
     var startDate: Date? = nil
     var onLand: (TunnelDayRequest) -> Void
@@ -96,6 +98,10 @@ struct TunnelRewindView: View {
     @State private var dragStartProgress: Double = 0
     @State private var lastFocus: Int = -1
     @State private var pendingLandDate: Date?
+    @State private var layerDates: [Date]
+    @State private var openingTargetProgress: Double
+    @State private var openingVisualProgress: Double
+    @State private var openingActive: Bool
 
     @State private var displayDate: Date
     @State private var isFinishing = false
@@ -106,12 +112,16 @@ struct TunnelRewindView: View {
     @State private var referencePitch: Double?
     @State private var tiltOffset: CGSize = .zero
 
-    init(model: DayViewModel, layers: [TunnelLayer],
+    init(model: DayViewModel?, layers: [TunnelLayer],
+         initialLoadProgress: Double = 1,
+         isOpening: Bool = false,
          dateNamespace: Namespace.ID,
          startDate: Date? = nil,
          onLand: @escaping (TunnelDayRequest) -> Void) {
         self.model = model
         self.layers = layers
+        self.initialLoadProgress = initialLoadProgress
+        self.isOpening = isOpening
         self.dateNamespace = dateNamespace
         self.startDate = startDate
         self.onLand = onLand
@@ -123,11 +133,18 @@ struct TunnelRewindView: View {
         let start = Double(startIndex) * storedSpacing.factor - 1.0
         _progress = State(initialValue: start)
         _mode = State(initialValue: .manualIdle)
-        let initialDate = layers.indices.contains(startIndex) ? layers[startIndex].date : model.date
+        _layerDates = State(initialValue: layers.map(\.date))
+        let openingProgress = isOpening ? initialLoadProgress : 1
+        _openingTargetProgress = State(initialValue: openingProgress)
+        _openingVisualProgress = State(initialValue: openingProgress)
+        _openingActive = State(initialValue: isOpening)
+        let initialDate = layers.indices.contains(startIndex)
+            ? layers[startIndex].date
+            : model?.date ?? Date()
         _displayDate = State(initialValue: initialDate)
     }
 
-    private var count: Int { layers.count }
+    private var count: Int { layerDates.count }
     private var progressStart: Double { -focal }
     private var landProgress: Double { Double(max(count - 1, 0)) * depthSpacing.factor - focal }
 
@@ -168,7 +185,9 @@ struct TunnelRewindView: View {
                 // so button taps don't bleed into drag/tap gestures.
                 Color.clear
                     .contentShape(Rectangle())
-                    .gesture(mode == .manualIdle || mode == .manualDrag || mode == .momentum ? dragGesture : nil)
+                    .gesture(!openingIsActive && (
+                        mode == .manualIdle || mode == .manualDrag || mode == .momentum
+                    ) ? dragGesture : nil)
                     .onTapGesture { if mode == .autoPlay { handleTap() } }
                 if textPosition == .bottom {
                     VStack {
@@ -184,6 +203,8 @@ struct TunnelRewindView: View {
                     if mode == .manualIdle {
                         playButton
                             .padding(.bottom, 40)
+                            .disabled(openingIsActive || layerDates.isEmpty)
+                            .opacity(openingIsActive || layerDates.isEmpty ? 0.45 : 1)
                             .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
                 }
@@ -216,6 +237,18 @@ struct TunnelRewindView: View {
             .environment(\.colorScheme, background.scheme)
         }
         .opacity(isFinishing ? 0 : 1)
+        .onChange(of: layers.map(\.date), initial: true) { _, dates in
+            layerDates = dates
+            progress = clampTravel(progress)
+            updateFocus()
+        }
+        .onChange(of: initialLoadProgress, initial: true) { _, newProgress in
+            openingTargetProgress = min(max(newProgress, 0), 1)
+        }
+        .onChange(of: isOpening, initial: true) { _, newValue in
+            openingActive = newValue
+            if !newValue { openingTargetProgress = 1 }
+        }
         .task {
             guard !hasStarted else { return }
             hasStarted = true
@@ -244,10 +277,12 @@ struct TunnelRewindView: View {
         }
 
         var projected: [Proj] = []
+        let openingDepthOffset = (1 - smoothstep(0, 1, openingVisualProgress)) * 6
         for (i, layer) in layers.enumerated() {
             for photo in layer.photos {
                 let z = Double(i) * depthSpacing.factor
                     + photo.zJitter * photoDepthSpacing.factor
+                    + openingDepthOffset
                 let depth = z - progress
                 guard depth > nearCull, depth < farVisible else { continue }
                 // Keep the focus plane fixed at scale 1 while adjusting how
@@ -532,10 +567,11 @@ struct TunnelRewindView: View {
     }
 
     private func handleTap() {
-        guard mode != .settling, mode != .done else { return }
+        guard !openingIsActive, !layerDates.isEmpty,
+              mode != .settling, mode != .done else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         let idx = focusIndex(progress)
-        pendingLandDate = layers[idx].date
+        pendingLandDate = layerDates[idx]
         settleTarget = snapProgress(for: idx)
         mode = .settling
     }
@@ -553,6 +589,7 @@ struct TunnelRewindView: View {
             last = now
             clock += dt
             updateDeviceTilt(dt)
+            updateOpeningMotion(dt)
             guard !settingsShown else { continue }
             step(dt)
             updateFocus()
@@ -560,6 +597,7 @@ struct TunnelRewindView: View {
     }
 
     private func step(_ dt: Double) {
+        guard count > 0, !openingIsActive else { return }
         switch mode {
         case .autoPlay:
             autoElapsed += dt
@@ -569,7 +607,7 @@ struct TunnelRewindView: View {
             progress += v * dt
             if progress >= landProgress {
                 progress = landProgress
-                pendingLandDate = layers.last?.date
+                pendingLandDate = layerDates.last
                 beginFinishFromSettle()
             }
         case .momentum:
@@ -599,18 +637,18 @@ struct TunnelRewindView: View {
         guard idx != lastFocus, idx >= 0, idx < count else { return }
         lastFocus = idx
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            displayDate = layers[idx].date
+            displayDate = layerDates[idx]
         }
-        if mode != .settling && mode != .done {
+        if !openingIsActive, mode != .settling && mode != .done {
             SoundEffects.tick()
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
         }
     }
 
     private func beginFinishFromSettle() {
-        guard mode != .done else { return }
+        guard mode != .done, !layerDates.isEmpty else { return }
         mode = .done
-        Task { await finish(on: pendingLandDate ?? layers[focusIndex(progress)].date) }
+        Task { await finish(on: pendingLandDate ?? layerDates[focusIndex(progress)]) }
     }
 
     // MARK: Landing
@@ -638,6 +676,19 @@ struct TunnelRewindView: View {
     private var combinedDrift: CGSize {
         CGSize(width: ambientDrift.width + tiltOffset.width,
                height: ambientDrift.height + tiltOffset.height)
+    }
+
+    private var openingIsActive: Bool {
+        openingActive || openingVisualProgress < 0.995
+    }
+
+    private func updateOpeningMotion(_ dt: Double) {
+        let target = openingActive ? openingTargetProgress : 1
+        let smoothing = 1 - exp(-dt / 0.12)
+        openingVisualProgress += (target - openingVisualProgress) * smoothing
+        if !openingActive, abs(1 - openingVisualProgress) < 0.001 {
+            openingVisualProgress = 1
+        }
     }
 
     private func startDeviceMotion() {
