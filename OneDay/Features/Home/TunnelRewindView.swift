@@ -37,6 +37,34 @@ struct TunnelPhoto: Identifiable {
     let size: CGSize      // display size at scale = 1 (aspect-correct)
 }
 
+enum TunnelPhotoBlur: String, CaseIterable, Identifiable {
+    case off = "off"
+    case low = "low"
+    case medium = "medium"
+    case high = "high"
+    case max = "max"
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .off: return "关"
+        case .low: return "1"
+        case .medium: return "2"
+        case .high: return "3"
+        case .max: return "4"
+        }
+    }
+    var amount: Double {
+        switch self {
+        case .off: return 0
+        case .low: return 3
+        case .medium: return 7
+        case .high: return 12
+        case .max: return 18
+        }
+    }
+}
+
 /// Cinematic depth-tunnel rewind. Days sit along the Z axis; photos are scattered
 /// on a tube wall so the camera flies down the hollow center and they stream out
 /// past the screen edges. Depth-of-field keeps the focus plane crisp while near and
@@ -63,6 +91,7 @@ struct TunnelRewindView: View {
     @AppStorage("OneDay.tunnelPhotoDepthSpacing") private var photoDepthSpacingRaw = TunnelPhotoDepthSpacing.standard.rawValue
     @AppStorage("OneDay.tunnelSpeedContrast") private var speedContrastRaw = TunnelSpeedContrast.natural.rawValue
     @AppStorage("OneDay.tunnelOverflow") private var overflowRaw = TunnelOverflow.medium.rawValue
+    @AppStorage("OneDay.tunnelPhotoBlur") private var photoBlurRaw = TunnelPhotoBlur.off.rawValue
 
     private var background: TunnelBackground { TunnelBackground(rawValue: backgroundRaw) ?? .dark }
     private var textPosition: TunnelTextPosition { TunnelTextPosition(rawValue: textPositionRaw) ?? .center }
@@ -73,6 +102,7 @@ struct TunnelRewindView: View {
     }
     private var speedContrast: TunnelSpeedContrast { TunnelSpeedContrast(rawValue: speedContrastRaw) ?? .natural }
     private var overflow: TunnelOverflow { TunnelOverflow(rawValue: overflowRaw) ?? .medium }
+    private var photoBlur: TunnelPhotoBlur { TunnelPhotoBlur(rawValue: photoBlurRaw) ?? .off }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
 
     // MARK: Perspective / look constants
@@ -348,14 +378,30 @@ struct TunnelRewindView: View {
         projected.sort { $0.depth > $1.depth }
 
         let frameColor: Color = background.isDark ? Color(white: 0.93) : .white
+        let userBlur = photoBlur.amount
         for p in projected {
+            // Frame: drawn sharp (no blur) so edges stay crisp
             context.drawLayer { layer in
                 layer.opacity = p.opacity
-                if p.blur > 0.3 { layer.addFilter(.blur(radius: p.blur)) }
                 let frameRect = p.rect.insetBy(dx: -border, dy: -border)
                 layer.fill(Path(roundedRect: frameRect, cornerRadius: 2),
                            with: .color(frameColor))
-                layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+            }
+            // Image: drawn with depth-of-field + user blur, clipped to photo rect
+            let totalBlur = p.blur + userBlur
+            if totalBlur > 0.3 {
+                var clipped = context
+                clipped.clip(to: Path(roundedRect: p.rect, cornerRadius: 2))
+                clipped.drawLayer { layer in
+                    layer.opacity = p.opacity
+                    layer.addFilter(.blur(radius: totalBlur))
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                }
+            } else {
+                context.drawLayer { layer in
+                    layer.opacity = p.opacity
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                }
             }
         }
     }
@@ -517,6 +563,15 @@ struct TunnelRewindView: View {
                         get: { overflow }, set: { overflowRaw = $0.rawValue }
                     )) {
                         ForEach(TunnelOverflow.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                settingGroup("照片模糊") {
+                    Picker("", selection: Binding(
+                        get: { photoBlur },
+                        set: { photoBlurRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelPhotoBlur.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 }
