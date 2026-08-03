@@ -85,6 +85,10 @@ struct TunnelRewindView: View {
     private let border: CGFloat = 2.5
     private let autoDuration: Double = 6.0   // seconds for the full flythrough
     private let rampTime: Double = 0.6       // ease-in of camera velocity
+    private let openingDuration: Double = 2.0 // seconds for the staggered opening reveal
+    private let openingOverlap: Double = 8.0  // 1 = sequential, 2 = 50% overlap, 3 = 67% overlap
+    private let dateRevealDuration: Double = 0.4 // seconds for the date title to fade in
+    private let dateRevealDelay: Double = 0.3   // seconds to wait before date starts (after tunnel begins)
 
     // MARK: Motion state
     private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, done }
@@ -111,6 +115,7 @@ struct TunnelRewindView: View {
     @State private var referenceRoll: Double?
     @State private var referencePitch: Double?
     @State private var tiltOffset: CGSize = .zero
+    @State private var dateRevealProgress: Double = 0
 
     init(model: DayViewModel?, layers: [TunnelLayer],
          initialLoadProgress: Double = 1,
@@ -134,10 +139,11 @@ struct TunnelRewindView: View {
         _progress = State(initialValue: start)
         _mode = State(initialValue: .manualIdle)
         _layerDates = State(initialValue: layers.map(\.date))
-        let openingProgress = isOpening ? initialLoadProgress : 1
+        let openingProgress = isOpening ? max(initialLoadProgress, 0.02) : 1
         _openingTargetProgress = State(initialValue: openingProgress)
         _openingVisualProgress = State(initialValue: openingProgress)
         _openingActive = State(initialValue: isOpening)
+        _dateRevealProgress = State(initialValue: isOpening ? 0 : 1)
         let initialDate = layers.indices.contains(startIndex)
             ? layers[startIndex].date
             : model?.date ?? Date()
@@ -192,19 +198,19 @@ struct TunnelRewindView: View {
                 if textPosition == .bottom {
                     VStack {
                         Spacer()
-                        dateOverlay
+                        animatedDateOverlay
                             .padding(.bottom, 96)
                     }
                 } else {
-                    dateOverlay
+                    animatedDateOverlay
                 }
                 VStack {
                     Spacer()
-                    if mode == .manualIdle {
+                    if mode == .manualIdle && !openingIsActive {
                         playButton
                             .padding(.bottom, 40)
-                            .disabled(openingIsActive || layerDates.isEmpty)
-                            .opacity(openingIsActive || layerDates.isEmpty ? 0.45 : 1)
+                            .disabled(layerDates.isEmpty)
+                            .opacity(layerDates.isEmpty ? 0.45 : 1)
                             .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
                 }
@@ -277,12 +283,28 @@ struct TunnelRewindView: View {
         }
 
         var projected: [Proj] = []
-        let openingDepthOffset = (1 - smoothstep(0, 1, openingVisualProgress)) * 6
+        let batchCount = Double(min(layers.count, 6))
+        // Each layer starts `stagger` after the previous, but takes
+        // `openingOverlap * stagger` to move — so consecutive layers
+        // are in motion at the same time (cascading, not sequential).
+        let stagger = 1.0 / batchCount
+        let moveSpan = openingOverlap / batchCount
+        let totalSpan = (batchCount - 1) * stagger + moveSpan
         for (i, layer) in layers.enumerated() {
+            let localProgress: Double
+            if i < 6 {
+                let start = Double(i) * stagger / totalSpan
+                let span = moveSpan / totalSpan
+                localProgress = min(max((openingVisualProgress - start) / span, 0), 1)
+            } else {
+                localProgress = 1
+            }
+            let eased = 1 - pow(1 - localProgress, 3)
+            let depthOffset = (1 - eased) * 5
             for photo in layer.photos {
                 let z = Double(i) * depthSpacing.factor
                     + photo.zJitter * photoDepthSpacing.factor
-                    + openingDepthOffset
+                    + depthOffset
                 let depth = z - progress
                 guard depth > nearCull, depth < farVisible else { continue }
                 // Keep the focus plane fixed at scale 1 while adjusting how
@@ -526,6 +548,12 @@ struct TunnelRewindView: View {
         .allowsHitTesting(false)
     }
 
+    private var animatedDateOverlay: some View {
+        dateOverlay
+            .offset(y: (1 - dateRevealProgress) * 20)
+            .opacity(dateRevealProgress)
+    }
+
     private var hintText: String {
         switch mode {
         case .autoPlay:
@@ -589,6 +617,7 @@ struct TunnelRewindView: View {
             last = now
             clock += dt
             updateDeviceTilt(dt)
+            updateDateReveal(dt)
             updateOpeningMotion(dt)
             guard !settingsShown else { continue }
             step(dt)
@@ -679,13 +708,21 @@ struct TunnelRewindView: View {
     }
 
     private var openingIsActive: Bool {
-        openingActive || openingVisualProgress < 0.995
+        dateRevealProgress < 1 || openingActive || openingVisualProgress < 0.995
+    }
+
+    private func updateDateReveal(_ dt: Double) {
+        guard clock > dateRevealDelay, dateRevealProgress < 1 else { return }
+        let speed = 1.0 / dateRevealDuration
+        dateRevealProgress = min(1, dateRevealProgress + speed * dt)
     }
 
     private func updateOpeningMotion(_ dt: Double) {
         let target = openingActive ? openingTargetProgress : 1
-        let smoothing = 1 - exp(-dt / 0.12)
-        openingVisualProgress += (target - openingVisualProgress) * smoothing
+        let speed = 1.0 / openingDuration
+        if openingVisualProgress < target {
+            openingVisualProgress = min(target, openingVisualProgress + speed * dt)
+        }
         if !openingActive, abs(1 - openingVisualProgress) < 0.001 {
             openingVisualProgress = 1
         }
