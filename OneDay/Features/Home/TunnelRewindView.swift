@@ -123,7 +123,7 @@ struct TunnelRewindView: View {
     private let dateRevealDelay: Double = 0.3   // seconds to wait before date starts (after tunnel begins)
 
     // MARK: Motion state
-    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, done }
+    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, photoZooming, done }
 
     @State private var progress: Double
     @State private var clock: Double = 0
@@ -150,6 +150,8 @@ struct TunnelRewindView: View {
     @State private var dateRevealProgress: Double = 0
     @State private var hintVisible: Bool = false
     @State private var openingEndedAt: Double = -1
+    @State private var tappedPhotoID: UUID?
+    @State private var tappedPhotoScale: Double = 1.0
 
     init(model: DayViewModel?, layers: [TunnelLayer],
          initialLoadProgress: Double = 1,
@@ -309,6 +311,7 @@ struct TunnelRewindView: View {
 
     /// Projected photo data used both for drawing and for hit testing.
     private struct ProjectedPhoto {
+        let photoID: UUID
         let image: UIImage
         let rect: CGRect
         let blur: Double
@@ -322,10 +325,14 @@ struct TunnelRewindView: View {
         let frameColor: Color = background.isDark ? Color(white: 0.93) : .white
         let userBlur = photoBlur.amount
         for p in projected {
+            let isTapped = p.photoID == tappedPhotoID
+            let photoScale = isTapped ? CGFloat(tappedPhotoScale) : 1.0
+            let rect = scaledRect(p.rect, by: photoScale)
+
             // Frame: drawn sharp (no blur) so edges stay crisp
             context.drawLayer { layer in
                 layer.opacity = p.opacity
-                let frameRect = p.rect.insetBy(dx: -border, dy: -border)
+                let frameRect = rect.insetBy(dx: -border, dy: -border)
                 layer.fill(Path(roundedRect: frameRect, cornerRadius: 2),
                            with: .color(frameColor))
             }
@@ -333,19 +340,30 @@ struct TunnelRewindView: View {
             let totalBlur = p.blur + userBlur
             if totalBlur > 0.3 {
                 var clipped = context
-                clipped.clip(to: Path(roundedRect: p.rect, cornerRadius: 2))
+                clipped.clip(to: Path(roundedRect: rect, cornerRadius: 2))
                 clipped.drawLayer { layer in
                     layer.opacity = p.opacity
                     layer.addFilter(.blur(radius: totalBlur))
-                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: rect)
                 }
             } else {
                 context.drawLayer { layer in
                     layer.opacity = p.opacity
-                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: rect)
                 }
             }
         }
+    }
+
+    private func scaledRect(_ rect: CGRect, by scale: CGFloat) -> CGRect {
+        let scaledWidth = rect.width * scale
+        let scaledHeight = rect.height * scale
+        return CGRect(
+            x: rect.midX - scaledWidth / 2,
+            y: rect.midY - scaledHeight / 2,
+            width: scaledWidth,
+            height: scaledHeight
+        )
     }
 
     /// Compute the screen-space projection of every visible tunnel photo.
@@ -404,6 +422,7 @@ struct TunnelRewindView: View {
                 let h = photo.size.height * CGFloat(scale)
                 let rect = CGRect(x: pos.x - w / 2, y: pos.y - h / 2, width: w, height: h)
                 projected.append(ProjectedPhoto(
+                    photoID: photo.id,
                     image: photo.image,
                     rect: rect,
                     blur: dofBlur(depth),
@@ -646,6 +665,8 @@ struct TunnelRewindView: View {
             return "点击屏幕，停在某一天"
         case .manualDrag, .momentum:
             return "点击进入这一天"
+        case .photoZooming:
+            return "即将进入这一天"
         default:
             if tapMode == .anywhere {
                 return "上下滑动穿梭，或点击任意位置进入当天"
@@ -698,12 +719,13 @@ struct TunnelRewindView: View {
         mode = .settling
     }
 
-    /// Handle a tap in photo-tap mode: find the photo under the finger and
-    /// settle on its day. If the photo belongs to a different day, the tunnel
-    /// first moves to that day before landing.
+    /// Handle a tap in photo-tap mode: find the photo under the finger, play a
+    /// quick zoom-in-then-back animation on it, then settle on its day. If the
+    /// photo belongs to a different day, the tunnel first moves to that day
+    /// before landing.
     private func handlePhotoTap(at point: CGPoint, in size: CGSize) {
         guard !openingIsActive, !layerDates.isEmpty,
-              mode != .settling, mode != .done else { return }
+              mode != .settling, mode != .photoZooming, mode != .done else { return }
 
         // Closest photos first so a tap on overlapping photos hits the front one.
         let projected = projectedPhotos(in: size)
@@ -721,9 +743,28 @@ struct TunnelRewindView: View {
         let targetDate = layerDates[targetIndex]
 
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        pendingLandDate = targetDate
-        settleTarget = snapProgress(for: targetIndex)
-        mode = .settling
+        tappedPhotoID = hit.photoID
+        mode = .photoZooming
+
+        Task { @MainActor in
+            // Zoom in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                tappedPhotoScale = 1.08
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, mode == .photoZooming else { return }
+            // Zoom back
+            withAnimation(.easeInOut(duration: 0.15)) {
+                tappedPhotoScale = 1.0
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, mode == .photoZooming else { return }
+            // Begin tunnel travel to the target day
+            tappedPhotoID = nil
+            pendingLandDate = targetDate
+            settleTarget = snapProgress(for: targetIndex)
+            mode = .settling
+        }
     }
 
     // MARK: Frame loop
@@ -770,7 +811,7 @@ struct TunnelRewindView: View {
                 mode = .settling
             }
         case .settling:
-            progress += (settleTarget - progress) * min(1, dt * 11)
+            progress += (settleTarget - progress) * min(1, dt * 7)
             if abs(settleTarget - progress) < 0.004 {
                 progress = settleTarget
                 if pendingLandDate != nil {
@@ -779,7 +820,7 @@ struct TunnelRewindView: View {
                     mode = .manualIdle
                 }
             }
-        case .manualDrag, .manualIdle, .done:
+        case .manualDrag, .manualIdle, .photoZooming, .done:
             break
         }
     }
@@ -791,7 +832,7 @@ struct TunnelRewindView: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
             displayDate = layerDates[idx]
         }
-        if !openingIsActive, mode != .settling && mode != .done {
+        if !openingIsActive, mode != .settling && mode != .photoZooming && mode != .done {
             SoundEffects.tick()
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
         }
