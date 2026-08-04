@@ -227,8 +227,8 @@ struct RootView: View {
                 parameterID: .hapticIntensityControl,
                 controlPoints: [
                     .init(relativeTime: 0, value: 0.05),
-                    .init(relativeTime: duration * 0.25, value: 0.25),
-                    .init(relativeTime: duration * 0.5, value: 0.35),
+                    .init(relativeTime: duration * 0.25, value: 0.20),
+                    .init(relativeTime: duration * 0.5, value: 0.30),
                     .init(relativeTime: duration * 0.75, value: 0.25),
                     .init(relativeTime: duration, value: 0.10)
                 ],
