@@ -84,6 +84,7 @@ struct TunnelRewindView: View {
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
     @AppStorage("OneDay.tunnelTapMode") private var tapModeRaw = TunnelTapMode.anywhere.rawValue
+    @AppStorage("OneDay.tunnelLandingMotion") private var landingMotionRaw = TunnelLandingMotion.none.rawValue
     @AppStorage("OneDay.tunnelBackground") private var backgroundRaw = TunnelBackground.dark.rawValue
     @AppStorage("OneDay.tunnelTextPosition") private var textPositionRaw = TunnelTextPosition.center.rawValue
     @AppStorage("OneDay.tunnelSpread") private var spreadRaw = TunnelSpread.medium.rawValue
@@ -95,6 +96,7 @@ struct TunnelRewindView: View {
     @AppStorage("OneDay.tunnelPhotoBlur") private var photoBlurRaw = TunnelPhotoBlur.off.rawValue
 
     private var tapMode: TunnelTapMode { TunnelTapMode(rawValue: tapModeRaw) ?? .anywhere }
+    private var landingMotion: TunnelLandingMotion { TunnelLandingMotion(rawValue: landingMotionRaw) ?? .none }
     private var background: TunnelBackground { TunnelBackground(rawValue: backgroundRaw) ?? .dark }
     private var textPosition: TunnelTextPosition { TunnelTextPosition(rawValue: textPositionRaw) ?? .center }
     private var spread: TunnelSpread { TunnelSpread(rawValue: spreadRaw) ?? .medium }
@@ -123,7 +125,7 @@ struct TunnelRewindView: View {
     private let dateRevealDelay: Double = 0.3   // seconds to wait before date starts (after tunnel begins)
 
     // MARK: Motion state
-    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, photoZooming, done }
+    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, photoZooming, rushingOut, done }
 
     @State private var progress: Double
     @State private var clock: Double = 0
@@ -152,6 +154,7 @@ struct TunnelRewindView: View {
     @State private var openingEndedAt: Double = -1
     @State private var tappedPhotoID: UUID?
     @State private var tappedPhotoScale: Double = 1.0
+    @State private var hasStartedLanding = false
 
     init(model: DayViewModel?, layers: [TunnelLayer],
          initialLoadProgress: Double = 1,
@@ -259,7 +262,7 @@ struct TunnelRewindView: View {
                 // Fixed bottom hint
                 VStack {
                     //Spacer()
-                    if hintVisible && mode != .settling && mode != .done {
+                    if hintVisible && mode != .settling && mode != .rushingOut && mode != .done {
                         Text(hintText)
                             .font(Theme.serif(12))
                             .foregroundStyle(.tertiary)
@@ -552,6 +555,16 @@ struct TunnelRewindView: View {
                     .pickerStyle(.segmented)
                 }
 
+                settingGroup("落地出场") {
+                    Picker("", selection: Binding(
+                        get: { landingMotion },
+                        set: { landingMotionRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelLandingMotion.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Divider()
                 Text("画面调节")
                     .font(.headline)
@@ -712,7 +725,7 @@ struct TunnelRewindView: View {
     private func handleTap() {
         guard !openingIsActive, !layerDates.isEmpty,
               mode != .settling, mode != .done else { return }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         let idx = focusIndex(progress)
         pendingLandDate = layerDates[idx]
         settleTarget = snapProgress(for: idx)
@@ -742,7 +755,7 @@ struct TunnelRewindView: View {
         guard layerDates.indices.contains(targetIndex) else { return }
         let targetDate = layerDates[targetIndex]
 
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         tappedPhotoID = hit.photoID
         mode = .photoZooming
 
@@ -801,7 +814,8 @@ struct TunnelRewindView: View {
             if progress >= landProgress {
                 progress = landProgress
                 pendingLandDate = layerDates.last
-                beginFinishFromSettle()
+                settleTarget = progress
+                startLandingMotion()
             }
         case .momentum:
             progress = clampTravel(progress + velocity * dt)
@@ -815,9 +829,36 @@ struct TunnelRewindView: View {
             if abs(settleTarget - progress) < 0.004 {
                 progress = settleTarget
                 if pendingLandDate != nil {
-                    beginFinishFromSettle()
+                    startLandingMotion()
                 } else {
                     mode = .manualIdle
+                }
+            }
+        case .rushingOut:
+            let rushTarget: Double
+            let duration: Double
+            if landingMotion == .slight {
+                // Keep a gentle, constant forward drift for the entire day-view
+                // entrance (≈400ms hand-off delay + 0.5s cover slide). Duration
+                // runs slightly past the transition so motion never freezes
+                // before the cover finishes rising; distance stays small so the
+                // target day's photos never fully rush past the camera.
+                rushTarget = settleTarget + 2.0
+                duration = 1.0
+            } else {
+                rushTarget = landProgress + 2.0
+                duration = 0.6
+            }
+            let rushDistance = max(rushTarget - settleTarget, 0.01)
+            let speed = rushDistance / duration
+            progress += speed * dt
+            if progress >= rushTarget {
+                progress = rushTarget
+                if landingMotion == .slight {
+                    // Transition already started alongside the motion; just stop.
+                    mode = .done
+                } else {
+                    beginFinishFromSettle()
                 }
             }
         case .manualDrag, .manualIdle, .photoZooming, .done:
@@ -829,18 +870,44 @@ struct TunnelRewindView: View {
         let idx = focusIndex(progress)
         guard idx != lastFocus, idx >= 0, idx < count else { return }
         lastFocus = idx
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            displayDate = layerDates[idx]
+        if mode != .rushingOut {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                displayDate = layerDates[idx]
+            }
         }
-        if !openingIsActive, mode != .settling && mode != .photoZooming && mode != .done {
+        if !openingIsActive, mode != .settling && mode != .photoZooming && mode != .rushingOut && mode != .done {
             SoundEffects.tick()
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
+        }
+    }
+
+    /// Decide what happens once the tunnel has arrived at the target day.
+    /// - none: hand off to the day view immediately.
+    /// - slight: nudge the remaining photos forward *while* the transition plays.
+    /// - rushOut: rush the photos off screen first, then transition.
+    private func startLandingMotion() {
+        switch landingMotion {
+        case .none:
+            beginFinishFromSettle()
+        case .slight:
+            mode = .rushingOut
+            beginLandingTransition()
+        case .rushOut:
+            mode = .rushingOut
         }
     }
 
     private func beginFinishFromSettle() {
         guard mode != .done, !layerDates.isEmpty else { return }
         mode = .done
+        beginLandingTransition()
+    }
+
+    /// Kick off the hand-off to the day view without stopping the frame loop, so
+    /// "轻微运动" can animate the tunnel forward while the transition plays.
+    private func beginLandingTransition() {
+        guard !hasStartedLanding, !layerDates.isEmpty else { return }
+        hasStartedLanding = true
         Task { await finish(on: pendingLandDate ?? layerDates[focusIndex(progress)]) }
     }
 
@@ -852,7 +919,6 @@ struct TunnelRewindView: View {
             displayDate = day
         }
         SoundEffects.settle()
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
 
         let drift = combinedDrift
         try? await Task.sleep(nanoseconds: 400_000_000)
@@ -915,6 +981,8 @@ struct TunnelRewindView: View {
         referencePitch = nil
         tiltOffset = .zero
     }
+
+
 
     private func updateDeviceTilt(_ dt: Double) {
         guard let attitude = motionManager.deviceMotion?.attitude else { return }

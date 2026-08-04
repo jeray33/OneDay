@@ -487,6 +487,22 @@ enum TunnelTapMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// What happens to the target day (and every deeper day) right before the tunnel
+/// hands off to the day view.
+enum TunnelLandingMotion: String, CaseIterable, Identifiable {
+    case none = "none"
+    case slight = "slight"
+    case rushOut = "rushOut"
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none:    return "默认"
+        case .slight:  return "轻微运动"
+        case .rushOut: return "冲屏出场"
+        }
+    }
+}
+
 /// Control style for the tunnel rewind mode.
 /// Backdrop for the tunnel rewind mode. Dark reads more cinematic (photos pop,
 /// depth-of-field + vignette are stronger); light matches the rest of the app.

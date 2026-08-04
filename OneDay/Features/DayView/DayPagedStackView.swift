@@ -11,6 +11,7 @@ struct DayPagedStackView: View {
     var model: DayViewModel
     var dateNamespace: Namespace.ID
     var dateIsSource: Bool
+    var coverDateMatched: Bool = true
     var onClose: () -> Void
     var historyEntries: [TodayInHistoryEntry]
     var historyLoading: Bool
@@ -75,7 +76,7 @@ struct DayPagedStackView: View {
     private func coverLayer(h: CGFloat) -> some View {
         let p = layerProgress(.cover, h: h)
         DayCoverView(model: model,
-                     dateNamespace: dateNamespace,
+                     dateNamespace: coverDateMatched ? dateNamespace : nil,
                      dateIsSource: dateIsSource,
                      onClose: onClose)
             .rotationEffect(.degrees(p.rotation))

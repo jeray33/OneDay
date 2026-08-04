@@ -1,5 +1,7 @@
 import SwiftUI
 import Photos
+import UIKit
+import CoreHaptics
 
 struct RootView: View {
     private enum Phase: Equatable {
@@ -25,6 +27,8 @@ struct RootView: View {
     @State private var historyReferenceDay: Date?
     @State private var showPermissionAlert = false
     @State private var showEmptyAlert = false
+    @State private var dayFromTunnel = false
+    @State private var hapticEngine: CHHapticEngine?
     @Namespace private var dateNamespace
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.tunnelPhotoScale") private var tunnelPhotoScaleRaw = TunnelPhotoScale.medium.rawValue
@@ -66,8 +70,15 @@ struct RootView: View {
                                     }
                                     self.dayModel = model
                                     tunnelStartDate = model.date
+                                    dayFromTunnel = true
+                                    // Continuous buzz that tracks the cover's
+                                    // slide-up speed (easeInOut over 0.5s).
+                                    playEntranceHaptic(duration: 0.5)
                                     withAnimation(.easeInOut(duration: 0.5)) {
                                         phase = .day
+                                    } completion: {
+                                        // Cover has finished rising to the top.
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                     }
                                 }
                             }
@@ -89,6 +100,7 @@ struct RootView: View {
                         loadDay: { day in await makeDayModel(for: day) },
                         onFinish: { model in
                             self.dayModel = model
+                            dayFromTunnel = false
                             withAnimation(.easeInOut(duration: 0.35)) {
                                 phase = .day
                             }
@@ -105,6 +117,7 @@ struct RootView: View {
                         model: dayModel,
                         dateNamespace: dateNamespace,
                         dateIsSource: false,
+                        coverDateMatched: !dayFromTunnel,
                         onClose: { closeDay() },
                         historyEntries: historyEntries,
                         historyLoading: historyLoading,
@@ -116,7 +129,9 @@ struct RootView: View {
                         navLoading: navLoading
                     )
                     .id(dayModel.instanceID)
-                    .transition(.opacity)
+                    .transition(dayFromTunnel
+                        ? .asymmetric(insertion: .move(edge: .bottom), removal: .opacity)
+                        : .opacity)
                 }
             }
         }
@@ -130,6 +145,9 @@ struct RootView: View {
             Button("好") {}
         } message: {
             Text("相册里暂时没有可回顾的过去某天。")
+        }
+        .task {
+            prepareHaptics()
         }
         .task(id: rewindModeRaw) {
             if rewindMode == .rewind { await prepareRewind() }
@@ -171,6 +189,55 @@ struct RootView: View {
                 rewindHomeID = UUID()
             }
         }
+    }
+
+    // MARK: Haptics
+
+    private func prepareHaptics() {
+        guard hapticEngine == nil,
+              CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
+        do {
+            let engine = try CHHapticEngine()
+            engine.resetHandler = { [engine] in try? engine.start() }
+            engine.stoppedHandler = { _ in }
+            try engine.start()
+            hapticEngine = engine
+        } catch {
+            hapticEngine = nil
+        }
+    }
+
+    /// Play a faint continuous buzz whose intensity follows the cover's slide-up
+    /// speed: an easeInOut motion is slowest at the ends and fastest in the
+    /// middle, so the intensity rises to a peak at the midpoint then eases off.
+    private func playEntranceHaptic(duration: Double) {
+        guard let engine = hapticEngine else { return }
+        do {
+            try engine.start()
+            let event = CHHapticEvent(
+                eventType: .hapticContinuous,
+                parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.35)
+                ],
+                relativeTime: 0,
+                duration: duration
+            )
+            let curve = CHHapticParameterCurve(
+                parameterID: .hapticIntensityControl,
+                controlPoints: [
+                    .init(relativeTime: 0, value: 0.05),
+                    .init(relativeTime: duration * 0.25, value: 0.25),
+                    .init(relativeTime: duration * 0.5, value: 0.35),
+                    .init(relativeTime: duration * 0.75, value: 0.25),
+                    .init(relativeTime: duration, value: 0.10)
+                ],
+                relativeTime: 0
+            )
+            let pattern = try CHHapticPattern(events: [event], parameterCurves: [curve])
+            let player = try engine.makePlayer(with: pattern)
+            try player.start(atTime: CHHapticTimeImmediate)
+        } catch {}
     }
 
     private func prepareRewind() async {
@@ -523,6 +590,7 @@ struct RootView: View {
         Task {
             defer { navLoading = false }
             if let model = await makeDayModel(for: date) {
+                dayFromTunnel = false
                 withAnimation(.easeInOut(duration: 0.35)) {
                     dayModel = model
                     phase = .day
