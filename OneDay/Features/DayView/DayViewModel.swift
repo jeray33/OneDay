@@ -3,10 +3,30 @@ import Photos
 import CoreLocation
 
 enum CoverMode: String, CaseIterable {
-    case collage    // 拼贴（现有）
-    case scattered  // 散布（新增）
+    case collage
+    case scattered
+    case minimal
 
-    var label: String { self == .collage ? "拼贴" : "散布" }
+    var label: String {
+        switch self {
+        case .collage:   return "拼贴"
+        case .scattered: return "散布"
+        case .minimal:   return "简约"
+        }
+    }
+}
+
+enum CoverBackgroundMode: String, CaseIterable, Identifiable {
+    case vibrant
+    case bright
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .vibrant: return "主色·艳丽"
+        case .bright:  return "明快"
+        }
+    }
 }
 
 enum SectionTitleSize: String, CaseIterable, Identifiable {
@@ -76,6 +96,7 @@ final class DayViewModel {
     private static let sectionTintKey    = "OneDay.sectionTint"
     private static let locationBarKey    = "OneDay.locationBar"
     private static let coverModeKey      = "OneDay.coverMode"
+    private static let coverBackgroundModeKey = "OneDay.coverBackgroundMode"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
     private static let mapBlendModeKey     = "OneDay.mapBlendMode"
     private static let mapProgressiveBlurKey = "OneDay.mapProgressiveBlur"
@@ -205,6 +226,12 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var coverMode: CoverMode {
         didSet { UserDefaults.standard.set(coverMode.rawValue, forKey: Self.coverModeKey) }
     }
+    var coverBackgroundMode: CoverBackgroundMode {
+        didSet {
+            UserDefaults.standard.set(coverBackgroundMode.rawValue, forKey: Self.coverBackgroundModeKey)
+            Task { await computeCoverBackgroundColor() }
+        }
+    }
     var sectionTitleSize: SectionTitleSize {
         didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
     }
@@ -240,6 +267,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var scatteredCoverPhotos: [ScatteredCoverPhoto] = []
+    private(set) var tunnelCoverPhoto: PhotoItem?
     /// Spread factor used for scattered cover layout (from tunnel settings or default).
     var scatteredSpreadFactor: Double = 1.10
     /// Initial drift offset captured from the tunnel at landing, animated to zero on the cover.
@@ -249,6 +277,10 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private var coverBackgroundIsDark = false
     private(set) var backCoverBackgroundColor: Color = Color(white: 0.12)
     private var backCoverIsDark = true
+
+    var minimalCoverPhoto: PhotoItem? {
+        tunnelCoverPhoto ?? coverPhotos.first
+    }
 
     var coverColorScheme: ColorScheme {
         coverBackgroundIsDark ? .dark : .light
@@ -346,6 +378,9 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
         self.showPhotoMap = UserDefaults.standard.object(forKey: Self.photoMapKey) as? Bool ?? true
         self.coverMode = CoverMode(rawValue: UserDefaults.standard.string(forKey: Self.coverModeKey) ?? "") ?? .collage
+        self.coverBackgroundMode = CoverBackgroundMode(
+            rawValue: UserDefaults.standard.string(forKey: Self.coverBackgroundModeKey) ?? ""
+        ) ?? .vibrant
         self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
         self.mapBlendMode = MapBlendMode(rawValue: UserDefaults.standard.string(forKey: Self.mapBlendModeKey) ?? "") ?? .multiply
         self.mapProgressiveBlurEnabled = UserDefaults.standard.object(forKey: Self.mapProgressiveBlurKey) as? Bool ?? true
@@ -618,44 +653,66 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         coverPhotos = ranked
     }
 
-    /// Cover & back-cover backgrounds (method B: hue rotation off the hero
-    /// photo). The photo page keeps the hero's own hue (dominant/vibrant); the
-    /// cover shifts +30° (analogous, kept light & vivid) and the back cover
-    /// shifts +180° (complementary, a deeper editorial tone). The rotations
-    /// guarantee both differ from the page's main hue.
+    /// Cover and back-cover backgrounds rotate away from the hero photo's hue:
+    /// +30° for the cover and +180° for the back. The selected mode controls
+    /// whether those hues use the original vivid ranges or the pale `bright2`
+    /// saturation/brightness range.
     private func computeCoverBackgroundColor() async {
         guard let hero = coverPhotos.first,
               let image = await ImageLoader.shared.thumbnail(
                 asset: hero.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else {
             withAnimation(.easeInOut(duration: 0.3)) {
-                coverBackgroundColor = warmColor
-                coverBackgroundIsDark = false
-                backCoverBackgroundColor = Color(white: 0.12)
-                backCoverIsDark = true
+                switch coverBackgroundMode {
+                case .vibrant:
+                    coverBackgroundColor = warmColor
+                    coverBackgroundIsDark = false
+                    backCoverBackgroundColor = Color(white: 0.12)
+                    backCoverIsDark = true
+                case .bright:
+                    coverBackgroundColor = bright2Color
+                    coverBackgroundIsDark = false
+                    backCoverBackgroundColor = bright2Color
+                    backCoverIsDark = false
+                }
             }
             return
         }
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
-        // Cover: analogous +30°, light and vivid.
-        let (cover, coverDark) = rotatedColor(
-            baseHue: h, baseSat: s, baseBri: b,
-            hueShift: 30.0 / 360.0, satFloor: 0.62, satScale: 2.3,
-            briScale: 1.06, briRange: 0.60...0.92)
-        // Back cover: complementary +180°, deeper.
-        let (back, backDark) = rotatedColor(
-            baseHue: h, baseSat: s, baseBri: b,
-            hueShift: 0.5, satFloor: 0.5, satScale: 2.0,
-            briScale: 0.82, briRange: 0.28...0.60)
+        let palette: (cover: Color, coverDark: Bool, back: Color, backDark: Bool)
+        switch coverBackgroundMode {
+        case .vibrant:
+            let (cover, coverDark) = rotatedColor(
+                baseHue: h, baseSat: s, baseBri: b,
+                hueShift: 30.0 / 360.0, satFloor: 0.62, satScale: 2.3,
+                briScale: 1.06, briRange: 0.60...0.92)
+            let (back, backDark) = rotatedColor(
+                baseHue: h, baseSat: s, baseBri: b,
+                hueShift: 0.5, satFloor: 0.5, satScale: 2.0,
+                briScale: 0.82, briRange: 0.28...0.60)
+            palette = (cover, coverDark, back, backDark)
+        case .bright:
+            let (cover, coverDark) = bright2Tint(
+                h: shiftedHue(h, by: 30.0 / 360.0), s: s)
+            let (back, backDark) = bright2Tint(
+                h: shiftedHue(h, by: 0.5), s: s)
+            palette = (cover, coverDark, back, backDark)
+        }
 
         withAnimation(.easeInOut(duration: 0.3)) {
-            coverBackgroundColor = cover
-            coverBackgroundIsDark = coverDark
-            backCoverBackgroundColor = back
-            backCoverIsDark = backDark
+            coverBackgroundColor = palette.cover
+            coverBackgroundIsDark = palette.coverDark
+            backCoverBackgroundColor = palette.back
+            backCoverIsDark = palette.backDark
         }
+    }
+
+    private func shiftedHue(_ hue: CGFloat, by shift: CGFloat) -> CGFloat {
+        var result = (hue + shift).truncatingRemainder(dividingBy: 1)
+        if result < 0 { result += 1 }
+        return result
     }
 
     /// Builds an HSB color with the hue rotated by `hueShift` (0...1 turns) and
@@ -663,8 +720,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     private func rotatedColor(baseHue h: CGFloat, baseSat s: CGFloat, baseBri b: CGFloat,
                               hueShift: CGFloat, satFloor: CGFloat, satScale: CGFloat,
                               briScale: CGFloat, briRange: ClosedRange<CGFloat>) -> (Color, Bool) {
-        var hue = (h + hueShift).truncatingRemainder(dividingBy: 1)
-        if hue < 0 { hue += 1 }
+        let hue = shiftedHue(h, by: hueShift)
         let sat = max(min(s * satScale, 0.92), satFloor)
         let bri = min(max(b * briScale, briRange.lowerBound), briRange.upperBound)
         let color = UIColor(hue: hue, saturation: sat, brightness: bri, alpha: 1)
@@ -701,6 +757,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         if !result.isEmpty {
             scatteredCoverPhotos = result
+            tunnelCoverPhoto = result.first?.item
             scatteredInitialDrift = drift
             let spreadRaw = UserDefaults.standard.string(forKey: "OneDay.tunnelSpread") ?? ""
             scatteredSpreadFactor = (TunnelSpread(rawValue: spreadRaw) ?? .medium).factor

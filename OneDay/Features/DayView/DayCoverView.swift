@@ -1,8 +1,8 @@
 import SwiftUI
+import UIKit
 
-/// Full-screen cover: date, two white-bordered photos with random small tilts,
-/// up to two person stickers, and a torn-paper map patch. Background is the
-/// vibrant tint of the first cover photo.
+/// Full-screen cover with collage, scattered, and minimal editorial layouts.
+/// Background is the vibrant tint of the first cover photo.
 struct DayCoverView: View {
     var model: DayViewModel
     var dateNamespace: Namespace.ID? = nil
@@ -32,20 +32,27 @@ struct DayCoverView: View {
                                 .rotationEffect(.degrees(-2.5))
                                 .position(x: size.width * 0.54, y: size.height * 0.78)
                         }
+
+                        dateBlock
+                            .frame(maxWidth: .infinity)
+                            .position(x: size.width / 2, y: size.height * 0.22)
+
+                        infoLine
+                            .frame(width: size.width)
+                            .position(x: size.width / 2, y: size.height * 0.94)
                     case .scattered:
                         scatteredPhotosLayer(in: size)
+
+                        dateBlock
+                            .frame(maxWidth: .infinity)
+                            .position(x: size.width / 2, y: size.height * 0.5)
+
+                        infoLine
+                            .frame(width: size.width)
+                            .position(x: size.width / 2, y: size.height * 0.94)
+                    case .minimal:
+                        minimalCover(in: size)
                     }
-
-                    dateBlock
-                        .frame(maxWidth: .infinity)
-                        .position(x: size.width / 2,
-                                  y: model.coverMode == .scattered
-                                    ? size.height * 0.5
-                                    : size.height * 0.22)
-
-                    infoLine
-                        .frame(width: size.width)
-                        .position(x: size.width / 2, y: size.height * 0.94)
                 }
             }
             .environment(\.colorScheme, model.coverColorScheme)
@@ -103,6 +110,89 @@ struct DayCoverView: View {
                 .foregroundStyle(foregroundTint.opacity(0.75))
         }
         .padding(.horizontal, 20)
+    }
+
+    // MARK: Minimal cover
+
+    private func minimalCover(in size: CGSize) -> some View {
+        let titleSize = min(size.width * 0.145, 58)
+        let photoWidth = min(size.width * 0.46, size.height * 0.22)
+
+        return ZStack {
+            VStack(spacing: 0) {
+                minimalCoverMark
+                    .frame(width: min(size.width * 0.14, 56),
+                           height: min(size.width * 0.14, 56))
+                Spacer()
+                    .frame(height: max(size.height * 0.025, 14))
+                Text(DateText.dottedDate(model.date))
+                    .font(model.coverDateFont.font(titleSize))
+                    .foregroundStyle(foregroundTint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
+                    .modifier(OptionalMatchedDate(namespace: dateNamespace, isSource: dateIsSource))
+                Text("Recap")
+                    .font(model.coverDateFont.font(titleSize))
+                    .foregroundStyle(foregroundTint)
+                    .lineLimit(1)
+            }
+            .frame(width: size.width - 40)
+            .position(x: size.width / 2, y: size.height * 0.27)
+
+            if let photo = model.minimalCoverPhoto {
+                PhotoFrameView(
+                    item: photo,
+                    width: photoWidth,
+                    border: max(photoWidth * 0.035, 6) * model.borderWidth.scale,
+                    borderColor: model.frameColor(for: photo),
+                    polaroid: model.borderStyle.isPolaroid,
+                    shadowLevel: model.photoShadow
+                )
+                .position(x: size.width / 2, y: size.height * 0.69)
+            }
+
+            minimalInfoBlock
+                .frame(width: size.width - 40)
+                .position(x: size.width / 2, y: size.height * 0.91)
+        }
+    }
+
+    @ViewBuilder
+    private var minimalCoverMark: some View {
+        if let image = UIImage(named: "MinimalCoverMark") {
+            Image(uiImage: image)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(foregroundTint)
+        } else {
+            Image(systemName: "leaf.fill")
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(foregroundTint)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var minimalInfoBlock: some View {
+        VStack(spacing: 5) {
+            if let caption = DateText.coverCaption(model.date) {
+                Text(caption)
+                    .font(Theme.serif(13, weight: .medium))
+                    .foregroundStyle(foregroundTint)
+            }
+            if let secondary = secondaryText {
+                Text(secondary)
+                    .font(Theme.serif(13, weight: .medium))
+                    .foregroundStyle(foregroundTint)
+            }
+            if !countsText.isEmpty {
+                Text(countsText)
+                    .font(Theme.serif(13, weight: .medium))
+                    .foregroundStyle(foregroundTint)
+            }
+        }
+        .multilineTextAlignment(.center)
     }
 
     // MARK: Info line (counts / distance / first & last place)

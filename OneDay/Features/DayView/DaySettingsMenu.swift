@@ -245,6 +245,12 @@ struct DaySettingsMenu: View {
                     }
                 }
             }
+            animPicker("封面封底背景色",
+                       binding: Binding(
+                        get: { model.coverBackgroundMode },
+                        set: { model.coverBackgroundMode = $0 }
+                       ),
+                       labelOf: { $0.label })
             Toggle("地点工具条", isOn: Binding(
                 get: { model.showLocationBar },
                 set: { model.showLocationBar = $0 }
