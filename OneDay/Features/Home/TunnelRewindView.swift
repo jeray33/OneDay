@@ -83,6 +83,7 @@ struct TunnelRewindView: View {
     // MARK: Live-editable settings persisted via @AppStorage
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
+    @AppStorage("OneDay.tunnelTapMode") private var tapModeRaw = TunnelTapMode.anywhere.rawValue
     @AppStorage("OneDay.tunnelBackground") private var backgroundRaw = TunnelBackground.dark.rawValue
     @AppStorage("OneDay.tunnelTextPosition") private var textPositionRaw = TunnelTextPosition.center.rawValue
     @AppStorage("OneDay.tunnelSpread") private var spreadRaw = TunnelSpread.medium.rawValue
@@ -93,6 +94,7 @@ struct TunnelRewindView: View {
     @AppStorage("OneDay.tunnelOverflow") private var overflowRaw = TunnelOverflow.medium.rawValue
     @AppStorage("OneDay.tunnelPhotoBlur") private var photoBlurRaw = TunnelPhotoBlur.off.rawValue
 
+    private var tapMode: TunnelTapMode { TunnelTapMode(rawValue: tapModeRaw) ?? .anywhere }
     private var background: TunnelBackground { TunnelBackground(rawValue: backgroundRaw) ?? .dark }
     private var textPosition: TunnelTextPosition { TunnelTextPosition(rawValue: textPositionRaw) ?? .center }
     private var spread: TunnelSpread { TunnelSpread(rawValue: spreadRaw) ?? .medium }
@@ -230,7 +232,7 @@ struct TunnelRewindView: View {
                     .contentShape(Rectangle())
                     .gesture(!openingIsActive && (
                         mode == .manualIdle || mode == .manualDrag || mode == .momentum
-                    ) ? dragGesture : nil)
+                    ) ? dragGesture(in: geo.size) : nil)
                     .onTapGesture { if mode == .autoPlay { handleTap() } }
                 if textPosition == .bottom {
                     VStack {
@@ -305,22 +307,57 @@ struct TunnelRewindView: View {
 
     // MARK: Canvas rendering
 
+    /// Projected photo data used both for drawing and for hit testing.
+    private struct ProjectedPhoto {
+        let image: UIImage
+        let rect: CGRect
+        let blur: Double
+        let opacity: Double
+        let depth: Double
+        let layerIndex: Int
+    }
+
     private func draw(_ context: inout GraphicsContext, size: CGSize) {
-        guard count > 0 else { return }
+        let projected = projectedPhotos(in: size).sorted { $0.depth > $1.depth }
+        let frameColor: Color = background.isDark ? Color(white: 0.93) : .white
+        let userBlur = photoBlur.amount
+        for p in projected {
+            // Frame: drawn sharp (no blur) so edges stay crisp
+            context.drawLayer { layer in
+                layer.opacity = p.opacity
+                let frameRect = p.rect.insetBy(dx: -border, dy: -border)
+                layer.fill(Path(roundedRect: frameRect, cornerRadius: 2),
+                           with: .color(frameColor))
+            }
+            // Image: drawn with depth-of-field + user blur, clipped to photo rect
+            let totalBlur = p.blur + userBlur
+            if totalBlur > 0.3 {
+                var clipped = context
+                clipped.clip(to: Path(roundedRect: p.rect, cornerRadius: 2))
+                clipped.drawLayer { layer in
+                    layer.opacity = p.opacity
+                    layer.addFilter(.blur(radius: totalBlur))
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                }
+            } else {
+                context.drawLayer { layer in
+                    layer.opacity = p.opacity
+                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
+                }
+            }
+        }
+    }
+
+    /// Compute the screen-space projection of every visible tunnel photo.
+    /// Used by both the Canvas renderer and the photo-tap hit tester.
+    private func projectedPhotos(in size: CGSize) -> [ProjectedPhoto] {
+        guard count > 0 else { return [] }
         // Smaller reference radius keeps photos framed inside the screen.
         let ref = Double(min(size.width, size.height)) * 0.5
         let baseCenter = CGPoint(x: size.width / 2, y: size.height / 2)
         let drift = combinedDrift
 
-        struct Proj {
-            let image: UIImage
-            let rect: CGRect
-            let blur: Double
-            let opacity: Double
-            let depth: Double
-        }
-
-        var projected: [Proj] = []
+        var projected: [ProjectedPhoto] = []
         let batchCount = Double(min(layers.count, 6))
         // Each layer starts `stagger` after the previous, but takes
         // `openingOverlap * stagger` to move — so consecutive layers
@@ -366,44 +403,16 @@ struct TunnelRewindView: View {
                 let w = photo.size.width * CGFloat(scale)
                 let h = photo.size.height * CGFloat(scale)
                 let rect = CGRect(x: pos.x - w / 2, y: pos.y - h / 2, width: w, height: h)
-                projected.append(Proj(
+                projected.append(ProjectedPhoto(
                     image: photo.image,
                     rect: rect,
                     blur: dofBlur(depth),
                     opacity: opacity,
-                    depth: depth))
+                    depth: depth,
+                    layerIndex: i))
             }
         }
-        // Painter's order: farthest first.
-        projected.sort { $0.depth > $1.depth }
-
-        let frameColor: Color = background.isDark ? Color(white: 0.93) : .white
-        let userBlur = photoBlur.amount
-        for p in projected {
-            // Frame: drawn sharp (no blur) so edges stay crisp
-            context.drawLayer { layer in
-                layer.opacity = p.opacity
-                let frameRect = p.rect.insetBy(dx: -border, dy: -border)
-                layer.fill(Path(roundedRect: frameRect, cornerRadius: 2),
-                           with: .color(frameColor))
-            }
-            // Image: drawn with depth-of-field + user blur, clipped to photo rect
-            let totalBlur = p.blur + userBlur
-            if totalBlur > 0.3 {
-                var clipped = context
-                clipped.clip(to: Path(roundedRect: p.rect, cornerRadius: 2))
-                clipped.drawLayer { layer in
-                    layer.opacity = p.opacity
-                    layer.addFilter(.blur(radius: totalBlur))
-                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
-                }
-            } else {
-                context.drawLayer { layer in
-                    layer.opacity = p.opacity
-                    layer.draw(layer.resolve(Image(uiImage: p.image)), in: p.rect)
-                }
-            }
-        }
+        return projected
     }
 
     /// Depth-of-field blur: sharp within the focus band, ramping to soft far-blur
@@ -506,6 +515,20 @@ struct TunnelRewindView: View {
                         get: { textPosition }, set: { textPositionRaw = $0.rawValue }
                     )) {
                         ForEach(TunnelTextPosition.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Divider()
+                Text("交互")
+                    .font(.headline)
+
+                settingGroup("点击方式") {
+                    Picker("", selection: Binding(
+                        get: { tapMode },
+                        set: { tapModeRaw = $0.rawValue }
+                    )) {
+                        ForEach(TunnelTapMode.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 }
@@ -624,13 +647,17 @@ struct TunnelRewindView: View {
         case .manualDrag, .momentum:
             return "点击进入这一天"
         default:
-            return "上下滑动穿梭，或点播放自动穿梭"
+            if tapMode == .anywhere {
+                return "上下滑动穿梭，或点击任意位置进入当天"
+            } else {
+                return "上下滑动穿梭，或点击照片进入对应天"
+            }
         }
     }
 
     // MARK: Controls
 
-    private var dragGesture: some Gesture {
+    private func dragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 // Keep small movements as a potential tap; only begin dragging
@@ -649,8 +676,12 @@ struct TunnelRewindView: View {
                     velocity = Double(-value.predictedEndTranslation.height / 150.0) * 2.2
                     mode = .momentum
                 case .manualIdle:
-                    // Treated as a tap: enter the day currently in focus.
-                    handleTap()
+                    if tapMode == .anywhere {
+                        // Treated as a tap: enter the day currently in focus.
+                        handleTap()
+                    } else {
+                        handlePhotoTap(at: value.location, in: size)
+                    }
                 default:
                     break
                 }
@@ -664,6 +695,34 @@ struct TunnelRewindView: View {
         let idx = focusIndex(progress)
         pendingLandDate = layerDates[idx]
         settleTarget = snapProgress(for: idx)
+        mode = .settling
+    }
+
+    /// Handle a tap in photo-tap mode: find the photo under the finger and
+    /// settle on its day. If the photo belongs to a different day, the tunnel
+    /// first moves to that day before landing.
+    private func handlePhotoTap(at point: CGPoint, in size: CGSize) {
+        guard !openingIsActive, !layerDates.isEmpty,
+              mode != .settling, mode != .done else { return }
+
+        // Closest photos first so a tap on overlapping photos hits the front one.
+        let projected = projectedPhotos(in: size)
+            .filter { $0.opacity > 0.01 }
+            .sorted { $0.depth < $1.depth }
+
+        // Expand the hit area to include the white frame and a small margin.
+        let hitBorder = border + 6
+        guard let hit = projected.first(where: {
+            $0.rect.insetBy(dx: -hitBorder, dy: -hitBorder).contains(point)
+        }) else { return }
+
+        let targetIndex = hit.layerIndex
+        guard layerDates.indices.contains(targetIndex) else { return }
+        let targetDate = layerDates[targetIndex]
+
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        pendingLandDate = targetDate
+        settleTarget = snapProgress(for: targetIndex)
         mode = .settling
     }
 

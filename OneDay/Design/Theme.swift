@@ -474,6 +474,19 @@ enum RewindSortOrder: String, CaseIterable, Identifiable {
     }
 }
 
+/// How a tap in the tunnel rewind mode behaves.
+enum TunnelTapMode: String, CaseIterable, Identifiable {
+    case anywhere = "anywhere"
+    case photo = "photo"
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .anywhere: return "点击任意位置"
+        case .photo:    return "点击照片"
+        }
+    }
+}
+
 /// Control style for the tunnel rewind mode.
 /// Backdrop for the tunnel rewind mode. Dark reads more cinematic (photos pop,
 /// depth-of-field + vignette are stronger); light matches the rest of the app.
