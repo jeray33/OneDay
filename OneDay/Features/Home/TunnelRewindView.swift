@@ -155,6 +155,11 @@ struct TunnelRewindView: View {
     @State private var tappedPhotoID: UUID?
     @State private var tappedPhotoScale: Double = 1.0
     @State private var hasStartedLanding = false
+    @State private var photoTapTraveling = false
+    @State private var settledOpeningLayers = 0
+    @State private var openingHapticsInitialized = false
+    @State private var openingImpact = UIImpactFeedbackGenerator(style: .soft)
+
 
     init(model: DayViewModel?, layers: [TunnelLayer],
          initialLoadProgress: Double = 1,
@@ -283,6 +288,7 @@ struct TunnelRewindView: View {
                 }
                 .padding(.top, 8)
                 .padding(.horizontal, 16)
+
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .environment(\.colorScheme, background.scheme)
@@ -776,6 +782,9 @@ struct TunnelRewindView: View {
             tappedPhotoID = nil
             pendingLandDate = targetDate
             settleTarget = snapProgress(for: targetIndex)
+            // Tick per layer crossed only when travelling forward to a deeper
+            // (behind-the-focus) photo, matching the manual-shuttle feel.
+            photoTapTraveling = targetIndex > focusIndex(progress)
             mode = .settling
         }
     }
@@ -828,6 +837,7 @@ struct TunnelRewindView: View {
             progress += (settleTarget - progress) * min(1, dt * 7)
             if abs(settleTarget - progress) < 0.004 {
                 progress = settleTarget
+                photoTapTraveling = false
                 if pendingLandDate != nil {
                     startLandingMotion()
                 } else {
@@ -875,7 +885,9 @@ struct TunnelRewindView: View {
                 displayDate = layerDates[idx]
             }
         }
-        if !openingIsActive, mode != .settling && mode != .photoZooming && mode != .rushingOut && mode != .done {
+        let normalTick = mode != .settling && mode != .photoZooming && mode != .rushingOut && mode != .done
+        let photoTravelTick = mode == .settling && photoTapTraveling
+        if !openingIsActive, normalTick || photoTravelTick {
             SoundEffects.tick()
             UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
         }
@@ -921,7 +933,11 @@ struct TunnelRewindView: View {
         SoundEffects.settle()
 
         let drift = combinedDrift
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        // "轻微运动" runs the tunnel motion and the cover slide-up together, so
+        // hand off immediately; other modes wait so their settle/rush shows first.
+        if landingMotion != .slight {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
         onLand(TunnelDayRequest(day, drift: drift))
     }
 
@@ -967,6 +983,58 @@ struct TunnelRewindView: View {
         if !openingActive, abs(1 - openingVisualProgress) < 0.001 {
             openingVisualProgress = 1
         }
+        updateOpeningHaptics()
+    }
+
+    /// Fires the same per-section soft tick as manual shuttle each time one of
+    /// the initial layers cascades fully into place during the opening reveal.
+    private func updateOpeningHaptics() {
+        // Use `count` (layerDates.count, kept in sync via onChange) rather than
+        // the `layers` property: `runLoop` runs on the struct value captured
+        // when `.task` first started, whose `layers` array is still empty.
+        let n = min(count, 6)
+        guard n > 0 else { return }
+        let batchCount = Double(n)
+        let stagger = 1.0 / batchCount
+        let moveSpan = openingOverlap / batchCount
+        let totalSpan = (batchCount - 1) * stagger + moveSpan
+        // Fire partway through each layer's motion (not at full settle): the
+        // eased approach puts a layer visually in place well before its
+        // localProgress reaches 1, so ticking at ~0.55 keeps haptics in sync
+        // with the perceived landing instead of trailing behind it.
+        let settleFraction = 0.55
+        var settled = 0
+        for i in 0..<n {
+            let start = Double(i) * stagger / totalSpan
+            let span = moveSpan / totalSpan
+            let threshold = start + settleFraction * span
+            if openingVisualProgress + 1e-6 >= threshold { settled += 1 }
+        }
+        // Keep the Taptic engine warm through the reveal; a cold generator
+        // drops the first one or two impacts, which felt like missing ticks.
+        if openingActive { openingImpact.prepare() }
+        // Seed the baseline on the first pass. For a genuine opening (reveal
+        // still active) start from zero so every layer ticks as it lands; for
+        // an already-open tunnel (re-entry) seed to the current count so no
+        // catch-up burst fires.
+        guard openingHapticsInitialized else {
+            openingHapticsInitialized = true
+            settledOpeningLayers = openingActive ? 0 : settled
+            return
+        }
+        while settledOpeningLayers < settled {
+            settledOpeningLayers += 1
+            SoundEffects.tick()
+            playOpeningTick()
+        }
+    }
+
+
+    /// Identical to the manual-shuttle "一节" tick so the opening reveal feels
+    /// like the same soft per-section landing.
+    private func playOpeningTick() {
+        openingImpact.impactOccurred(intensity: 0.55)
+        openingImpact.prepare()
     }
 
     private func startDeviceMotion() {
