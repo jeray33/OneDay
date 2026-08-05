@@ -106,7 +106,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
     private static let albumTagOrderKey  = "OneDay.albumTagOrder"
     private static let includeSharedAlbumsKey = "OneDay.includeSharedAlbums"
-    private static let sharedAlbumNamesKey = "OneDay.sharedAlbumNames"
 
     var background: PageBackground {
         didSet {
@@ -282,30 +281,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     /// shared-library filter is applied. Used to re-derive `allItems` when
     /// `includeSharedAlbums` toggles, without having to refetch from Photos.
     private var allItemsUnfiltered: [PhotoItem] = []
-    /// Album titles the user has marked as "subscribed shared albums". Matched
-    /// against `.albumRegular` collection titles by `PhotoLibraryService` to
-    /// pull in photos from those collections as shared (covers the case where
-    /// iOS exposes subscribed shared albums locally as plain user albums).
-    var sharedAlbumNames: [String] = [] {
-        didSet {
-            let trimmed = sharedAlbumNames
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            UserDefaults.standard.set(trimmed, forKey: Self.sharedAlbumNamesKey)
-            // Re-tag existing items in memory with the updated shared album
-            // membership, then re-filter. Avoids a full PhotoLibrary refetch.
-            Task {
-                let sharedIDs = await PhotoLibraryService.shared
-                    .sharedCloudAssetIDs(subscribedTitles: trimmed)
-                for i in allItemsUnfiltered.indices {
-                    let inAlbum = sharedIDs.contains(allItemsUnfiltered[i].asset.localIdentifier)
-                    let inLib = PhotoItem.isSharedLibraryOrigin(allItemsUnfiltered[i].asset)
-                    allItemsUnfiltered[i].isFromSharedLibrary = inAlbum || inLib
-                }
-                applySharedFilter(animated: true)
-            }
-        }
-    }
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var scatteredCoverPhotos: [ScatteredCoverPhoto] = []
@@ -469,8 +444,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.allItems = composedItems
         self.includeSharedAlbums = savedShared
         self.sections = composedSections
-        self.sharedAlbumNames = UserDefaults.standard.stringArray(forKey: Self.sharedAlbumNamesKey) ?? []
-
     }
 
     var photoCount: Int { allItems.filter { !$0.isVideo }.count }

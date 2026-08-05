@@ -18,25 +18,6 @@ struct DaySettingsMenu: View {
                 get: { model.includeSharedAlbums },
                 set: { model.includeSharedAlbums = $0 }
             ))
-            Menu("识别共享相簿") {
-                let titles = PhotoLibraryService.shared.allRegularAlbumTitles()
-                if titles.isEmpty {
-                    Text("没有可识别的相簿")
-                } else {
-                    ForEach(titles, id: \.self) { title in
-                        Toggle(title, isOn: Binding(
-                            get: { model.sharedAlbumNames.contains(title) },
-                            set: { isOn in
-                                if isOn {
-                                    model.sharedAlbumNames.append(title)
-                                } else {
-                                    model.sharedAlbumNames.removeAll { $0 == title }
-                                }
-                            }
-                        ))
-                    }
-                }
-            }
             Menu("背景") {
                 Picker("", selection: Binding(
                     get: { model.background },
