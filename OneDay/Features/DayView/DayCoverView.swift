@@ -144,6 +144,7 @@ struct DayCoverView: View {
                     item: photo,
                     width: photoWidth,
                     border: max(photoWidth * 0.035, 6) * model.borderWidth.scale,
+                    shared: photo.isFromSharedLibrary,
                     borderColor: model.frameColor(for: photo),
                     polaroid: model.borderStyle.isPolaroid,
                     shadowLevel: model.photoShadow
@@ -259,6 +260,7 @@ struct DayCoverView: View {
         PhotoFrameView(item: item,
                        width: width,
                        border: max(width * 0.035, 6) * model.borderWidth.scale,
+                       shared: item.isFromSharedLibrary,
                        borderColor: model.frameColor(for: item),
                        polaroid: model.borderStyle.isPolaroid,
                        shadowLevel: model.photoShadow)
@@ -304,6 +306,7 @@ struct DayCoverView: View {
             PhotoFrameView(item: photo.item,
                            width: totalWidth,
                            border: border,
+                           shared: photo.item.isFromSharedLibrary,
                            borderColor: model.frameColor(for: photo.item),
                            polaroid: model.borderStyle.isPolaroid,
                            shadowLevel: model.photoShadow)

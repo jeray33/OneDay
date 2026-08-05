@@ -4,6 +4,19 @@ import CoreLocation
 struct PhotoItem: Identifiable, Hashable {
     let asset: PHAsset
     var caption: String? = nil
+    /// Set to `true` when this asset lives in an iCloud Shared Photo Library
+    /// but was contributed by another participant (heuristic on
+    /// `PHAsset.sourceType`). Drives the in-app "shared" badge and the
+    /// `includeSharedAlbums` filter. Populated by `PhotoItem.build(from:)`.
+    var isFromSharedLibrary: Bool = false
+
+    /// Explicit initializer that requires the shared-library flag to be set
+    /// at construction. Forces every caller to use `PhotoItem.build(from:)`
+    /// so no `PhotoItem` is ever silently left with `isFromSharedLibrary=false`.
+    init(asset: PHAsset, isFromSharedLibrary: Bool) {
+        self.asset = asset
+        self.isFromSharedLibrary = isFromSharedLibrary
+    }
 
     var id: String { asset.localIdentifier }
     var isVideo: Bool { asset.mediaType == .video }

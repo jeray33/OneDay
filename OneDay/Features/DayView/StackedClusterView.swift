@@ -68,6 +68,7 @@ struct StackedClusterView: View {
         let border = max((7 * borderScale).rounded(), 0)
         return PhotoFrameView(item: item, width: cardSize.width,
                        border: border,
+                       shared: item.isFromSharedLibrary,
                        ratioOverride: cardRatio,
                        borderColor: frameColor(item),
                        polaroid: polaroid,

@@ -473,6 +473,7 @@ struct DayMagazineView: View {
             width: width,
             border: border,
             favorite: model.isFavorite(item),
+            shared: item.isFromSharedLibrary,
             ratioRange: ratioRange,
             borderColor: model.frameColor(for: item),
             polaroid: model.borderStyle.isPolaroid,

@@ -8,6 +8,10 @@ struct PhotoFrameView: View {
     var border: CGFloat = 8
     var kenBurns: Bool = false
     var favorite: Bool = false
+    /// When `true`, renders a small circular badge (top-trailing) marking the
+    /// photo as contributed by another participant of the user's iCloud Shared
+    /// Photo Library.
+    var shared: Bool = false
     var ratioOverride: CGFloat? = nil
     var ratioRange: ClosedRange<CGFloat> = 0.55...1.85
     var borderColor: Color = Theme.frame
@@ -66,6 +70,7 @@ struct PhotoFrameView: View {
         PHImageView(asset: item.asset, displaySize: imageSize, fill: true, kenBurns: kenBurns)
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }
+            .overlay(alignment: .topTrailing) { sharedBadge }
             .padding(.top, border)
             .padding(.horizontal, border)
             .padding(.bottom, bottomBorder)
@@ -84,6 +89,22 @@ struct PhotoFrameView: View {
                 .foregroundStyle(.white)
                 .padding(6)
                 .background(Theme.accent, in: Circle())
+                .padding(8)
+                .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var sharedBadge: some View {
+        if shared {
+            Image(systemName: "person.2.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Theme.ink)
+                .padding(6)
+                .background(.white.opacity(0.92), in: Circle())
+                .overlay(
+                    Circle().strokeBorder(Theme.ink.opacity(0.18), lineWidth: 0.5)
+                )
                 .padding(8)
                 .transition(.scale.combined(with: .opacity))
         }

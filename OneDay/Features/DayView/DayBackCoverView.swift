@@ -142,6 +142,7 @@ struct DayBackCoverView: View {
             item: item,
             width: totalWidth,
             border: border,
+            shared: item.isFromSharedLibrary,
             ratioRange: ratioRange,
             borderColor: model.frameColor(for: item),
             polaroid: model.borderStyle.isPolaroid,

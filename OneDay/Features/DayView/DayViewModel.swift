@@ -105,6 +105,8 @@ private static let photoMapKey       = "OneDay.photoMap"
 private static let albumTagBarKey    = "OneDay.albumTagBar"
     private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
     private static let albumTagOrderKey  = "OneDay.albumTagOrder"
+    private static let includeSharedAlbumsKey = "OneDay.includeSharedAlbums"
+    private static let sharedAlbumNamesKey = "OneDay.sharedAlbumNames"
 
     var background: PageBackground {
         didSet {
@@ -264,6 +266,46 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var albumTagOrder: [String] {
         didSet { UserDefaults.standard.set(albumTagOrder, forKey: Self.albumTagOrderKey) }
     }
+    /// When `true`, photos contributed by other members of the user's iCloud
+    /// Shared Photo Library are included in the day view. Default is `true`
+    /// (on by first-run). Toggling re-filters the day, recomposes sections,
+    /// and re-runs cover/sticker/caption/place preparation so all visual
+    /// surfaces reflect the new item set.
+    var includeSharedAlbums: Bool = false {
+        didSet {
+            UserDefaults.standard.set(includeSharedAlbums, forKey: Self.includeSharedAlbumsKey)
+            applySharedFilter(animated: true)
+            Task { await reprepareAfterFilterChange() }
+        }
+    }
+    /// Mirror of the full photo set passed in at `init`, before the
+    /// shared-library filter is applied. Used to re-derive `allItems` when
+    /// `includeSharedAlbums` toggles, without having to refetch from Photos.
+    private var allItemsUnfiltered: [PhotoItem] = []
+    /// Album titles the user has marked as "subscribed shared albums". Matched
+    /// against `.albumRegular` collection titles by `PhotoLibraryService` to
+    /// pull in photos from those collections as shared (covers the case where
+    /// iOS exposes subscribed shared albums locally as plain user albums).
+    var sharedAlbumNames: [String] = [] {
+        didSet {
+            let trimmed = sharedAlbumNames
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            UserDefaults.standard.set(trimmed, forKey: Self.sharedAlbumNamesKey)
+            // Re-tag existing items in memory with the updated shared album
+            // membership, then re-filter. Avoids a full PhotoLibrary refetch.
+            Task {
+                let sharedIDs = await PhotoLibraryService.shared
+                    .sharedCloudAssetIDs(subscribedTitles: trimmed)
+                for i in allItemsUnfiltered.indices {
+                    let inAlbum = sharedIDs.contains(allItemsUnfiltered[i].asset.localIdentifier)
+                    let inLib = PhotoItem.isSharedLibraryOrigin(allItemsUnfiltered[i].asset)
+                    allItemsUnfiltered[i].isFromSharedLibrary = inAlbum || inLib
+                }
+                applySharedFilter(animated: true)
+            }
+        }
+    }
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var scatteredCoverPhotos: [ScatteredCoverPhoto] = []
@@ -349,7 +391,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
 
     init(date: Date, items: [PhotoItem]) {
         self.date = date
-        self.allItems = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+        let sortedItems = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         self.favoriteIDs = Set(items.filter { $0.isFavorite }.map(\.id))
         self.hiddenIDs = Set(items.filter { $0.isHidden }.map(\.id))
         let saved = UserDefaults.standard.string(forKey: Self.backgroundKey)
@@ -417,8 +459,18 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             ? Set(BlockTemplate.allCases.filter { $0.isSelectable })
             : loadedTpl
         self.enabledTemplates = tplSet
-        // Use local tplSet to avoid accessing self before sections is initialized
-        self.sections = MagazineLayoutEngine.compose(items, enabled: tplSet)
+        // Compute the first-run preference and the section composition using only
+        // local values; all `self.* = ...` writes are deferred to the very end
+        // of init so phase-2 reads of `self` are never required mid-init.
+        let savedShared = UserDefaults.standard.object(forKey: Self.includeSharedAlbumsKey) as? Bool ?? true
+        let composedItems = savedShared ? sortedItems : sortedItems.filter { !$0.isFromSharedLibrary }
+        let composedSections = MagazineLayoutEngine.compose(composedItems, enabled: tplSet)
+        self.allItemsUnfiltered = sortedItems
+        self.allItems = composedItems
+        self.includeSharedAlbums = savedShared
+        self.sections = composedSections
+        self.sharedAlbumNames = UserDefaults.standard.stringArray(forKey: Self.sharedAlbumNamesKey) ?? []
+
     }
 
     var photoCount: Int { allItems.filter { !$0.isVideo }.count }
@@ -500,6 +552,39 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         case .colored:  return photoFrameColors[item.id] ?? Theme.frame
         case .polaroid: return Theme.frame
         }
+    }
+
+    // MARK: Shared-library filter
+
+    /// Re-derives `allItems` from `allItemsUnfiltered` according to the current
+    /// `includeSharedAlbums` toggle, and rebuilds sections synchronously so the
+    /// new set is visible immediately. Cover/place/sticker/caption side-effects
+    /// are re-run asynchronously by the caller (`includeSharedAlbums.didSet`).
+    private func applySharedFilter(animated: Bool) {
+        let filtered = includeSharedAlbums
+            ? allItemsUnfiltered
+            : allItemsUnfiltered.filter { !$0.isFromSharedLibrary }
+        guard filtered.map(\.id) != allItems.map(\.id) else { return }
+        allItems = filtered
+        rebuildSections(animated: animated)
+    }
+
+    /// Keeps the post-filter visual state in sync: warm color seed, frame
+    /// colors, cover photos, background color, person stickers, scattered
+    /// cover layout, and captions all depend on the current `allItems`. Pulled
+    /// out of `prepare()` so that toggling can re-run them without re-paying
+    /// the Vision-warmup cost (Vision is rerun because its chain of consecutive
+    /// distances needs to be rebuilt for the filtered ordering).
+    fileprivate func reprepareAfterFilterChange() async {
+        await applyVisionGrouping()
+        await resolveSegmentNames()
+        await resolvePlaces()
+        if borderStyle == .colored { await computeFrameColors(for: Array(allItems.prefix(40))) }
+        await computeCoverPhotos()
+        await computeCoverBackgroundColor()
+        await computePersonStickers()
+        if scatteredCoverPhotos.isEmpty { computeScatteredCoverPhotos() }
+        await loadPhotoCaptions()
     }
 
     // MARK: Preparation (Vision similarity + places + warm color)

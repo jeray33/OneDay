@@ -45,7 +45,8 @@ struct MagazineBlockView: View {
         let photoWidth = (width * config.singleScale).rounded()
         return tappable(item, border: b(9)) {
             PhotoFrameView(item: item, width: photoWidth, border: b(9),
-                           favorite: isFavorite(item), borderColor: frameColor(item),
+                           favorite: isFavorite(item), shared: item.isFromSharedLibrary,
+                           borderColor: frameColor(item),
                            polaroid: polaroid, shadowLevel: config.shadowLevel,
                            showCaption: showCaptions,
                            onEditCaption: onEditCaption)
@@ -84,7 +85,8 @@ struct MagazineBlockView: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                 tappable(item, border: scaledBorder) {
                     PhotoFrameView(item: item, width: frameWidths[i], border: scaledBorder,
-                                   favorite: isFavorite(item), borderColor: frameColor(item),
+                                   favorite: isFavorite(item), shared: item.isFromSharedLibrary,
+                                   borderColor: frameColor(item),
                                    polaroid: polaroid, shadowLevel: config.shadowLevel,
                                    showCaption: showCaptions,
                                    onEditCaption: onEditCaption)
@@ -131,7 +133,8 @@ struct MagazineBlockView: View {
         return HStack(alignment: .top, spacing: spacing) {
             tappable(primary, border: bigBorder) {
                 PhotoFrameView(item: primary, width: bigWidth, border: bigBorder,
-                               favorite: isFavorite(primary), borderColor: frameColor(primary),
+                               favorite: isFavorite(primary), shared: primary.isFromSharedLibrary,
+                               borderColor: frameColor(primary),
                                polaroid: polaroid, shadowLevel: config.shadowLevel,
                                showCaption: showCaptions,
                                onEditCaption: onEditCaption)
@@ -144,6 +147,7 @@ struct MagazineBlockView: View {
                     tappable(item, border: smallBorder) {
                         PhotoFrameView(item: item, width: smallWidth, border: smallBorder,
                                        favorite: isFavorite(item),
+                                       shared: item.isFromSharedLibrary,
                                        ratioOverride: lockedRatio, borderColor: frameColor(item),
                                        polaroid: polaroid, shadowLevel: config.shadowLevel,
                                        showCaption: showCaptions,
