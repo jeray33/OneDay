@@ -261,6 +261,9 @@ struct RootView: View {
             showPermissionAlert = true
             return
         }
+        // Warm the shared-album cache off the critical path so the landing
+        // day's `items(on:)` does not stall the cover entrance.
+        Task.detached(priority: .utility) { await SharedAlbumCache.shared.warm() }
         let group = await PhotoLibraryService.shared.rewindGroup(
             randomCount: rewindRandomCount,
             minPhotos: tunnelMinPhotos,
@@ -494,6 +497,8 @@ struct RootView: View {
                 showPermissionAlert = true
                 return
             }
+            // Warm the shared-album cache so the subsequent day fetch is fast.
+            Task.detached(priority: .utility) { await SharedAlbumCache.shared.warm() }
             let days = await PhotoLibraryService.shared.eligibleDays()
             guard let target = days.randomElement() else {
                 showEmptyAlert = true

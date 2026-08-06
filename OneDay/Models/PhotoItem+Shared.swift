@@ -39,9 +39,8 @@ extension PhotoItem {
     ///
     /// `ownContributionIDs` is the subset of `sharedIDs` whose capture
     /// timestamp matches the user's own library, i.e. photos the user
-    /// contributed themselves (see
-    /// `PhotoLibraryService.foreignSharedAlbumAssets(ownSeconds:)`). This drives
-    /// the contributor-match filter so the user's own uploads can be hidden.
+    /// contributed themselves (see `SharedAlbumCache.Snapshot`). This drives the
+    /// contributor-match filter so the user's own uploads can be hidden.
     static func build(
         from asset: PHAsset,
         sharedIDs: Set<String> = [],

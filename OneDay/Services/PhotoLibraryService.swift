@@ -16,12 +16,28 @@ final class PhotoLibraryService {
     static let shared = PhotoLibraryService()
     private init() {}
 
+    private var didRegisterObserver = false
+
     func authorize() async -> PHAuthorizationStatus {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        let status: PHAuthorizationStatus
         if current == .notDetermined {
-            return await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+            status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        } else {
+            status = current
         }
-        return current
+        if status == .authorized || status == .limited {
+            registerLibraryObserverIfNeeded()
+        }
+        return status
+    }
+
+    /// Registers (once) for library-change notifications so the shared-album
+    /// cache is invalidated when photos/albums change.
+    private func registerLibraryObserverIfNeeded() {
+        guard !didRegisterObserver else { return }
+        didRegisterObserver = true
+        PHPhotoLibrary.shared().register(SharedAlbumLibraryObserver.shared)
     }
 
     var isAuthorized: Bool {
@@ -84,19 +100,6 @@ final class PhotoLibraryService {
         return seconds
     }
 
-    /// Shared-album assets contributed by *others* (family / friends): every
-    /// shared-album asset whose capture second is not present in the user's
-    /// own library. These are the only shared photos that should be merged in
-    /// and given the shared badge; the user's own contributions are skipped
-    /// because their full-resolution originals already appear via the general
-    /// fetch.
-    nonisolated static func foreignSharedAlbumAssets(ownSeconds: Set<Int>) -> [PHAsset] {
-        sharedAlbumAssets().filter { asset in
-            guard let date = asset.creationDate else { return true }
-            return !ownSeconds.contains(Int(date.timeIntervalSince1970.rounded()))
-        }
-    }
-
     /// UserDefaults key for the contributor-match test toggle. Kept in sync with
     /// `DayViewModel.sharedContributorMatchKey`.
     static let sharedContributorMatchKey = "OneDay.sharedContributorMatch"
@@ -112,7 +115,8 @@ final class PhotoLibraryService {
 
     /// Distinct calendar days (start-of-day) that contain at least one eligible asset, excluding today.
     func eligibleDays() async -> [Date] {
-        return await Task.detached(priority: .userInitiated) {
+        let shared = await SharedAlbumCache.shared.current()
+        return await Task.detached(priority: .userInitiated) { [shared] in
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
                 format: "NOT ((mediaSubtype & %d) != 0)",
@@ -141,7 +145,7 @@ final class PhotoLibraryService {
             // shared-album photos never appear in the timeline. (Day listing
             // is contributor-agnostic; the contributor-match filter only
             // affects what is shown/badged inside a day, not which days exist.)
-            for asset in Self.sharedAlbumAssets() {
+            for asset in shared.sharedAssets {
                 consider(asset)
             }
 
@@ -254,12 +258,12 @@ final class PhotoLibraryService {
     /// Calendar days that share the reference month/day. Each year contributes up to
     /// `photoLimit` random still photos; membership stays stable for this result.
     func todayInHistory(referenceDate: Date = Date(), photoLimit: Int = 3) async -> [TodayInHistoryEntry] {
-        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
+        let shared = await SharedAlbumCache.shared.current()
+        let matchEnabled = Self.sharedContributorMatchEnabled
+        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { [shared, matchEnabled] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
             // When the contributor-match test toggle is on, merge only photos
             // shared by others; otherwise merge every shared-album photo.
-            let sharedToMerge = Self.sharedContributorMatchEnabled
-                ? Self.foreignSharedAlbumAssets(ownSeconds: Self.ownLibraryCreationSeconds())
-                : Self.sharedAlbumAssets()
+            let sharedToMerge = matchEnabled ? shared.foreignSharedAssets : shared.sharedAssets
             let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
@@ -323,7 +327,8 @@ final class PhotoLibraryService {
     }
 
     func items(on day: Date) async -> [PhotoItem] {
-        await Task.detached(priority: .userInitiated) {
+        let shared = await SharedAlbumCache.shared.current()
+        return await Task.detached(priority: .userInitiated) { [shared] in
             let calendar = Calendar.current
             let start = calendar.startOfDay(for: day)
             guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
@@ -348,21 +353,13 @@ final class PhotoLibraryService {
             // Shared-album photos are absent from the general fetch above, so
             // merge in every one that falls on this day. These are filtered in
             // code (not via predicate) because shared collections do not
-            // reliably honor complex fetch predicates. Their localIdentifiers
-            // form the shared-tag set so PhotoItem marks them with the shared
-            // badge. Those whose capture timestamp matches the user's own
-            // library are additionally flagged as the user's own contributions
-            // (via `ownContributionIDs`) so the view model can hide them when
-            // the contributor-match toggle is on.
-            let ownSeconds = Self.ownLibraryCreationSeconds()
-            let sharedAssets = Self.sharedAlbumAssets()
-            let sharedIDs = Set(sharedAssets.map(\.localIdentifier))
-            var ownContributionIDs = Set<String>()
-            for asset in sharedAssets {
-                if let date = asset.creationDate,
-                   ownSeconds.contains(Int(date.timeIntervalSince1970.rounded())) {
-                    ownContributionIDs.insert(asset.localIdentifier)
-                }
+            // reliably honor complex fetch predicates. The shared-tag set marks
+            // them with the shared badge; those whose capture timestamp matches
+            // the user's own library are flagged as the user's own
+            // contributions so the view model can hide them when the
+            // contributor-match toggle is on. Both sets come from the cached,
+            // library-wide snapshot instead of a per-day full-library scan.
+            for asset in shared.sharedAssets {
                 guard let date = asset.creationDate, date >= start, date < end else { continue }
                 guard MediaFilter.isEligible(asset) else { continue }
                 if seen.insert(asset.localIdentifier).inserted {
@@ -374,7 +371,9 @@ final class PhotoLibraryService {
                 ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
             }
             return PhotoItem.build(
-                from: sorted, sharedIDs: sharedIDs, ownContributionIDs: ownContributionIDs)
+                from: sorted,
+                sharedIDs: shared.sharedAssetIDs,
+                ownContributionIDs: shared.ownContributionIDs)
         }.value
     }
 }
