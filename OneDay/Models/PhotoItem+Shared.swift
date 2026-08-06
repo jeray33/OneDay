@@ -30,25 +30,41 @@ extension PhotoItem {
     /// left as `false`.
     ///
     /// `sharedIDs` is the set of asset `localIdentifier`s that live in any
-    /// `.albumCloudShared` collection (subscriptions or owned shared albums),
-    /// produced by `PhotoLibraryService.sharedCloudAssetIDs()`. A photo is
-    /// considered "shared from another contributor" when **either**:
+    /// iCloud Shared Album (all members, regardless of contributor). A photo is
+    /// considered "shared" when **either**:
     /// - Its `sourceType` matches `isSharedLibraryOrigin(_:)` (covers the iOS
     ///   16+ Shared Photo Library), or
     /// - It is a member of any iCloud Shared Album (covers the older "shared
     ///   album" feature where subscribed photos also have `.typeUserLibrary`).
-    static func build(from asset: PHAsset, sharedIDs: Set<String> = []) -> PhotoItem {
+    ///
+    /// `ownContributionIDs` is the subset of `sharedIDs` whose capture
+    /// timestamp matches the user's own library, i.e. photos the user
+    /// contributed themselves (see
+    /// `PhotoLibraryService.foreignSharedAlbumAssets(ownSeconds:)`). This drives
+    /// the contributor-match filter so the user's own uploads can be hidden.
+    static func build(
+        from asset: PHAsset,
+        sharedIDs: Set<String> = [],
+        ownContributionIDs: Set<String> = []
+    ) -> PhotoItem {
         let inSharedAlbum = sharedIDs.contains(asset.localIdentifier)
         let inSharedLibrary = isSharedLibraryOrigin(asset)
         return PhotoItem(
             asset: asset,
-            isFromSharedLibrary: inSharedAlbum || inSharedLibrary
+            isFromSharedLibrary: inSharedAlbum || inSharedLibrary,
+            isOwnSharedContribution: ownContributionIDs.contains(asset.localIdentifier)
         )
     }
 
     /// Bulk variant: prefer over `map { PhotoItem.build(from: $0, sharedIDs:) }`
     /// to keep the call site compact and the shared detection in one place.
-    static func build(from assets: [PHAsset], sharedIDs: Set<String> = []) -> [PhotoItem] {
-        assets.map { build(from: $0, sharedIDs: sharedIDs) }
+    static func build(
+        from assets: [PHAsset],
+        sharedIDs: Set<String> = [],
+        ownContributionIDs: Set<String> = []
+    ) -> [PhotoItem] {
+        assets.map {
+            build(from: $0, sharedIDs: sharedIDs, ownContributionIDs: ownContributionIDs)
+        }
     }
 }

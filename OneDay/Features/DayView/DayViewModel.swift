@@ -106,6 +106,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
     private static let albumTagOrderKey  = "OneDay.albumTagOrder"
     private static let includeSharedAlbumsKey = "OneDay.includeSharedAlbums"
+    static let sharedContributorMatchKey = PhotoLibraryService.sharedContributorMatchKey
 
     var background: PageBackground {
         didSet {
@@ -277,6 +278,17 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             Task { await reprepareAfterFilterChange() }
         }
     }
+    /// Test toggle: when `true`, shared-album photos the user contributed
+    /// themselves (matched to the own library by capture timestamp) are hidden
+    /// so only photos shared by others remain and get the shared badge. When
+    /// `false`, every shared-album photo is shown and badged. Default `true`.
+    var sharedContributorMatch: Bool = true {
+        didSet {
+            UserDefaults.standard.set(sharedContributorMatch, forKey: Self.sharedContributorMatchKey)
+            applySharedFilter(animated: true)
+            Task { await reprepareAfterFilterChange() }
+        }
+    }
     /// Mirror of the full photo set passed in at `init`, before the
     /// shared-library filter is applied. Used to re-derive `allItems` when
     /// `includeSharedAlbums` toggles, without having to refetch from Photos.
@@ -438,11 +450,14 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         // local values; all `self.* = ...` writes are deferred to the very end
         // of init so phase-2 reads of `self` are never required mid-init.
         let savedShared = UserDefaults.standard.object(forKey: Self.includeSharedAlbumsKey) as? Bool ?? true
-        let composedItems = savedShared ? sortedItems : sortedItems.filter { !$0.isFromSharedLibrary }
+        let savedMatch = UserDefaults.standard.object(forKey: Self.sharedContributorMatchKey) as? Bool ?? true
+        let composedItems = Self.filterShared(
+            sortedItems, includeShared: savedShared, contributorMatch: savedMatch)
         let composedSections = MagazineLayoutEngine.compose(composedItems, enabled: tplSet)
         self.allItemsUnfiltered = sortedItems
         self.allItems = composedItems
         self.includeSharedAlbums = savedShared
+        self.sharedContributorMatch = savedMatch
         self.sections = composedSections
     }
 
@@ -533,10 +548,29 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// `includeSharedAlbums` toggle, and rebuilds sections synchronously so the
     /// new set is visible immediately. Cover/place/sticker/caption side-effects
     /// are re-run asynchronously by the caller (`includeSharedAlbums.didSet`).
+    /// Applies the two shared-photo filters to `items`:
+    /// - `includeShared == false` removes every shared-album photo.
+    /// - otherwise, `contributorMatch == true` removes the user's own
+    ///   contributions (so only photos shared by others remain).
+    static func filterShared(
+        _ items: [PhotoItem],
+        includeShared: Bool,
+        contributorMatch: Bool
+    ) -> [PhotoItem] {
+        if !includeShared {
+            return items.filter { !$0.isFromSharedLibrary }
+        }
+        if contributorMatch {
+            return items.filter { !$0.isOwnSharedContribution }
+        }
+        return items
+    }
+
     private func applySharedFilter(animated: Bool) {
-        let filtered = includeSharedAlbums
-            ? allItemsUnfiltered
-            : allItemsUnfiltered.filter { !$0.isFromSharedLibrary }
+        let filtered = Self.filterShared(
+            allItemsUnfiltered,
+            includeShared: includeSharedAlbums,
+            contributorMatch: sharedContributorMatch)
         guard filtered.map(\.id) != allItems.map(\.id) else { return }
         allItems = filtered
         rebuildSections(animated: animated)

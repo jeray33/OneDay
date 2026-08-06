@@ -18,6 +18,12 @@ struct DaySettingsMenu: View {
                 get: { model.includeSharedAlbums },
                 set: { model.includeSharedAlbums = $0 }
             ))
+            if model.includeSharedAlbums {
+                Toggle("仅标记他人共享（比照）", isOn: Binding(
+                    get: { model.sharedContributorMatch },
+                    set: { model.sharedContributorMatch = $0 }
+                ))
+            }
             Menu("背景") {
                 Picker("", selection: Binding(
                     get: { model.background },

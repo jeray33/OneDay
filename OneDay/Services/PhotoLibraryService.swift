@@ -63,17 +63,56 @@ final class PhotoLibraryService {
         return assets
     }
 
-    /// Asset identifiers that live in any iCloud Shared Album, derived from
-    /// `sharedAlbumAssets()`.
-    func sharedCloudAssetIDs() async -> Set<String> {
-        await Task.detached(priority: .userInitiated) {
-            Set(Self.sharedAlbumAssets().map(\.localIdentifier))
-        }.value
+    /// Capture timestamps (rounded to the second, as epoch seconds) of every
+    /// asset in the user's *own* library. iCloud Shared Album assets are not
+    /// part of this fetch, so this set represents only photos the user holds
+    /// directly.
+    ///
+    /// Used to tell "photos I contributed to a shared album" apart from
+    /// "photos a family member / friend contributed": a shared-album photo
+    /// whose capture second matches one of the user's own assets is almost
+    /// certainly the user's own upload. Shared albums recompress the image, so
+    /// dimensions differ from the original, but the capture time is preserved,
+    /// which makes the timestamp the only reliable signal.
+    nonisolated static func ownLibraryCreationSeconds() -> Set<Int> {
+        var seconds = Set<Int>()
+        PHAsset.fetchAssets(with: PHFetchOptions()).enumerateObjects { asset, _, _ in
+            if let date = asset.creationDate {
+                seconds.insert(Int(date.timeIntervalSince1970.rounded()))
+            }
+        }
+        return seconds
+    }
+
+    /// Shared-album assets contributed by *others* (family / friends): every
+    /// shared-album asset whose capture second is not present in the user's
+    /// own library. These are the only shared photos that should be merged in
+    /// and given the shared badge; the user's own contributions are skipped
+    /// because their full-resolution originals already appear via the general
+    /// fetch.
+    nonisolated static func foreignSharedAlbumAssets(ownSeconds: Set<Int>) -> [PHAsset] {
+        sharedAlbumAssets().filter { asset in
+            guard let date = asset.creationDate else { return true }
+            return !ownSeconds.contains(Int(date.timeIntervalSince1970.rounded()))
+        }
+    }
+
+    /// UserDefaults key for the contributor-match test toggle. Kept in sync with
+    /// `DayViewModel.sharedContributorMatchKey`.
+    static let sharedContributorMatchKey = "OneDay.sharedContributorMatch"
+
+    /// Test toggle controlling whether shared-album photos the user contributed
+    /// themselves are distinguished (and hidden) from those shared by others.
+    /// Default `true`. Read by `todayInHistory`, which has no view model to
+    /// apply the live filter; the day view applies the same flag through
+    /// `DayViewModel.sharedContributorMatch`.
+    nonisolated static var sharedContributorMatchEnabled: Bool {
+        UserDefaults.standard.object(forKey: sharedContributorMatchKey) as? Bool ?? true
     }
 
     /// Distinct calendar days (start-of-day) that contain at least one eligible asset, excluding today.
     func eligibleDays() async -> [Date] {
-        await Task.detached(priority: .userInitiated) {
+        return await Task.detached(priority: .userInitiated) {
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
                 format: "NOT ((mediaSubtype & %d) != 0)",
@@ -99,7 +138,9 @@ final class PhotoLibraryService {
 
             // Shared albums are invisible to the general fetch above, so merge
             // them in explicitly. Without this, days that contain only
-            // shared-album photos never appear in the timeline.
+            // shared-album photos never appear in the timeline. (Day listing
+            // is contributor-agnostic; the contributor-match filter only
+            // affects what is shown/badged inside a day, not which days exist.)
             for asset in Self.sharedAlbumAssets() {
                 consider(asset)
             }
@@ -213,8 +254,13 @@ final class PhotoLibraryService {
     /// Calendar days that share the reference month/day. Each year contributes up to
     /// `photoLimit` random still photos; membership stays stable for this result.
     func todayInHistory(referenceDate: Date = Date(), photoLimit: Int = 3) async -> [TodayInHistoryEntry] {
-        let sharedIDs = await sharedCloudAssetIDs()
-        let groups = await Task.detached(priority: .userInitiated) { [sharedIDs] in
+        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
+            // When the contributor-match test toggle is on, merge only photos
+            // shared by others; otherwise merge every shared-album photo.
+            let sharedToMerge = Self.sharedContributorMatchEnabled
+                ? Self.foreignSharedAlbumAssets(ownSeconds: Self.ownLibraryCreationSeconds())
+                : Self.sharedAlbumAssets()
+            let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
                 format: "NOT ((mediaSubtype & %d) != 0)",
@@ -226,7 +272,7 @@ final class PhotoLibraryService {
             let calendar = Calendar.current
             let reference = calendar.dateComponents([.year, .month, .day], from: referenceDate)
             guard let referenceMonth = reference.month,
-                  let referenceDay = reference.day else { return [(Date, Int, [PHAsset], [PHAsset])]() }
+                  let referenceDay = reference.day else { return ([], sharedIDs) }
 
             var assetsByDate: [Date: [PHAsset]] = [:]
             var seen = Set<String>()
@@ -244,11 +290,11 @@ final class PhotoLibraryService {
             result.enumerateObjects { asset, _, _ in consider(asset) }
 
             // Shared-album photos are invisible to the general fetch; merge them.
-            for asset in Self.sharedAlbumAssets() {
+            for asset in sharedToMerge {
                 consider(asset)
             }
 
-            return assetsByDate.keys.sorted(by: >).map { date in
+            let mapped = assetsByDate.keys.sorted(by: >).map { date in
                 let allAssets = assetsByDate[date] ?? []
                 let selected = allAssets
                     .filter { $0.mediaType == .image }
@@ -258,6 +304,7 @@ final class PhotoLibraryService {
                 let year = calendar.component(.year, from: date)
                 return (date, year, allAssets, Array(selected))
             }
+            return (mapped, sharedIDs)
         }.value
 
         var entries: [TodayInHistoryEntry] = []
@@ -298,14 +345,24 @@ final class PhotoLibraryService {
                 }
             }
 
-            // Shared-album photos are absent from the general fetch above.
-            // Merge in any that fall on this day. These are filtered in code
-            // (not via predicate) because shared collections do not reliably
-            // honor complex fetch predicates. Their localIdentifiers form the
-            // shared-tag set so PhotoItem marks them with the shared badge.
+            // Shared-album photos are absent from the general fetch above, so
+            // merge in every one that falls on this day. These are filtered in
+            // code (not via predicate) because shared collections do not
+            // reliably honor complex fetch predicates. Their localIdentifiers
+            // form the shared-tag set so PhotoItem marks them with the shared
+            // badge. Those whose capture timestamp matches the user's own
+            // library are additionally flagged as the user's own contributions
+            // (via `ownContributionIDs`) so the view model can hide them when
+            // the contributor-match toggle is on.
+            let ownSeconds = Self.ownLibraryCreationSeconds()
             let sharedAssets = Self.sharedAlbumAssets()
             let sharedIDs = Set(sharedAssets.map(\.localIdentifier))
+            var ownContributionIDs = Set<String>()
             for asset in sharedAssets {
+                if let date = asset.creationDate,
+                   ownSeconds.contains(Int(date.timeIntervalSince1970.rounded())) {
+                    ownContributionIDs.insert(asset.localIdentifier)
+                }
                 guard let date = asset.creationDate, date >= start, date < end else { continue }
                 guard MediaFilter.isEligible(asset) else { continue }
                 if seen.insert(asset.localIdentifier).inserted {
@@ -316,7 +373,8 @@ final class PhotoLibraryService {
             let sorted = generalAssets.sorted {
                 ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
             }
-            return PhotoItem.build(from: sorted, sharedIDs: sharedIDs)
+            return PhotoItem.build(
+                from: sorted, sharedIDs: sharedIDs, ownContributionIDs: ownContributionIDs)
         }.value
     }
 }

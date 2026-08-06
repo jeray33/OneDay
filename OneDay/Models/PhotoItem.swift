@@ -10,12 +10,20 @@ struct PhotoItem: Identifiable, Hashable {
     /// `includeSharedAlbums` filter. Populated by `PhotoItem.build(from:)`.
     var isFromSharedLibrary: Bool = false
 
+    /// Set to `true` when this shared-album photo's capture timestamp matches
+    /// an asset in the user's own library, i.e. it is almost certainly a photo
+    /// the user contributed themselves rather than one a family member/friend
+    /// shared. Used by the contributor-match filter to hide the user's own
+    /// uploads (and their duplicate badge). Populated by `PhotoItem.build(from:)`.
+    var isOwnSharedContribution: Bool = false
+
     /// Explicit initializer that requires the shared-library flag to be set
     /// at construction. Forces every caller to use `PhotoItem.build(from:)`
     /// so no `PhotoItem` is ever silently left with `isFromSharedLibrary=false`.
-    init(asset: PHAsset, isFromSharedLibrary: Bool) {
+    init(asset: PHAsset, isFromSharedLibrary: Bool, isOwnSharedContribution: Bool = false) {
         self.asset = asset
         self.isFromSharedLibrary = isFromSharedLibrary
+        self.isOwnSharedContribution = isOwnSharedContribution
     }
 
     var id: String { asset.localIdentifier }
