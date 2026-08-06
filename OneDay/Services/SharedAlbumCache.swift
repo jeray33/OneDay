@@ -11,10 +11,13 @@ import Photos
 ///   used to tell the user's own uploads apart from photos shared by others.
 ///
 /// Previously both ran inside `items(on:)`, i.e. a full-library scan on every
-/// day open, which stalled the cover entrance. This actor computes them once,
-/// shares the result across all callers (in-flight requests coalesce onto a
-/// single computation), and is invalidated by `PhotoLibraryService`'s
-/// `PHPhotoLibraryChangeObserver` when the library changes.
+/// day open, which stalled the cover entrance. This actor computes them once
+/// and shares the result across all callers. To keep even the first computation
+/// off the critical path it loads in two phases (cheap shared-membership first,
+/// then the own-library scan in the background) and, on library changes
+/// (via `PhotoLibraryService`'s `PHPhotoLibraryChangeObserver`), keeps serving
+/// the current snapshot while a debounced background refresh recomputes it
+/// (stale-while-revalidate).
 actor SharedAlbumCache {
     static let shared = SharedAlbumCache()
 
@@ -55,15 +58,24 @@ actor SharedAlbumCache {
     /// returns instantly, even while a background refresh is in flight — the
     /// data is at most a few seconds stale, which is fine for a badge.
     /// Concurrent first callers coalesce onto the same computation.
+    ///
+    /// The first computation is two-phase to keep it off the critical path:
+    /// phase 1 fetches only shared-album membership (fast, a few hundred ms) and
+    /// is returned immediately; phase 2 runs the multi-second own-library scan
+    /// in the background and swaps in the complete snapshot (with contributor
+    /// matching) via `triggerFullRefresh`. Until phase 2 lands, every shared
+    /// photo is shown and badged (no one is hidden as "my own"); the badges then
+    /// refine a moment later.
     func current() async -> Snapshot {
         if let snapshot { return snapshot }
         if let loadTask { return await loadTask.value }
-        let task = Task.detached(priority: .userInitiated) { Self.compute() }
+        let task = Task.detached(priority: .userInitiated) { Self.computeSharedOnly() }
         loadTask = task
-        let result = await task.value
-        snapshot = result
+        let base = await task.value
+        snapshot = base
         loadTask = nil
-        return result
+        triggerFullRefresh() // phase 2: contributor matching, off the critical path
+        return base
     }
 
     /// Precomputes the snapshot off the critical path (e.g. during tunnel
@@ -87,22 +99,42 @@ actor SharedAlbumCache {
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.refreshQuietPeriod)
             guard !Task.isCancelled else { return }
-            await self?.performRefresh()
+            await self?.triggerFullRefresh()
         }
     }
 
-    private func performRefresh() async {
+    /// Recomputes the complete snapshot (shared membership + the own-library
+    /// scan for contributor matching) in the background and swaps it in. Used
+    /// both for phase 2 of the first load and for library-change refreshes.
+    /// Coalesces: a refresh already in flight is not duplicated.
+    private func triggerFullRefresh() {
         guard !isRefreshing else { return }
         isRefreshing = true
-        let fresh = await Task.detached(priority: .utility) { Self.compute() }.value
-        snapshot = fresh
-        isRefreshing = false
+        Task {
+            let fresh = await Task.detached(priority: .utility) { Self.compute() }.value
+            snapshot = fresh
+            isRefreshing = false
+        }
     }
 
     // MARK: - Computation
 
-    /// Short-circuits when the user has no shared albums: the whole shared merge
-    /// (and the expensive own-library scan) is skipped entirely.
+    /// Phase 1: shared-album membership only, with `ownContributionIDs` left
+    /// empty. Cheap (no own-library scan) so the first `current()` returns
+    /// quickly; contributor matching is filled in afterwards by `compute()`.
+    nonisolated static func computeSharedOnly() -> Snapshot {
+        let sharedAssets = PhotoLibraryService.sharedAlbumAssets()
+        guard !sharedAssets.isEmpty else { return .empty }
+        return Snapshot(
+            sharedAssets: sharedAssets,
+            sharedAssetIDs: Set(sharedAssets.map(\.localIdentifier)),
+            ownContributionIDs: []
+        )
+    }
+
+    /// Full snapshot: shared membership plus the own-library scan that
+    /// distinguishes the user's own uploads. Short-circuits when the user has no
+    /// shared albums, skipping the expensive scan entirely.
     nonisolated static func compute() -> Snapshot {
         let sharedAssets = PhotoLibraryService.sharedAlbumAssets()
         guard !sharedAssets.isEmpty else { return .empty }
