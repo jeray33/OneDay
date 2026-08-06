@@ -328,7 +328,7 @@ final class PhotoLibraryService {
 
     func items(on day: Date) async -> [PhotoItem] {
         let shared = await SharedAlbumCache.shared.current()
-        return await Task.detached(priority: .userInitiated) { [shared] in
+        return await Task.detached(priority: .userInitiated) { [shared] () -> [PhotoItem] in
             let calendar = Calendar.current
             let start = calendar.startOfDay(for: day)
             guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }

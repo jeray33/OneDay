@@ -40,18 +40,29 @@ actor SharedAlbumCache {
     }
 
     private var snapshot: Snapshot?
-    private var inFlight: Task<Snapshot, Never>?
+    private var loadTask: Task<Snapshot, Never>?
+    private var isRefreshing = false
+    private var debounceTask: Task<Void, Never>?
 
-    /// Returns the cached snapshot, computing it (once) if necessary.
-    /// Concurrent callers await the same in-flight computation.
+    /// How long the library must stay quiet after a change before we recompute.
+    /// During active iCloud sync changes arrive in a continuous trickle; without
+    /// this the refresh would loop nonstop, each pass paying a multi-second
+    /// full-library scan.
+    private static let refreshQuietPeriod: UInt64 = 8_000_000_000 // 8s
+
+    /// Returns the cached snapshot, computing it only when there is nothing to
+    /// serve yet (the first call of the session). Once a snapshot exists this
+    /// returns instantly, even while a background refresh is in flight — the
+    /// data is at most a few seconds stale, which is fine for a badge.
+    /// Concurrent first callers coalesce onto the same computation.
     func current() async -> Snapshot {
         if let snapshot { return snapshot }
-        if let inFlight { return await inFlight.value }
+        if let loadTask { return await loadTask.value }
         let task = Task.detached(priority: .userInitiated) { Self.compute() }
-        inFlight = task
+        loadTask = task
         let result = await task.value
         snapshot = result
-        inFlight = nil
+        loadTask = nil
         return result
     }
 
@@ -61,11 +72,31 @@ actor SharedAlbumCache {
         _ = await current()
     }
 
-    /// Drops the cached snapshot so the next access recomputes it. Called when
-    /// the photo library changes.
-    func invalidate() {
-        snapshot = nil
-        inFlight = nil
+    /// The photo library changed. Instead of dropping the snapshot (which would
+    /// force the next access to pay the multi-second cold recompute — the cause
+    /// of the cover-entrance stall during active iCloud sync), keep serving the
+    /// current snapshot and recompute in the background, swapping in the fresh
+    /// result when ready. Rapid change bursts collapse into a single trailing
+    /// refresh.
+    func markStale() {
+        guard snapshot != nil else { return } // nothing to keep; next current() computes
+        // Debounce: (re)start the quiet-period timer on every change so a burst
+        // of sync notifications collapses into a single refresh once the
+        // library settles.
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.refreshQuietPeriod)
+            guard !Task.isCancelled else { return }
+            await self?.performRefresh()
+        }
+    }
+
+    private func performRefresh() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let fresh = await Task.detached(priority: .utility) { Self.compute() }.value
+        snapshot = fresh
+        isRefreshing = false
     }
 
     // MARK: - Computation
@@ -95,12 +126,13 @@ actor SharedAlbumCache {
 
 /// Lightweight `NSObject` adapter so we can observe photo-library changes
 /// without forcing `PhotoLibraryService` (a plain actor-isolated class) to
-/// inherit `NSObject`. Invalidates the shared-album cache on any change.
+/// inherit `NSObject`. Marks the shared-album cache stale (background refresh)
+/// on any change.
 final class SharedAlbumLibraryObserver: NSObject, PHPhotoLibraryChangeObserver {
     static let shared = SharedAlbumLibraryObserver()
     private override init() { super.init() }
 
     func photoLibraryDidChange(_ changeInstance: PHChange) {
-        Task { await SharedAlbumCache.shared.invalidate() }
+        Task { await SharedAlbumCache.shared.markStale() }
     }
 }
