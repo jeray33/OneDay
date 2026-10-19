@@ -100,6 +100,31 @@ enum PhotoBorderStyle: String, CaseIterable, Identifiable {
     var isPolaroid: Bool { self == .polaroid }
 }
 
+enum PhotoCornerRadius: String, CaseIterable, Identifiable {
+    case none, slight, small, medium, large, xlarge
+    var id: String { rawValue }
+    var value: CGFloat {
+        switch self {
+        case .none:   return 0
+        case .slight: return 4
+        case .small:  return 8
+        case .medium: return 14
+        case .large:  return 22
+        case .xlarge: return 32
+        }
+    }
+    var label: String {
+        switch self {
+        case .none:   return "无"
+        case .slight: return "轻微 4"
+        case .small:  return "小 8"
+        case .medium: return "中 14"
+        case .large:  return "大 22"
+        case .xlarge: return "最大 32"
+        }
+    }
+}
+
 enum PageBackground: String, CaseIterable, Identifiable {
     case paper, dark, warm, dominant, vibrant, bright, bright2
     var id: Self { self }

@@ -27,6 +27,7 @@ struct MagazineBlockView: View {
                                polaroid: polaroid,
                                shadowLevel: config.shadowLevel,
                                showCaptions: showCaptions,
+                               cornerRadius: cr,
                                onEditCaption: onEditCaption,
                                hiddenItemID: hiddenItemID)
         case .quote:   quote
@@ -39,6 +40,7 @@ struct MagazineBlockView: View {
     private func b(_ base: CGFloat) -> CGFloat { max((base * config.borderScale).rounded(), 0) }
 
     private var polaroid: Bool { config.borderStyle.isPolaroid }
+    private var cr: CGFloat { config.cornerRadius }
 
     private var single: some View {
         let item = block.items[0]
@@ -49,6 +51,7 @@ struct MagazineBlockView: View {
                            borderColor: frameColor(item),
                            polaroid: polaroid, shadowLevel: config.shadowLevel,
                            showCaption: showCaptions,
+                           cornerRadius: cr,
                            onEditCaption: onEditCaption)
         }
         .frame(maxWidth: .infinity, alignment: singleAlignment)
@@ -89,6 +92,7 @@ struct MagazineBlockView: View {
                                    borderColor: frameColor(item),
                                    polaroid: polaroid, shadowLevel: config.shadowLevel,
                                    showCaption: showCaptions,
+                                   cornerRadius: cr,
                                    onEditCaption: onEditCaption)
                 }
                 // Cascade stagger: base = clipped bottomTrailing phase (0 at identity, no stuck-offset).
@@ -137,6 +141,7 @@ struct MagazineBlockView: View {
                                borderColor: frameColor(primary),
                                polaroid: polaroid, shadowLevel: config.shadowLevel,
                                showCaption: showCaptions,
+                               cornerRadius: cr,
                                onEditCaption: onEditCaption)
                     .rotationEffect(.degrees(-1.5))
             }
@@ -151,6 +156,7 @@ struct MagazineBlockView: View {
                                        ratioOverride: lockedRatio, borderColor: frameColor(item),
                                        polaroid: polaroid, shadowLevel: config.shadowLevel,
                                        showCaption: showCaptions,
+                                       cornerRadius: cr,
                                        onEditCaption: onEditCaption)
                             .rotationEffect(.degrees(index.isMultiple(of: 2) ? 1.5 : -1.0))
                     }

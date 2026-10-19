@@ -20,6 +20,7 @@ struct PhotoFrameView: View {
     var minimumPolaroidBottom: CGFloat = 20
     var shadowLevel: PhotoShadowLevel = .max
     var showCaption: Bool = false
+    var cornerRadius: CGFloat = 0
     var onEditCaption: ((PhotoItem) -> Void)? = nil
 
     private let captionFontSize: CGFloat = 12
@@ -68,6 +69,7 @@ struct PhotoFrameView: View {
 
     private var framedImage: some View {
         PHImageView(asset: item.asset, displaySize: imageSize, fill: true, kenBurns: kenBurns)
+            .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius - border, 0), style: .continuous))
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }
             .overlay(alignment: .topTrailing) { sharedBadge }
@@ -75,6 +77,7 @@ struct PhotoFrameView: View {
             .padding(.horizontal, border)
             .padding(.bottom, bottomBorder)
             .background(borderColor)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.16 * Double(shadowLevel.scale)),
                     radius: 7 * shadowLevel.scale,
                     x: 0,
@@ -85,11 +88,12 @@ struct PhotoFrameView: View {
     private var favoriteBadge: some View {
         if favorite {
             Image(systemName: "heart.fill")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(6)
-                .background(Theme.accent, in: Circle())
-                .padding(8)
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(.red)
+                .padding(3)
+                .glassEffect(.regular.interactive(),
+                             in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .padding(4)
                 .transition(.scale.combined(with: .opacity))
         }
     }
@@ -98,14 +102,12 @@ struct PhotoFrameView: View {
     private var sharedBadge: some View {
         if shared {
             Image(systemName: "person.2.fill")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 6, weight: .bold))
                 .foregroundStyle(Theme.ink)
-                .padding(6)
-                .background(.white.opacity(0.92), in: Circle())
-                .overlay(
-                    Circle().strokeBorder(Theme.ink.opacity(0.18), lineWidth: 0.5)
-                )
-                .padding(8)
+                .padding(3)
+                .glassEffect(.regular.interactive(),
+                             in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .padding(4)
                 .transition(.scale.combined(with: .opacity))
         }
     }

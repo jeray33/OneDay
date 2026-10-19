@@ -167,6 +167,21 @@ struct DaySettingsMenu: View {
                     }
                 }
             }
+            Menu("圆角") {
+                ForEach(PhotoCornerRadius.allCases) { cr in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            model.photoCornerRadius = cr
+                        }
+                    } label: {
+                        if model.photoCornerRadius == cr {
+                            Label(cr.label, systemImage: "checkmark")
+                        } else {
+                            Text(cr.label)
+                        }
+                    }
+                }
+            }
             Menu("投影") {
                 ForEach(PhotoShadowLevel.allCases) { level in
                     Button {

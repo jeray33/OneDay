@@ -146,13 +146,13 @@ struct PreviewPageView: View {
         .overlay {
             flipHighlightOverlay
                 .frame(width: card.width, height: card.height)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: model.photoCornerRadius.value, style: .continuous))
                 .allowsHitTesting(false)
         }
         .overlay {
             swipeGlossOverlay(progress: swipeProgress)
                 .frame(width: card.width, height: card.height)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: model.photoCornerRadius.value, style: .continuous))
                 .allowsHitTesting(false)
         }
         .rotation3DEffect(
@@ -297,11 +297,13 @@ struct PreviewPageView: View {
                 VideoPlayer(player: player)
                     .frame(width: card.width - sideBorder * 2,
                            height: card.height - topBorder - baseBottomBorder)
+                    .clipShape(RoundedRectangle(cornerRadius: max(model.photoCornerRadius.value - sideBorder, 0), style: .continuous))
                     .padding(.horizontal, sideBorder)
                     .padding(.top, topBorder)
                     .padding(.bottom, baseBottomBorder)
                     .frame(width: card.width, height: card.height)
                     .background(cardColor)
+                    .clipShape(RoundedRectangle(cornerRadius: model.photoCornerRadius.value, style: .continuous))
             } else {
                 ProgressView().tint(.white)
             }
@@ -313,6 +315,7 @@ struct PreviewPageView: View {
                 topBorder: topBorder,
                 captionHeight: baseBottomBorder,
                 cardColor: cardColor,
+                cornerRadius: model.photoCornerRadius.value,
                 onZoomChanged: onZoomChanged,
                 caption: nil,
                 captionColor: captionColor,

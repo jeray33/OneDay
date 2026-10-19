@@ -147,7 +147,8 @@ struct DayCoverView: View {
                     shared: photo.isFromSharedLibrary,
                     borderColor: model.frameColor(for: photo),
                     polaroid: model.borderStyle.isPolaroid,
-                    shadowLevel: model.photoShadow
+                    shadowLevel: model.photoShadow,
+                    cornerRadius: model.photoCornerRadius.value
                 )
                 .position(x: size.width / 2, y: size.height * 0.69)
             }
@@ -263,7 +264,8 @@ struct DayCoverView: View {
                        shared: item.isFromSharedLibrary,
                        borderColor: model.frameColor(for: item),
                        polaroid: model.borderStyle.isPolaroid,
-                       shadowLevel: model.photoShadow)
+                       shadowLevel: model.photoShadow,
+                       cornerRadius: model.photoCornerRadius.value)
             .rotationEffect(.degrees(stableAngle(for: item.id)))
             .shadow(color: .black.opacity(0.28 * Double(model.photoShadow.scale)),
                     radius: 12 * model.photoShadow.scale,
@@ -309,7 +311,8 @@ struct DayCoverView: View {
                            shared: photo.item.isFromSharedLibrary,
                            borderColor: model.frameColor(for: photo.item),
                            polaroid: model.borderStyle.isPolaroid,
-                           shadowLevel: model.photoShadow)
+                           shadowLevel: model.photoShadow,
+                           cornerRadius: model.photoCornerRadius.value)
                 .shadow(color: .black.opacity(0.28 * Double(model.photoShadow.scale)),
                         radius: 12 * model.photoShadow.scale,
                         x: 0,

@@ -147,7 +147,8 @@ struct DayBackCoverView: View {
             borderColor: model.frameColor(for: item),
             polaroid: model.borderStyle.isPolaroid,
             minimumPolaroidBottom: polaroidMinimum,
-            shadowLevel: model.photoShadow
+            shadowLevel: model.photoShadow,
+            cornerRadius: model.photoCornerRadius.value
         )
     }
 

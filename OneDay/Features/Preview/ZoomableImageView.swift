@@ -20,6 +20,7 @@ struct ZoomableImageView: UIViewRepresentable {
     /// Thickness of the bottom border strip (tall for Polaroid).
     var captionHeight: CGFloat = 0
     var cardColor: Color = .white
+    var cornerRadius: CGFloat = 0
     var onZoomChanged: (Bool) -> Void = { _ in }
     var caption: String? = nil
     var captionColor: Color = .black
@@ -41,12 +42,17 @@ struct ZoomableImageView: UIViewRepresentable {
         // proportionally with the photo. Centering is handled with contentInset.
         let card = context.coordinator.card
         card.backgroundColor = UIColor(cardColor)
+        card.layer.cornerRadius = cornerRadius
+        card.layer.masksToBounds = cornerRadius > 0
         scrollView.addSubview(card)
 
         let imageView = context.coordinator.imageView
         imageView.image = image
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
+        let innerRadius = max(cornerRadius - sideBorder, 0)
+        imageView.layer.cornerRadius = innerRadius
+        imageView.layer.masksToBounds = innerRadius > 0
         card.addSubview(imageView)
 
         let captionLabel = context.coordinator.captionLabel
@@ -97,6 +103,7 @@ struct ZoomableImageView: UIViewRepresentable {
         var sideBorder: CGFloat = 8
         var topBorder: CGFloat = 8
         var captionHeight: CGFloat = 0
+        var cornerRadius: CGFloat = 0
         var caption: String? = nil
         var captionColor: Color = .black
         let onZoomChanged: (Bool) -> Void
@@ -113,9 +120,15 @@ struct ZoomableImageView: UIViewRepresentable {
             sideBorder = view.sideBorder
             topBorder = view.topBorder
             captionHeight = view.captionHeight
+            cornerRadius = view.cornerRadius
             caption = view.caption
             captionColor = view.captionColor
             card.backgroundColor = UIColor(view.cardColor)
+            card.layer.cornerRadius = view.cornerRadius
+            card.layer.masksToBounds = view.cornerRadius > 0
+            let innerRadius = max(view.cornerRadius - view.sideBorder, 0)
+            imageView.layer.cornerRadius = innerRadius
+            imageView.layer.masksToBounds = innerRadius > 0
             captionLabel.text = view.caption
             captionLabel.textColor = UIColor(view.captionColor)
             captionLabel.isHidden = view.caption?.isEmpty ?? true

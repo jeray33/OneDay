@@ -480,6 +480,7 @@ struct DayMagazineView: View {
             minimumPolaroidBottom: polaroidMinimum,
             shadowLevel: model.photoShadow,
             showCaption: model.showPhotoCaptions,
+            cornerRadius: model.photoCornerRadius.value,
             onEditCaption: { editingItem = $0 }
         )
         .heroCell(id: item.id, hiddenID: heroHiddenID, border: border)

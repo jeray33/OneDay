@@ -72,6 +72,7 @@ final class DayViewModel {
     private static let borderWidthKey  = "OneDay.borderWidth"
     private static let borderStyleKey  = "OneDay.borderStyle"
     private static let photoShadowKey  = "OneDay.photoShadow"
+    private static let photoCornerRadiusKey = "OneDay.photoCornerRadius"
     private static let enabledTemplatesKey = "OneDay.enabledTemplates"
     private static let photoLayoutModeKey = "OneDay.photoLayoutMode"
     private static let gridColumnCountKey = "OneDay.gridColumnCount"
@@ -126,6 +127,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var photoShadow: PhotoShadowLevel {
         didSet {
             UserDefaults.standard.set(photoShadow.rawValue, forKey: Self.photoShadowKey)
+        }
+    }
+    var photoCornerRadius: PhotoCornerRadius {
+        didSet {
+            UserDefaults.standard.set(photoCornerRadius.rawValue, forKey: Self.photoCornerRadiusKey)
         }
     }
     var enabledTemplates: Set<BlockTemplate> {
@@ -389,6 +395,8 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.borderStyle = PhotoBorderStyle(rawValue: savedStyle ?? "") ?? .white
         let savedShadow = UserDefaults.standard.string(forKey: Self.photoShadowKey)
         self.photoShadow = PhotoShadowLevel(rawValue: savedShadow ?? "") ?? .max
+        let savedCornerRadius = UserDefaults.standard.string(forKey: Self.photoCornerRadiusKey)
+        self.photoCornerRadius = PhotoCornerRadius(rawValue: savedCornerRadius ?? "") ?? .none
         self.scrollScale    = ScrollScaleMagnitude(rawValue: UserDefaults.standard.string(forKey: Self.scrollScaleKey)    ?? "") ?? .strong
         self.scrollMovement = ScrollMovement(rawValue:       UserDefaults.standard.string(forKey: Self.scrollMovementKey) ?? "") ?? .large
         self.scrollRotation = ScrollRotation(rawValue:       UserDefaults.standard.string(forKey: Self.scrollRotationKey) ?? "") ?? .medium
@@ -469,6 +477,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         c.borderStyle    = borderStyle
         c.shadowLevel    = photoShadow
         c.staggerFactor  = scrollStagger.factor
+        c.cornerRadius   = photoCornerRadius.value
         return c
     }
 

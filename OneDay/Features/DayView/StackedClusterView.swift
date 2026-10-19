@@ -11,6 +11,7 @@ struct StackedClusterView: View {
     var polaroid: Bool = false
     var shadowLevel: PhotoShadowLevel = .max
     var showCaptions: Bool = false
+    var cornerRadius: CGFloat = 0
     var onEditCaption: ((PhotoItem) -> Void)? = nil
     var hiddenItemID: String? = nil
 
@@ -74,6 +75,7 @@ struct StackedClusterView: View {
                        polaroid: polaroid,
                        shadowLevel: shadowLevel,
                        showCaption: showCaptions,
+                       cornerRadius: cornerRadius,
                        onEditCaption: onEditCaption)
             .heroCell(id: item.id, hiddenID: hiddenItemID, border: border)
     }

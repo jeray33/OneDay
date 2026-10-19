@@ -52,6 +52,8 @@ struct LayoutConfig: Equatable {
     var shadowLevel: PhotoShadowLevel = .max
     /// Phase-value offset per photo index in multi-photo blocks (0 = no stagger).
     var staggerFactor: Double = 0
+    /// Corner radius applied to every photo card (0 = sharp corners).
+    var cornerRadius: CGFloat = 0
 
     static func make(itemCount: Int) -> LayoutConfig {
         switch itemCount {
