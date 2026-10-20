@@ -29,34 +29,31 @@ final class DayMediaScopeTests: XCTestCase {
 
     private var items: [Item] {
         [
-            Item(id: "photo", type: .image, category: .photo),
-            Item(id: "video", type: .video, category: .video),
+            Item(id: "photo", type: .image, category: .photoVideo),
+            Item(id: "video", type: .video, category: .photoVideo),
             Item(id: "screenshot", type: .image, category: .screenshot),
             Item(id: "recording", type: .video, category: .screenshot),
-            Item(id: "panorama", type: .image, category: .panorama),
+            Item(id: "panorama", type: .image, category: .photoVideo),
             Item(id: "other", type: .image, category: .otherImage)
         ]
     }
 
-    func testAllBodySelectionsLeaveCompleteEditorialInventoryIntact() {
+    func testAllBodyTabsLeaveCompleteEditorialInventoryIntact() {
         let expected = items.map(\.id)
-        for flags in 0..<32 {
-            let raw = (0..<5).map { flags & (1 << $0) == 0 ? "0" : "1" }.joined()
-            let selection = MediaCategorySelection(rawValue: raw)!
-            let body = items.filter { selection.includes($0.category) }
-            XCTAssertEqual(editorial(items).map(\.id), expected, raw)
-            XCTAssertEqual(editorial(items).filter { $0.type == .image }.count, 4, raw)
-            XCTAssertEqual(editorial(items).filter { $0.type == .video }.count, 2, raw)
-            if flags == 0 { XCTAssertTrue(body.isEmpty) }
-            if flags == 31 { XCTAssertEqual(body.count, expected.count) }
+        let tabs = DayMediaTabs(items: items, category: { $0.category })
+        for category in tabs.availableCategories {
+            XCTAssertTrue(tabs.items(in: category).allSatisfy { $0.category == category })
+            XCTAssertEqual(editorial(items).map(\.id), expected)
+            XCTAssertEqual(editorial(items).filter { $0.type == .image }.count, 4)
+            XCTAssertEqual(editorial(items).filter { $0.type == .video }.count, 2)
         }
     }
 
     func testEditorialSharedPolicyDoesNotFollowBodySharedToggles() {
         let source = [
-            Item(id: "original", type: .image, category: .photo),
-            Item(id: "duplicate", type: .image, category: .photo, shared: true, ownContribution: true),
-            Item(id: "foreign", type: .image, category: .photo, shared: true)
+            Item(id: "original", type: .image, category: .photoVideo),
+            Item(id: "duplicate", type: .image, category: .photoVideo, shared: true, ownContribution: true),
+            Item(id: "foreign", type: .image, category: .photoVideo, shared: true)
         ]
         for includeShared in [false, true] {
             for contributorMatch in [false, true] {
@@ -75,7 +72,7 @@ final class DayMediaScopeTests: XCTestCase {
         var source = items
         let before = editorial(source).map(\.id)
         source[0].category = .otherImage
-        source[5].category = .photo
+        source[5].category = .photoVideo
         XCTAssertEqual(editorial(source).map(\.id), before)
     }
 
@@ -85,8 +82,8 @@ final class DayMediaScopeTests: XCTestCase {
         XCTAssertFalse(DayMediaScope.isSupported(.audio))
         XCTAssertFalse(DayMediaScope.isSupported(.unknown))
         let source = items + [
-            Item(id: "audio", type: .audio, category: .video),
-            Item(id: "unknown", type: .unknown, category: .photo)
+            Item(id: "audio", type: .audio, category: .photoVideo),
+            Item(id: "unknown", type: .unknown, category: .photoVideo)
         ]
         XCTAssertEqual(editorial(source).map(\.id), items.map(\.id))
     }
@@ -102,15 +99,14 @@ final class DayMediaScopeTests: XCTestCase {
     }
 
     func testPreviousAndNextDoNotSkipDaysWithNoBodyMatches() {
-        let categories: [MediaCategory] = [.photo, .screenshot, .video, .otherImage, .panorama]
+        let categories: [MediaCategory] = [.photoVideo, .screenshot, .photoVideo, .otherImage, .photoVideo]
         let source = categories.enumerated().map { (date(2026, 10, 10 + $0.offset), $0.element) }
         let days = source.compactMap {
             DayMediaScope.navigationDay(for: $0.0, today: date(2026, 10, 19), calendar: calendar)
         }.sorted(by: >)
-        for raw in ["00000", "10000", "01000", "00100", "00001", "11111"] {
-            let selection = MediaCategorySelection(rawValue: raw)!
-            let bodyDates = source.filter { selection.includes($0.1) }.map(\.0)
-            if raw == "00000" { XCTAssertTrue(bodyDates.isEmpty) }
+        for category in MediaCategory.allCases {
+            let bodyDates = source.filter { $0.1 == category }.map(\.0)
+            XCTAssertLessThan(bodyDates.count, days.count)
             XCTAssertEqual(
                 DayMediaScope.previousDay(before: date(2026, 10, 12, hour: 15), in: days, calendar: calendar),
                 date(2026, 10, 11))

@@ -25,7 +25,7 @@ final class MediaFilterTests: XCTestCase {
                 pixelWidth: 4000,
                 pixelHeight: 1500
             ),
-            .panorama
+            .photoVideo
         )
         XCTAssertEqual(
             MediaFilter.category(
@@ -34,7 +34,7 @@ final class MediaFilterTests: XCTestCase {
                 pixelWidth: 3000,
                 pixelHeight: 1000
             ),
-            .panorama
+            .otherImage
         )
         XCTAssertEqual(
             MediaFilter.category(
@@ -43,7 +43,7 @@ final class MediaFilterTests: XCTestCase {
                 pixelWidth: 2999,
                 pixelHeight: 1000
             ),
-            .photo
+            .photoVideo
         )
     }
 
@@ -61,7 +61,7 @@ final class MediaFilterTests: XCTestCase {
                     pixelWidth: 1200,
                     pixelHeight: 1600
                 ),
-                .photo
+                .photoVideo
             )
         }
     }
@@ -83,72 +83,62 @@ final class MediaFilterTests: XCTestCase {
                 pixelWidth: 1920,
                 pixelHeight: 1080
             ),
-            .video
+            .photoVideo
         )
     }
 
-    func testSelectionsPersistAndCanBeIndependent() {
-        let rewind = MediaCategorySelection.all.setting(.video, enabled: false).setting(.otherImage, enabled: false)
-        let day = MediaCategorySelection.all.setting(.photo, enabled: false)
-
-        XCTAssertEqual(MediaCategorySelection(rawValue: rewind.rawValue), rewind)
-        XCTAssertEqual(MediaCategorySelection(rawValue: day.rawValue), day)
+    func testTunnelStorageEnforcesPrimaryAndDoesNotOverwriteOldDayPreferences() {
         let suiteName = "MediaCategorySelectionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        rewind.save(forKey: MediaCategorySelection.rewindStorageKey, in: defaults)
-        day.save(forKey: MediaCategorySelection.dayStorageKey, in: defaults)
+        defaults.set("00000", forKey: "OneDay.dayMediaCategories")
+        let selection = MediaCategorySelection(
+            showsPhotosAndVideos: false, showsScreenshots: true, showsOtherImages: false)
+        selection.save(forKey: MediaCategorySelection.rewindStorageKey, in: defaults)
+        XCTAssertEqual(defaults.string(forKey: MediaCategorySelection.rewindStorageKey), "110")
         XCTAssertEqual(
             MediaCategorySelection.stored(
-                forKey: MediaCategorySelection.rewindStorageKey,
-                in: defaults
-            ),
-            rewind
-        )
-        XCTAssertEqual(
-            MediaCategorySelection.stored(
-                forKey: MediaCategorySelection.dayStorageKey,
-                in: defaults
-            ),
-            day
-        )
-        XCTAssertTrue(rewind.showsPhotos)
-        XCTAssertFalse(rewind.showsVideos)
-        XCTAssertFalse(rewind.showsOtherImages)
-        XCTAssertTrue(day.showsOtherImages)
-        XCTAssertFalse(day.showsPhotos)
-        XCTAssertTrue(day.showsVideos)
-        XCTAssertNotEqual(rewind, day)
+                forKey: MediaCategorySelection.rewindStorageKey, in: defaults),
+            selection.includingPrimary)
+        XCTAssertEqual(defaults.string(forKey: "OneDay.dayMediaCategories"), "00000")
     }
 
-    func testAllCategoriesAreEnabledByDefaultAndTunnelCanForcePhotosOn() {
-        XCTAssertEqual(MediaCategorySelection.all, MediaCategorySelection(
-            showsPhotos: true,
-            showsVideos: true,
-            showsScreenshots: true,
-            showsPanoramas: true
-        ))
-
-        let hiddenPhotoSelection = MediaCategorySelection.all.setting(.photo, enabled: false)
-        XCTAssertFalse(hiddenPhotoSelection.showsPhotos)
-        XCTAssertTrue(hiddenPhotoSelection.includingPhotos.showsPhotos)
+    func testAllCategoriesDefaultOnAndTunnelForcesTheWholePrimaryGroup() {
+        XCTAssertEqual(MediaCategory.allCases, [.photoVideo, .screenshot, .otherImage])
+        XCTAssertEqual(MediaCategorySelection.all.rawValue, "111")
+        let hiddenPrimary = MediaCategorySelection.all.setting(.photoVideo, enabled: false)
+        XCTAssertFalse(hiddenPrimary.showsPhotosAndVideos)
+        XCTAssertTrue(hiddenPrimary.includingPrimary.showsPhotosAndVideos)
     }
 
-    func testOldFourFlagSettingsPreserveEveryExistingChoice() {
-        for flags in 0..<16 {
-            let raw = (0..<4).map { flags & (1 << $0) == 0 ? "0" : "1" }.joined()
-            let selection = MediaCategorySelection(rawValue: raw)
-            XCTAssertEqual(selection?.rawValue, raw + "1")
-            XCTAssertEqual(selection?.showsOtherImages, true)
+    func testAllLegacyFourAndFiveFlagCombinationsMigrateOnce() {
+        let suiteName = "MediaCategoryMigrationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        for count in [4, 5] {
+            for flags in 0..<(1 << count) {
+                let raw = (0..<count).map { flags & (1 << $0) == 0 ? "0" : "1" }.joined()
+                defaults.set(raw, forKey: MediaCategorySelection.rewindStorageKey)
+                let selection = MediaCategorySelection.stored(
+                    forKey: MediaCategorySelection.rewindStorageKey, in: defaults)
+                XCTAssertTrue(selection.showsPhotosAndVideos, raw)
+                XCTAssertEqual(selection.showsScreenshots, flags & 4 != 0, raw)
+                XCTAssertEqual(
+                    selection.showsOtherImages, count == 4 || flags & 8 != 0 || flags & 16 != 0, raw)
+                XCTAssertEqual(defaults.string(forKey: MediaCategorySelection.rewindStorageKey), selection.rawValue)
+                XCTAssertEqual(MediaCategorySelection.stored(
+                    forKey: MediaCategorySelection.rewindStorageKey, in: defaults), selection)
+            }
         }
-        for invalid in ["", "1", "111", "111111", "1111x", "xxxx"] {
+        for invalid in ["", "1", "11", "111111", "1111x", "xxxx", "1x1"] {
             XCTAssertNil(MediaCategorySelection(rawValue: invalid))
         }
     }
 
-    func testAllFiveCategoryCombinationsAndTunnelPhotoEnforcement() {
-        for flags in 0..<32 {
-            let raw = (0..<5).map { flags & (1 << $0) == 0 ? "0" : "1" }.joined()
+    func testAllThreeCategoryCombinationsAndFourEffectiveTunnelStates() {
+        var tunnelStates = Set<MediaCategorySelection>()
+        for flags in 0..<8 {
+            let raw = (0..<3).map { flags & (1 << $0) == 0 ? "0" : "1" }.joined()
             let selection = MediaCategorySelection(rawValue: raw)!
             XCTAssertEqual(selection.rawValue, raw)
             XCTAssertEqual(MediaCategorySelection(rawValue: selection.rawValue), selection)
@@ -157,13 +147,36 @@ final class MediaFilterTests: XCTestCase {
                 XCTAssertTrue(selection.setting(category, enabled: true).includes(category))
                 XCTAssertFalse(selection.setting(category, enabled: false).includes(category))
                 XCTAssertEqual(
-                    selection.includingPhotos.includes(category),
-                    category == .photo || selection.includes(category)
+                    selection.includingPrimary.includes(category),
+                    category == .photoVideo || selection.includes(category)
                 )
             }
-            XCTAssertEqual(selection.needsImageClassification, selection.showsPhotos != selection.showsOtherImages)
+            XCTAssertEqual(selection.needsImageClassification, selection.showsPhotosAndVideos != selection.showsOtherImages)
+            XCTAssertEqual(selection.respondsToClassificationChanges, raw != "000" && raw != "111")
+            tunnelStates.insert(selection.includingPrimary)
         }
-        XCTAssertTrue(MediaCategorySelection.all.showsOtherImages)
+        XCTAssertEqual(tunnelStates.count, 4)
+        XCTAssertTrue(tunnelStates.allSatisfy(\.showsPhotosAndVideos))
+    }
+
+    func testStoredTunnelNormalizesAllThreeFlagStatesAndDamagedPreferences() {
+        let suiteName = "MediaCategoryNormalizationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        for mask in 0..<8 {
+            let raw = (0..<3).map { mask & (1 << $0) == 0 ? "0" : "1" }.joined()
+            defaults.set(raw, forKey: MediaCategorySelection.rewindStorageKey)
+            let selection = MediaCategorySelection.stored(
+                forKey: MediaCategorySelection.rewindStorageKey, in: defaults)
+            XCTAssertEqual(selection.rawValue, "1" + raw.dropFirst())
+            XCTAssertEqual(defaults.string(forKey: MediaCategorySelection.rewindStorageKey), selection.rawValue)
+        }
+        for raw in ["invalid", ""] {
+            defaults.set(raw, forKey: MediaCategorySelection.rewindStorageKey)
+            XCTAssertEqual(MediaCategorySelection.stored(
+                forKey: MediaCategorySelection.rewindStorageKey, in: defaults), .all)
+            XCTAssertEqual(defaults.string(forKey: MediaCategorySelection.rewindStorageKey), "111")
+        }
     }
 
     func testOrdinaryImagesUseEvidenceAndManualChoices() {
@@ -173,11 +186,12 @@ final class MediaFilterTests: XCTestCase {
                 imageClassification: result, override: choice
             )
         }
-        XCTAssertEqual(category(.unknown), .photo)
-        XCTAssertEqual(category(.photo), .photo)
+        XCTAssertEqual(category(.unknown), .photoVideo)
+        XCTAssertEqual(category(.photo), .photoVideo)
         XCTAssertEqual(category(.otherImage), .otherImage)
-        XCTAssertEqual(category(.otherImage, .photo), .photo)
+        XCTAssertEqual(category(.otherImage, .photo), .photoVideo)
         XCTAssertEqual(category(.photo, .otherImage), .otherImage)
+        XCTAssertEqual(category(.otherImage, .screenshot), .screenshot)
     }
 
     func testSystemCategoriesTakePrecedenceOverManualChoices() {
@@ -187,20 +201,20 @@ final class MediaFilterTests: XCTestCase {
                     mediaType: .image, subtypes: subtype, pixelWidth: 1200, pixelHeight: 1600,
                     imageClassification: .otherImage, override: .photo
                 ),
-                subtype == .photoScreenshot ? .screenshot : .panorama
+                subtype == .photoScreenshot ? .screenshot : .photoVideo
             )
         }
         XCTAssertEqual(
             MediaFilter.category(
                 mediaType: .image, subtypes: [], pixelWidth: 3000, pixelHeight: 1000,
                 imageClassification: .otherImage, override: .otherImage
-            ), .panorama
+            ), .otherImage
         )
         XCTAssertEqual(
             MediaFilter.category(
                 mediaType: .video, subtypes: [], pixelWidth: 1920, pixelHeight: 1080,
                 imageClassification: .otherImage, override: .otherImage
-            ), .video
+            ), .photoVideo
         )
     }
 
@@ -210,7 +224,7 @@ final class MediaFilterTests: XCTestCase {
                 MediaFilter.category(
                     mediaType: .image, subtypes: subtype, pixelWidth: 1200, pixelHeight: 1600,
                     imageClassification: .otherImage
-                ), .photo
+                ), .photoVideo
             )
             XCTAssertEqual(
                 MediaFilter.category(
@@ -223,8 +237,38 @@ final class MediaFilterTests: XCTestCase {
             MediaFilter.category(
                 mediaType: .image, subtypes: [], pixelWidth: 1200, pixelHeight: 1600,
                 imageClassification: .otherImage, isBurst: true
-            ), .photo
+            ), .photoVideo
         )
+    }
+
+    func testLongImagesCanBeCorrectedWithoutOverridingSystemCategories() {
+        for (width, height) in [(3000, 1000), (1000, 3000)] {
+            XCTAssertEqual(MediaFilter.category(
+                mediaType: .image, subtypes: [], pixelWidth: width, pixelHeight: height,
+                override: .photo), .photoVideo)
+            XCTAssertEqual(MediaFilter.category(
+                mediaType: .image, subtypes: [], pixelWidth: width, pixelHeight: height,
+                override: .screenshot), .screenshot)
+            for choice in ImageCategoryOverride.allCases {
+                XCTAssertEqual(MediaFilter.category(
+                    mediaType: .image, subtypes: .photoScreenshot, pixelWidth: width, pixelHeight: height,
+                    override: choice), .screenshot)
+                XCTAssertEqual(MediaFilter.category(
+                    mediaType: .image, subtypes: .photoPanorama, pixelWidth: width, pixelHeight: height,
+                    override: choice), .photoVideo)
+            }
+        }
+    }
+
+    func testClassificationMenuDoesNotBecomeAvailableForVideosOrSystemPanoramas() {
+        XCTAssertTrue(MediaFilter.supportsImageClassification(mediaType: .image, subtypes: []))
+        for subtypes: PHAssetMediaSubtype in [.photoScreenshot, .photoPanorama] {
+            XCTAssertFalse(MediaFilter.supportsImageClassification(mediaType: .image, subtypes: subtypes))
+        }
+        for subtypes: PHAssetMediaSubtype in [[], .videoScreenRecording, .videoTimelapse] {
+            XCTAssertFalse(MediaFilter.supportsImageClassification(mediaType: .video, subtypes: subtypes))
+        }
+        XCTAssertNil(MediaFilter.category(mediaType: .audio, subtypes: [], pixelWidth: 0, pixelHeight: 0))
     }
 
     func testMetadataUnreadableIsDifferentFromReadableWithoutCameraEvidence() {
@@ -285,10 +329,12 @@ final class MediaFilterTests: XCTestCase {
         let store = ImageClassificationStore(defaults: defaults, cacheURL: nil)
         store.setOverride(.otherImage, for: "asset-a")
         store.setOverride(.photo, for: "asset-b")
+        store.setOverride(.screenshot, for: "asset-c")
         store.libraryDidChange()
         let reloaded = ImageClassificationStore(defaults: defaults, cacheURL: nil)
         XCTAssertEqual(reloaded.override(for: "asset-a"), .otherImage)
         XCTAssertEqual(reloaded.override(for: "asset-b"), .photo)
+        XCTAssertEqual(reloaded.override(for: "asset-c"), .screenshot)
         reloaded.setOverride(.automatic, for: "asset-a")
         let restored = ImageClassificationStore(defaults: defaults, cacheURL: nil)
         XCTAssertEqual(restored.override(for: "asset-a"), .automatic)

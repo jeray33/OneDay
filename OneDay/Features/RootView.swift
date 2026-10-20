@@ -54,7 +54,7 @@ struct RootView: View {
     private var tunnelPhotoScale: TunnelPhotoScale { TunnelPhotoScale(rawValue: tunnelPhotoScaleRaw) ?? .medium }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
     private var effectiveRewindMediaSelection: MediaCategorySelection {
-        rewindMediaSelection.includingPhotos
+        rewindMediaSelection.includingPrimary
     }
 
     private let tunnelMinPhotos = 3
@@ -79,7 +79,7 @@ struct RootView: View {
                         dateNamespace: dateNamespace,
                         mediaSelection: Binding(
                             get: { effectiveRewindMediaSelection },
-                            set: { rewindMediaSelection = $0.includingPhotos }
+                            set: { rewindMediaSelection = $0.includingPrimary }
                         ),
                         startDate: tunnelStartDate,
                         onInteractionLockChanged: { locked in
@@ -179,6 +179,8 @@ struct RootView: View {
             Text("相册里暂时没有可回顾的过去某天。")
         }
         .task {
+            rewindMediaSelection = MediaCategorySelection.stored(
+                forKey: MediaCategorySelection.rewindStorageKey)
             prepareHaptics()
         }
         .task(id: rewindModeRaw) {
@@ -259,7 +261,7 @@ struct RootView: View {
             let finished = notification.userInfo?["finished"] as? Bool ?? false
             if changed {
                 if phase == .day { dayModel?.refreshMediaClassifications() }
-                if effectiveRewindMediaSelection.needsImageClassification {
+                if effectiveRewindMediaSelection.respondsToClassificationChanges {
                     tunnelClassificationRevision += 1
                     tunnelNeedsUpdate = true
                 }
@@ -466,7 +468,9 @@ struct RootView: View {
         tunnelSelections = plan
         let sortedGroup = index.groups(for: plan)
         guard !sortedGroup.isEmpty else {
-            showEmptyAlert = true
+            // A valid library can have no matches under the tunnel toggles.
+            // Keep its candidate index and let the tunnel show its empty state.
+            if index.days.isEmpty { showEmptyAlert = true }
             return
         }
 

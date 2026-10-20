@@ -12,6 +12,8 @@ actor OtherImageClassificationService {
     private var lastScanDate: Date?
     private var lastSelection: MediaCategorySelection?
     private var inFlight: Set<String> = []
+    private var priorityAssetIDs: Set<String> = []
+    private var priorityRevision = 0
     private var failures: [String: (date: Date, modificationDate: Date?)] = [:]
     private var activeReaders = 0
     private var readerWaiters: [CheckedContinuation<Void, Never>] = []
@@ -61,13 +63,23 @@ actor OtherImageClassificationService {
         }
     }
 
+    /// Prioritize this day in an already-running library batch, or classify only
+    /// these assets if no batch owns them. Never starts a whole-library scan.
+    func classifyCurrentDay(_ assets: [PHAsset]) async {
+        priorityAssetIDs = Set(assets.map(\.localIdentifier))
+        priorityRevision += 1
+        if let libraryTask, libraryTask.isCancelled { await libraryTask.value }
+        guard !Task.isCancelled else { return }
+        await classify(assets)
+    }
+
     func classify(_ assets: [PHAsset]) async {
         let now = Date()
         var seen = Set<String>()
-        let candidates = assets.filter { asset in
+        var candidates = assets.filter { asset in
             let id = asset.localIdentifier
             guard seen.insert(id).inserted, !inFlight.contains(id),
-                  MediaFilter.supportsImageClassification(asset),
+                  MediaFilter.needsAutomaticClassification(asset),
                   store.override(for: id) == .automatic,
                   store.classification(for: id, modificationDate: asset.modificationDate) == .unknown
             else { return false }
@@ -84,17 +96,29 @@ actor OtherImageClassificationService {
         var changedSinceNotification = false
         var lastNotification = Date()
         var next = 0
+        var queuedPriorityRevision = -1
 
         await withTaskGroup(of: (Int, ImageClassification).self) { group in
-            func enqueue(_ index: Int) {
+            func enqueueNext() {
+                // Only reorder work not yet submitted. Completed/in-flight
+                // indices must continue referring to the same immutable asset.
+                if queuedPriorityRevision != priorityRevision {
+                    let remaining = candidates[next...]
+                    let priorityIDs = priorityAssetIDs
+                    let priority = remaining.filter { priorityIDs.contains($0.localIdentifier) }
+                    let other = remaining.filter { !priorityIDs.contains($0.localIdentifier) }
+                    candidates.replaceSubrange(next..., with: priority + other)
+                    queuedPriorityRevision = priorityRevision
+                }
+                let index = next
                 let asset = candidates[index]
+                next += 1
                 group.addTask(priority: .utility) {
                     (index, await self.classifyWithLimit(asset))
                 }
             }
             for _ in 0..<min(2, candidates.count) {
-                enqueue(next)
-                next += 1
+                enqueueNext()
             }
             for await (index, result) in group {
                 let asset = candidates[index]
@@ -120,8 +144,7 @@ actor OtherImageClassificationService {
                     lastNotification = Date()
                 }
                 if next < candidates.count {
-                    enqueue(next)
-                    next += 1
+                    enqueueNext()
                 }
             }
         }

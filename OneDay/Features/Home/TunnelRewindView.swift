@@ -547,7 +547,7 @@ struct TunnelRewindView: View {
             Divider()
             MediaCategoryMenuSection(
                 selection: $mediaSelection,
-                photoAlwaysOn: true
+                primaryAlwaysOn: true
             )
         } label: {
             Image(systemName: "square.stack.3d.up")

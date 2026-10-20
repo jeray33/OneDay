@@ -3,14 +3,17 @@ import Combine
 
 struct MediaCategoryMenuSection: View {
     @Binding var selection: MediaCategorySelection
-    var photoAlwaysOn = false
+    var primaryAlwaysOn = false
     @State private var isIndexing = ImageClassificationStore.shared.isIndexing
 
     var body: some View {
         Section("显示内容") {
             ForEach(MediaCategory.allCases) { category in
-                if category == .photo && photoAlwaysOn {
-                    Label("照片（始终显示）", systemImage: "checkmark")
+                if category == .photoVideo && primaryAlwaysOn {
+                    Toggle(isOn: .constant(true)) {
+                        Label(category.tabLabel, systemImage: category.icon)
+                    }
+                    .accessibilityHint("始终显示")
                 } else {
                     Toggle(
                         isOn: Binding(
@@ -18,12 +21,12 @@ struct MediaCategoryMenuSection: View {
                             set: { selection = selection.setting(category, enabled: $0) }
                         )
                     ) {
-                        Label(category.label, systemImage: category.icon)
+                        Label(category.tabLabel, systemImage: category.icon)
                     }
                 }
             }
             if selection.needsImageClassification {
-                Text(isIndexing ? "正在识别其他图片…" : "自动近似分类，无法判断的暂按照片显示")
+                Text(isIndexing ? "正在识别其它图片…" : "自动近似分类，无法判断的暂按照片显示")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

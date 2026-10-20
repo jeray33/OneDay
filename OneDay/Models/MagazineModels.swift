@@ -120,6 +120,9 @@ struct MagazineSection: Identifiable {
     var placeName: String?
     let anchorLocation: CLLocation?
     var blocks: [MagazineBlock]
+    var placeHeading: String? = nil
+    var showsTimeHeading = true
+    var timeHeadingIsNested = false
 
     var title: String { band.title }
 

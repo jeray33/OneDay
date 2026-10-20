@@ -2,78 +2,78 @@ import Photos
 import UniformTypeIdentifiers
 
 nonisolated enum MediaCategory: String, CaseIterable, Hashable, Identifiable, Sendable {
-    case photo
-    case video
+    case photoVideo
     case screenshot
-    case panorama
     case otherImage
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .photo: return "照片"
-        case .video: return "视频"
-        case .screenshot: return "截屏与录屏"
-        case .panorama: return "全景与长图"
-        case .otherImage: return "其他图片"
+        case .photoVideo: return "照片和视频（包括全景）"
+        case .screenshot: return "截图和录屏"
+        case .otherImage: return "其它图片（包括长图）"
+        }
+    }
+
+    var tabLabel: String {
+        switch self {
+        case .photoVideo: return "照片和视频"
+        case .screenshot: return "截图和录屏"
+        case .otherImage: return "其它图片"
         }
     }
 
     var icon: String {
         switch self {
-        case .photo: return "photo"
-        case .video: return "video"
+        case .photoVideo: return "photo.on.rectangle"
         case .screenshot: return "rectangle.on.rectangle"
-        case .panorama: return "panorama"
         case .otherImage: return "photo.on.rectangle"
         }
     }
 }
 
-/// Independently persisted media-category selections for the tunnel and day view.
+/// Tunnel toggles. The day body uses a single, non-persisted category Tab instead.
 nonisolated struct MediaCategorySelection: RawRepresentable, Equatable, Hashable, Sendable {
     static let rewindStorageKey = "OneDay.rewindMediaCategories"
-    static let dayStorageKey = "OneDay.dayMediaCategories"
 
     var rawValue: String {
-        [showsPhotos, showsVideos, showsScreenshots, showsPanoramas, showsOtherImages]
+        [showsPhotosAndVideos, showsScreenshots, showsOtherImages]
             .map { $0 ? "1" : "0" }
             .joined()
     }
 
-    var showsPhotos: Bool
-    var showsVideos: Bool
+    var showsPhotosAndVideos: Bool
     var showsScreenshots: Bool
-    var showsPanoramas: Bool
     var showsOtherImages: Bool
 
     init(
-        showsPhotos: Bool = true,
-        showsVideos: Bool = true,
+        showsPhotosAndVideos: Bool = true,
         showsScreenshots: Bool = true,
-        showsPanoramas: Bool = true,
         showsOtherImages: Bool = true
     ) {
-        self.showsPhotos = showsPhotos
-        self.showsVideos = showsVideos
+        self.showsPhotosAndVideos = showsPhotosAndVideos
         self.showsScreenshots = showsScreenshots
-        self.showsPanoramas = showsPanoramas
         self.showsOtherImages = showsOtherImages
     }
 
     init?(rawValue: String) {
         let flags = Array(rawValue)
-        guard (flags.count == 4 || flags.count == 5),
+        guard (3...5).contains(flags.count),
               flags.allSatisfy({ $0 == "0" || $0 == "1" }) else {
             return nil
         }
-        showsPhotos = flags[0] == "1"
-        showsVideos = flags[1] == "1"
-        showsScreenshots = flags[2] == "1"
-        showsPanoramas = flags[3] == "1"
-        // Four-flag preferences predate this category. Preserve every old flag.
-        showsOtherImages = flags.count == 4 || flags[4] == "1"
+        if flags.count == 3 {
+            showsPhotosAndVideos = flags[0] == "1"
+            showsScreenshots = flags[1] == "1"
+            showsOtherImages = flags[2] == "1"
+        } else {
+            // Legacy tunnel photos were always visible, even if the saved bit was off.
+            showsPhotosAndVideos = true
+            showsScreenshots = flags[2] == "1"
+            // Split the former panorama/long-image group without losing long images.
+            showsOtherImages = flags[3] == "1" || flags.count == 4 || flags[4] == "1"
+        }
     }
 
     static let all = MediaCategorySelection()
@@ -83,23 +83,24 @@ nonisolated struct MediaCategorySelection: RawRepresentable, Equatable, Hashable
         default defaultValue: MediaCategorySelection = .all,
         in defaults: UserDefaults = .standard
     ) -> MediaCategorySelection {
-        guard let rawValue = defaults.string(forKey: key),
-              let selection = MediaCategorySelection(rawValue: rawValue) else {
-            return defaultValue
+        let selection = defaults.string(forKey: key)
+            .flatMap(MediaCategorySelection.init(rawValue:)) ?? defaultValue
+        let result = key == rewindStorageKey ? selection.includingPrimary : selection
+        if key == rewindStorageKey, defaults.string(forKey: key) != result.rawValue {
+            result.save(forKey: key, in: defaults)
         }
-        return selection
+        return result
     }
 
     func save(forKey key: String, in defaults: UserDefaults = .standard) {
-        defaults.set(rawValue, forKey: key)
+        let selection = key == Self.rewindStorageKey ? includingPrimary : self
+        defaults.set(selection.rawValue, forKey: key)
     }
 
     func includes(_ category: MediaCategory) -> Bool {
         switch category {
-        case .photo: return showsPhotos
-        case .video: return showsVideos
+        case .photoVideo: return showsPhotosAndVideos
         case .screenshot: return showsScreenshots
-        case .panorama: return showsPanoramas
         case .otherImage: return showsOtherImages
         }
     }
@@ -107,20 +108,22 @@ nonisolated struct MediaCategorySelection: RawRepresentable, Equatable, Hashable
     func setting(_ category: MediaCategory, enabled: Bool) -> MediaCategorySelection {
         var result = self
         switch category {
-        case .photo: result.showsPhotos = enabled
-        case .video: result.showsVideos = enabled
+        case .photoVideo: result.showsPhotosAndVideos = enabled
         case .screenshot: result.showsScreenshots = enabled
-        case .panorama: result.showsPanoramas = enabled
         case .otherImage: result.showsOtherImages = enabled
         }
         return result
     }
 
-    var includingPhotos: MediaCategorySelection {
-        setting(.photo, enabled: true)
+    var includingPrimary: MediaCategorySelection {
+        setting(.photoVideo, enabled: true)
     }
 
-    var needsImageClassification: Bool { showsPhotos != showsOtherImages }
+    var needsImageClassification: Bool { showsPhotosAndVideos != showsOtherImages }
+
+    var respondsToClassificationChanges: Bool {
+        needsImageClassification || showsPhotosAndVideos != showsScreenshots
+    }
 
     func includes(_ asset: PHAsset) -> Bool {
         guard let category = MediaFilter.category(for: asset) else { return false }
@@ -131,13 +134,8 @@ nonisolated struct MediaCategorySelection: RawRepresentable, Equatable, Hashable
 /// Classifies Photos assets into the categories exposed by the rewind and day menus.
 nonisolated enum MediaFilter {
     static func category(for asset: PHAsset) -> MediaCategory? {
-        let base = category(
-            mediaType: asset.mediaType,
-            subtypes: asset.mediaSubtypes,
-            pixelWidth: asset.pixelWidth,
-            pixelHeight: asset.pixelHeight
-        )
-        guard base == .photo else { return base }
+        // Do not use the coarse category as a guard: it also contains videos and
+        // panoramas, and long images must still respect a manual correction.
         return category(
             mediaType: asset.mediaType,
             subtypes: asset.mediaSubtypes,
@@ -164,21 +162,23 @@ nonisolated enum MediaFilter {
         case .image:
             // Screenshot takes precedence over panorama/long-image classification.
             if subtypes.contains(.photoScreenshot) { return .screenshot }
-            if subtypes.contains(.photoPanorama) { return .panorama }
+            if subtypes.contains(.photoPanorama) { return .photoVideo }
+
+            if override == .photo { return .photoVideo }
+            if override == .screenshot { return .screenshot }
+            if override == .otherImage { return .otherImage }
 
             let shortSide = min(pixelWidth, pixelHeight)
             let longSide = max(pixelWidth, pixelHeight)
             if shortSide > 0, Double(longSide) / Double(shortSide) >= 3 {
-                return .panorama
+                return .otherImage
             }
-            if override == .photo { return .photo }
-            if override == .otherImage { return .otherImage }
-            if isBurst || hasPhotoSubtype(subtypes) { return .photo }
-            return imageClassification == .otherImage ? .otherImage : .photo
+            if isBurst || hasPhotoSubtype(subtypes) { return .photoVideo }
+            return imageClassification == .otherImage ? .otherImage : .photoVideo
 
         case .video:
             if subtypes.contains(.videoScreenRecording) { return .screenshot }
-            return .video
+            return .photoVideo
 
         default:
             return nil
@@ -190,13 +190,21 @@ nonisolated enum MediaFilter {
     }
 
     static func supportsImageClassification(_ asset: PHAsset) -> Bool {
-        // Ignore cached/overridden results when deciding whether the menu applies.
-        category(
-            mediaType: asset.mediaType,
-            subtypes: asset.mediaSubtypes,
-            pixelWidth: asset.pixelWidth,
-            pixelHeight: asset.pixelHeight
-        ) == .photo
+        supportsImageClassification(mediaType: asset.mediaType, subtypes: asset.mediaSubtypes)
+    }
+
+    static func supportsImageClassification(
+        mediaType: PHAssetMediaType, subtypes: PHAssetMediaSubtype
+    ) -> Bool {
+        mediaType == .image
+            && subtypes.intersection([.photoScreenshot, .photoPanorama]).isEmpty
+    }
+
+    static func needsAutomaticClassification(_ asset: PHAsset) -> Bool {
+        guard supportsImageClassification(asset) else { return false }
+        let shortSide = min(asset.pixelWidth, asset.pixelHeight)
+        let longSide = max(asset.pixelWidth, asset.pixelHeight)
+        return shortSide <= 0 || Double(longSide) / Double(shortSide) < 3
     }
 
     static func hasPhotoSubtype(_ subtypes: PHAssetMediaSubtype) -> Bool {

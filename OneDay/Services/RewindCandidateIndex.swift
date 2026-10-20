@@ -10,7 +10,8 @@ nonisolated struct RewindCandidateIndex: @unchecked Sendable {
         preserving previous: [TunnelDaySelection],
         minimumCount: Int, maximumDays: Int, newestFirst: Bool
     ) async -> [TunnelDaySelection] {
-        await Task.detached(priority: .userInitiated) {
+        let selection = selection.includingPrimary
+        return await Task.detached(priority: .userInitiated) {
             let filtered = days.map { day in
                 TunnelCandidateDay(
                     date: day.date,

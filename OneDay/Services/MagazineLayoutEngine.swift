@@ -11,65 +11,41 @@ enum MagazineLayoutEngine {
 
     static func compose(_ items: [PhotoItem],
                         similar: ((PhotoItem, PhotoItem) -> Bool)? = nil,
-                        enabled: Set<BlockTemplate> = []) -> [MagazineSection] {
+                        enabled: Set<BlockTemplate> = [],
+                        policy: TitleSegmentationPolicy,
+                        places: [(name: String?, items: [PhotoItem])] = []) -> [MagazineSection] {
         let sorted = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
-        let grouped = Dictionary(grouping: sorted) { TimeBand.band(for: $0.creationDate) }
+        let groups = policy.groups(items: sorted, places: places) {
+            TimeBand.band(for: $0.creationDate).rawValue
+        }
         let sim: (PhotoItem, PhotoItem) -> Bool = similar ?? { isBurstPair($0, $1) }
 
         var sections: [MagazineSection] = []
-        for band in TimeBand.allCases {
-            guard let group = grouped[band], !group.isEmpty else { continue }
+        for planned in groups {
+            let group = planned.items
+            let band = planned.timeBand.flatMap(TimeBand.init(rawValue:))
+                ?? TimeBand.band(for: group.first?.creationDate)
             var blocks: [MagazineBlock] = []
             for (index, moment) in splitMoments(group).enumerated() {
                 blocks.append(contentsOf: makeBlocks(moment, seed: index, similar: sim))
             }
-            if group.count >= 4, let phrase = quotePhrase(for: band) {
+            if planned.placeName == nil, planned.timeBand != nil,
+               group.count >= 4, let phrase = quotePhrase(for: band) {
                 blocks.insert(MagazineBlock(template: .quote, items: [], caption: phrase), at: 0)
             }
             let anchor = group.first(where: { $0.location != nil })?.location
             sections.append(MagazineSection(
                 band: band,
                 timeText: timeRange(group),
-                placeName: nil,
+                placeName: planned.placeName,
                 anchorLocation: anchor,
-                blocks: blocks
+                blocks: blocks,
+                placeHeading: planned.showsPlaceHeading ? planned.placeName : nil,
+                showsTimeHeading: planned.timeBand != nil,
+                timeHeadingIsNested: planned.placeName != nil && planned.timeBand != nil
             ))
         }
         // Apply user-selected template filter (skip when all templates enabled)
-        if !enabled.isEmpty {
-            for i in sections.indices {
-                sections[i].blocks = applyEnabledFilter(sections[i].blocks, enabled: enabled)
-            }
-        }
-        return sections
-    }
-
-    /// Place-based composition: one section per ordered place group. Photos
-    /// within a place are laid out with the same block heuristics but are never
-    /// re-split by time band. Used when the day moves across distinct places.
-    static func composeByPlace(groups: [(name: String?, items: [PhotoItem])],
-                               similar: ((PhotoItem, PhotoItem) -> Bool)? = nil,
-                               enabled: Set<BlockTemplate> = []) -> [MagazineSection] {
-        let sim: (PhotoItem, PhotoItem) -> Bool = similar ?? { isBurstPair($0, $1) }
-        var sections: [MagazineSection] = []
-        for group in groups {
-            let sorted = group.items.sorted {
-                ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
-            }
-            guard !sorted.isEmpty else { continue }
-            var blocks: [MagazineBlock] = []
-            for (index, moment) in splitMoments(sorted).enumerated() {
-                blocks.append(contentsOf: makeBlocks(moment, seed: index, similar: sim))
-            }
-            let anchor = sorted.first(where: { $0.location != nil })?.location
-            sections.append(MagazineSection(
-                band: TimeBand.band(for: sorted.first?.creationDate),
-                timeText: timeRange(sorted),
-                placeName: group.name,
-                anchorLocation: anchor,
-                blocks: blocks
-            ))
-        }
         if !enabled.isEmpty {
             for i in sections.indices {
                 sections[i].blocks = applyEnabledFilter(sections[i].blocks, enabled: enabled)

@@ -3,7 +3,7 @@ import MapKit
 import CoreLocation
 
 /// Full-width trajectory map banner shown at the top of the photo page.
-/// Renders a grayscale `MKMapSnapshotter` image blended into the page background
+/// Renders an original-color or grayscale `MKMapSnapshotter` image
 /// using the user's chosen `MapBlendMode`, with the day's trajectory drawn on a
 /// Canvas in the brand blues. The bottom 40% fades to transparent via a linear
 /// mask so the map dissolves into the page. Below the map, a location track text
@@ -18,12 +18,10 @@ struct DayRouteMapBanner: View {
     /// The day's date rendered as a big title below the track text.
     let date: Date
     let dateFont: Font
-    /// How the grayscale map blends into the page background.
+    /// Whether to keep original colors or blend into the page background.
     let blendMode: MapBlendMode
     /// The page background color used to pre-blend the map snapshot.
     let backgroundColor: Color
-    /// Whether to apply the top-edge progressive blur to the map.
-    let progressiveBlurEnabled: Bool
     let isDarkPage: Bool
 
     @State private var snapshot: UIImage?
@@ -71,22 +69,6 @@ struct DayRouteMapBanner: View {
         }
         .frame(width: size.width, height: size.height)
         .clipped()
-        // Soft top-edge blur so the map dissolves into the top overlay / status bar.
-        .if(progressiveBlurEnabled) { view in
-            view.progressiveBlur(radius: 12, maxSampleCount: 12) { geometry, context in
-                context.fill(
-                    Path(geometry.frame(in: .local)),
-                    with: .linearGradient(
-                        Gradient(stops: [
-                            .init(color: .white, location: 0.00),
-                            .init(color: .clear, location: 0.15)
-                        ]),
-                        startPoint: CGPoint(x: geometry.size.width / 2, y: 0),
-                        endPoint: CGPoint(x: geometry.size.width / 2, y: geometry.size.height)
-                    )
-                )
-            }
-        }
         // Bottom 40% fades from opaque to transparent, dissolving into the page.
         .mask(
             LinearGradient(
@@ -169,6 +151,7 @@ struct DayRouteMapBanner: View {
     private func makeSnapshot(size: CGSize) async {
         guard size.width > 1, size.height > 1 else { return }
         let options = MKMapSnapshotter.Options()
+        options.mapType = blendMode == .normal ? .mutedStandard : .standard
         options.region = region
         options.size = size
         options.pointOfInterestFilter = .excludingAll
@@ -184,9 +167,14 @@ struct DayRouteMapBanner: View {
         guard let result else { return }
         let lines = coordinates.map { result.point(for: $0) }
         let stops = stopCoordinates.map { result.point(for: $0) }
-        let grayscale = grayscaleImage(from: result.image)
-        let mode = isDarkPage ? blendMode.darkBlendMode : blendMode.lightBlendMode
-        let blended = blendImage(grayscale, with: backgroundColor, mode: mode)
+        let blended: UIImage
+        if blendMode == .normal {
+            blended = result.image
+        } else {
+            let grayscale = grayscaleImage(from: result.image)
+            let mode = isDarkPage ? blendMode.darkBlendMode : blendMode.lightBlendMode
+            blended = blendImage(grayscale, with: backgroundColor, mode: mode)
+        }
         await MainActor.run {
             self.snapshot = blended
             self.linePoints = lines

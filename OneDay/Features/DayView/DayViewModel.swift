@@ -89,7 +89,6 @@ final class DayViewModel {
     private static let photoCornerRadiusKey = "OneDay.photoCornerRadius"
     private static let enabledTemplatesKey = "OneDay.enabledTemplates"
     private static let photoLayoutModeKey = "OneDay.photoLayoutMode"
-    private static let gridColumnCountKey = "OneDay.gridColumnCount"
     private static let gridHorizontalSpacingKey = "OneDay.gridHorizontalSpacing"
     private static let gridVerticalSpacingKey = "OneDay.gridVerticalSpacing"
     private static let gridLazyEnabledKey = "OneDay.gridLazyEnabled"
@@ -114,7 +113,6 @@ final class DayViewModel {
     private static let coverBackgroundModeKey = "OneDay.coverBackgroundMode"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
     private static let mapBlendModeKey     = "OneDay.mapBlendMode"
-    private static let mapProgressiveBlurKey = "OneDay.mapProgressiveBlur"
 private static let photoMapKey       = "OneDay.photoMap"
     private static let photoCaptionsKey  = "OneDay.photoCaptions"
 private static let albumTagBarKey    = "OneDay.albumTagBar"
@@ -165,8 +163,17 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             UserDefaults.standard.set(photoLayoutMode.rawValue, forKey: Self.photoLayoutModeKey)
         }
     }
+    private var gridColumnPolicy: GridColumnPolicy {
+        didSet { gridColumnPolicy.save() }
+    }
+    var gridColumnMode: GridColumnPolicy.Mode {
+        get { gridColumnPolicy.mode }
+        set { gridColumnPolicy.mode = newValue }
+    }
+    var manualGridColumnCount: Int { gridColumnPolicy.manualCount }
     var gridColumnCount: Int {
-        didSet { }  // 不持久化，每次根据照片数自动选择默认列数
+        get { gridColumnPolicy.columnCount }
+        set { gridColumnPolicy.selectManual(newValue) }
     }
     /// Nil keeps the column-aware 16 / 14 / 12 pt automatic spacing.
     var gridHorizontalSpacing: CGFloat? {
@@ -262,13 +269,27 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var sectionTitleSize: SectionTitleSize {
         didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
     }
+    private var titleSegmentation: TitleSegmentationPolicy {
+        didSet {
+            titleSegmentation.save()
+            rebuildSections()
+        }
+    }
+    var titlePlaceSegmentation: Bool {
+        get { titleSegmentation.placeEnabled }
+        set { titleSegmentation.placeEnabled = newValue }
+    }
+    var titleNestedTimeSegmentation: Bool {
+        get { titleSegmentation.nestedTimeEnabled }
+        set { titleSegmentation.nestedTimeEnabled = newValue }
+    }
+    var titleTimeSegmentation: Bool {
+        get { titleSegmentation.timeEnabled }
+        set { titleSegmentation.timeEnabled = newValue }
+    }
     /// How the grayscale trajectory map blends into the page background.
     var mapBlendMode: MapBlendMode {
         didSet { UserDefaults.standard.set(mapBlendMode.rawValue, forKey: Self.mapBlendModeKey) }
-    }
-    /// Whether the top-edge progressive blur is applied to the map banner.
-    var mapProgressiveBlurEnabled: Bool {
-        didSet { UserDefaults.standard.set(mapProgressiveBlurEnabled, forKey: Self.mapProgressiveBlurKey) }
     }
     /// Whether to show each photo's caption/description beneath it in the photo
     /// page and in the photo preview.
@@ -312,19 +333,17 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             scheduleReprepareAfterFilterChange()
         }
     }
-    /// Category selection is independent from the tunnel selection.
-    var mediaCategorySelection: MediaCategorySelection {
-        didSet {
-            mediaCategorySelection.save(forKey: MediaCategorySelection.dayStorageKey)
-            applySharedFilter(animated: true)
-            scheduleReprepareAfterFilterChange()
-        }
-    }
-    /// Complete set passed at init, before shared-library and media-category
-    /// filters are applied. Reused when either filter changes.
+    private var mediaTabs: DayMediaTabs<PhotoItem>
+    private(set) var selectedMediaCategory: MediaCategory?
+    var availableMediaCategories: [MediaCategory] { mediaTabs.availableCategories }
+    var showsMediaTabs: Bool { mediaTabs.showsTabBar }
+
+    /// Complete source, independent from both tunnel toggles and the active Tab.
     private var allItemsUnfiltered: [PhotoItem] = []
     private(set) var sourceRevision = UUID()
     private var filterPreparationID = UUID()
+    private var bodyPreparationTask: Task<Void, Never>?
+    private var dayClassificationTask: Task<Void, Never>?
     private var pendingClassificationRefresh = false
     private var pendingSourceItems: [PhotoItem]?
     private var editorialPreparationID = UUID()
@@ -467,7 +486,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         ) ?? .vibrant
         self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
         self.mapBlendMode = MapBlendMode(rawValue: UserDefaults.standard.string(forKey: Self.mapBlendModeKey) ?? "") ?? .multiply
-        self.mapProgressiveBlurEnabled = UserDefaults.standard.object(forKey: Self.mapProgressiveBlurKey) as? Bool ?? true
 self.showPhotoCaptions = UserDefaults.standard.object(forKey: Self.photoCaptionsKey) as? Bool ?? false
 self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey) as? Bool ?? true
         let savedDisabled = UserDefaults.standard.stringArray(forKey: Self.disabledAlbumIDsKey) ?? []
@@ -476,9 +494,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.photoLayoutMode = PhotoLayoutMode(
             rawValue: UserDefaults.standard.string(forKey: Self.photoLayoutModeKey) ?? ""
         ) ?? .magazine
-        let total = items.count
-        let defaultColumns = total < 20 ? 1 : total <= 50 ? 2 : 3
-        self.gridColumnCount = (1...6).contains(defaultColumns) ? defaultColumns : 3
+        self.gridColumnPolicy = GridColumnPolicy(itemCount: items.count)
         if UserDefaults.standard.object(forKey: Self.gridHorizontalSpacingKey) != nil {
             self.gridHorizontalSpacing = CGFloat(
                 UserDefaults.standard.double(forKey: Self.gridHorizontalSpacingKey)
@@ -506,19 +522,24 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         // of init so phase-2 reads of `self` are never required mid-init.
         let savedShared = UserDefaults.standard.object(forKey: Self.includeSharedAlbumsKey) as? Bool ?? true
         let savedMatch = UserDefaults.standard.object(forKey: Self.sharedContributorMatchKey) as? Bool ?? true
-        let savedMediaSelection = MediaCategorySelection.stored(
-            forKey: MediaCategorySelection.dayStorageKey
-        )
         let sharedItems = Self.filterShared(
             sortedItems, includeShared: savedShared, contributorMatch: savedMatch)
-        let composedItems = Self.filterCategories(sharedItems, selection: savedMediaSelection)
-        let composedSections = MagazineLayoutEngine.compose(composedItems, enabled: tplSet)
+        let tabs = DayMediaTabs(items: sharedItems) { MediaFilter.category(for: $0.asset) }
+        let selectedCategory = tabs.selection(preserving: nil)
+        let composedItems = tabs.items(in: selectedCategory)
+        let segmentation = TitleSegmentationPolicy()
+        let composedSections = MagazineLayoutEngine.compose(
+            composedItems, enabled: tplSet, policy: segmentation)
+        self.titleSegmentation = segmentation
         self.allItemsUnfiltered = sortedItems
         self.allItems = composedItems
         self.includeSharedAlbums = savedShared
         self.sharedContributorMatch = savedMatch
-        self.mediaCategorySelection = savedMediaSelection
+        self.mediaTabs = tabs
+        self.selectedMediaCategory = selectedCategory
         self.sections = composedSections
+        // Old multi-select choices no longer control the day body.
+        UserDefaults.standard.removeObject(forKey: "OneDay.dayMediaCategories")
     }
 
     var photoCount: Int { allItems.filter { !$0.isVideo }.count }
@@ -565,21 +586,15 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return zip(stops, groups).map { ($0.name, $1) }
     }
 
-    /// Rebuilds `sections` choosing place-based grouping when the day spans
-    /// multiple places, otherwise the default time-band grouping.
+    /// Rebuilds the body using the saved place/time segmentation choices.
     private func rebuildSections(animated: Bool = true) {
         let similar: ((PhotoItem, PhotoItem) -> Bool)? =
             visionDistances.isEmpty ? nil : { [weak self] a, b in
                 self?.visionSimilar(a, b) ?? false
             }
-        let newSections: [MagazineSection]
-        if hasRoute {
-            newSections = MagazineLayoutEngine.composeByPlace(
-                groups: placeGroups(), similar: similar, enabled: enabledTemplates)
-        } else {
-            newSections = MagazineLayoutEngine.compose(
-                allItems, similar: similar, enabled: enabledTemplates)
-        }
+        let newSections = MagazineLayoutEngine.compose(
+            allItems, similar: similar, enabled: enabledTemplates,
+            policy: titleSegmentation, places: placeGroups())
         if animated {
             withAnimation(.easeInOut(duration: 0.4)) { sections = newSections }
         } else {
@@ -626,11 +641,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return items
     }
 
-    static func filterCategories(
-        _ items: [PhotoItem],
-        selection: MediaCategorySelection
-    ) -> [PhotoItem] {
-        items.filter { selection.includes($0.asset) }
+    func selectMediaCategory(_ category: MediaCategory) {
+        guard selected == nil, category != selectedMediaCategory,
+              availableMediaCategories.contains(category) else { return }
+        selectedMediaCategory = category
+        applySharedFilter(animated: false)
+        scheduleReprepareAfterFilterChange()
     }
 
     func refreshMediaClassifications() {
@@ -639,7 +655,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             return
         }
         pendingClassificationRefresh = false
-        guard mediaCategorySelection.needsImageClassification else { return }
         let previousIDs = allItems.map(\.id)
         applySharedFilter(animated: true)
         if allItems.map(\.id) != previousIDs {
@@ -648,12 +663,20 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     private func applySharedFilter(animated: Bool, force: Bool = false) {
+        guard selected == nil else {
+            pendingClassificationRefresh = true
+            return
+        }
         let sharedItems = Self.filterShared(
             allItemsUnfiltered,
             includeShared: includeSharedAlbums,
             contributorMatch: sharedContributorMatch)
-        let filtered = Self.filterCategories(sharedItems, selection: mediaCategorySelection)
+        mediaTabs = DayMediaTabs(items: sharedItems) { MediaFilter.category(for: $0.asset) }
+        selectedMediaCategory = mediaTabs.selection(preserving: selectedMediaCategory)
+        let filtered = mediaTabs.items(in: selectedMediaCategory)
         guard force || filtered.map(\.id) != allItems.map(\.id) else { return }
+        filterPreparationID = UUID()
+        bodyPreparationTask?.cancel()
         if filtered.isEmpty {
             warmColor = Color(red: 0.93, green: 0.78, blue: 0.62)
             dominantColor = Color(white: 0.5)
@@ -664,20 +687,24 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             vibrantIsDark = false
         }
         visionDistances = [:]
+        blockOffsets = [:]
         allItems = filtered
         rebuildSections(animated: animated)
     }
 
     private func isCurrentFilterPreparation(_ generation: UUID?) -> Bool {
-        generation == nil || filterPreparationID == generation
+        !Task.isCancelled && (generation == nil || filterPreparationID == generation)
     }
 
     private func scheduleReprepareAfterFilterChange() {
+        guard selected == nil else {
+            pendingClassificationRefresh = true
+            return
+        }
+        bodyPreparationTask?.cancel()
         let generation = UUID()
         filterPreparationID = generation
-        Task {
-            await OtherImageClassificationService.shared.indexIfNeeded(matching: mediaCategorySelection)
-            guard isCurrentFilterPreparation(generation) else { return }
+        bodyPreparationTask = Task {
             await reprepareAfterFilterChange(generation: generation)
         }
     }
@@ -704,8 +731,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     func prepare() async {
         // This task has its own lifetime, so body-filter changes cannot abort it.
         Task { await prepareEditorial() }
+        classifyDayImages()
         let generation = filterPreparationID
-        await OtherImageClassificationService.shared.indexIfNeeded(matching: mediaCategorySelection)
         guard isCurrentFilterPreparation(generation) else { return }
         await computeWarmColor(generation: generation)
         guard isCurrentFilterPreparation(generation) else { return }
@@ -721,6 +748,19 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         guard isCurrentFilterPreparation(generation) else { return }
         await loadPhotoCaptions(generation: generation)
+    }
+
+    private func classifyDayImages() {
+        let previous = dayClassificationTask
+        previous?.cancel()
+        let assets = allItemsUnfiltered.map(\.asset)
+        dayClassificationTask = Task {
+            // Let a cancelled batch release its in-flight identifiers before
+            // asking for the same day's replacement PHAsset snapshots.
+            if let previous { await previous.value }
+            guard !Task.isCancelled else { return }
+            await OtherImageClassificationService.shared.classifyCurrentDay(assets)
+        }
     }
 
     /// Coalesced once per source revision, not once per body-filter revision.
@@ -795,6 +835,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         sourceRevision = UUID()
         invalidateEditorialPreparation()
         applySharedFilter(animated: true, force: true)
+        classifyDayImages()
         scheduleReprepareAfterFilterChange()
     }
 

@@ -14,13 +14,6 @@ struct DaySettingsMenu: View {
 
     var body: some View {
         Menu {
-            MediaCategoryMenuSection(
-                selection: Binding(
-                    get: { model.mediaCategorySelection },
-                    set: { model.mediaCategorySelection = $0 }
-                )
-            )
-            Divider()
             Toggle("显示共享照片", isOn: Binding(
                 get: { model.includeSharedAlbums },
                 set: { model.includeSharedAlbums = $0 }
@@ -91,18 +84,43 @@ struct DaySettingsMenu: View {
                     }
                 } else {
                     Menu("列数") {
-                        ForEach(1...6, id: \.self) { count in
-                            Button {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.gridColumnMode = .automatic
+                            }
+                        } label: {
+                            if model.gridColumnMode == .automatic {
+                                Label("自动", systemImage: "checkmark")
+                            } else {
+                                Text("自动")
+                            }
+                        }
+                        Menu {
+                            Button("使用上次列数（\(Self.chineseColumnLabel(model.manualGridColumnCount))）") {
                                 withAnimation(.easeInOut(duration: 0.3)) {
-                                    model.gridColumnCount = count
+                                    model.gridColumnMode = .manual
                                 }
-                            } label: {
-                                let label = Self.chineseColumnLabel(count)
-                                if model.gridColumnCount == count {
-                                    Label(label, systemImage: "checkmark")
-                                } else {
-                                    Text(label)
+                            }
+                            Divider()
+                            ForEach(1...6, id: \.self) { count in
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.3)) {
+                                        model.gridColumnCount = count
+                                    }
+                                } label: {
+                                    let label = Self.chineseColumnLabel(count)
+                                    if model.manualGridColumnCount == count {
+                                        Label(label, systemImage: "checkmark")
+                                    } else {
+                                        Text(label)
+                                    }
                                 }
+                            }
+                        } label: {
+                            if model.gridColumnMode == .manual {
+                                Label("手动", systemImage: "checkmark")
+                            } else {
+                                Text("手动")
                             }
                         }
                     }
@@ -251,6 +269,22 @@ struct DaySettingsMenu: View {
             animPicker("标题字体",
                        binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                        labelOf: { $0.label })
+            Menu("标题分段") {
+                Toggle("地点分段", isOn: Binding(
+                    get: { model.titlePlaceSegmentation },
+                    set: { model.titlePlaceSegmentation = $0 }
+                ))
+                if model.titlePlaceSegmentation {
+                    Toggle("地点下时间分段", isOn: Binding(
+                        get: { model.titleNestedTimeSegmentation },
+                        set: { model.titleNestedTimeSegmentation = $0 }
+                    ))
+                }
+                Toggle("时间分段", isOn: Binding(
+                    get: { model.titleTimeSegmentation },
+                    set: { model.titleTimeSegmentation = $0 }
+                ))
+            }
             Menu("标题大小") {
                 ForEach(SectionTitleSize.allCases) { size in
                     Button {
@@ -291,10 +325,6 @@ struct DaySettingsMenu: View {
                 Toggle("轨迹地图", isOn: Binding(
                     get: { model.showPhotoMap },
                     set: { model.showPhotoMap = $0 }
-                ))
-                Toggle("顶部渐变模糊", isOn: Binding(
-                    get: { model.mapProgressiveBlurEnabled },
-                    set: { model.mapProgressiveBlurEnabled = $0 }
                 ))
                 Menu("地图融合") {
                     ForEach(MapBlendMode.allCases) { mode in

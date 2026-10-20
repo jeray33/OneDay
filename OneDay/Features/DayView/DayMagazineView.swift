@@ -34,9 +34,10 @@ struct DayMagazineView: View {
     // open request are shared with the overlay.
     @State private var frameStore = HeroFrameStore()
     @State private var heroRequest: PhotoItem?
+    @State private var fixedHeaderHeight: CGFloat = 0
     /// Cached top safe-area inset. Read once when the status bar is visible,
     /// then reused so that `.statusBarHidden()` during the hero session cannot
-    /// change the ScrollView's top padding and shift the grid.
+    /// change the fixed header's height and shift the grid.
     @State private var stableTopInset: CGFloat = 0
 
     private var shouldRevealContent: Bool {
@@ -57,8 +58,13 @@ struct DayMagazineView: View {
                     VStack(spacing: 0) {
                         Color.clear.frame(height: 0).id("scroll_top")
 
+                        if model.showsMediaTabs {
+                            mediaTabs
+                        }
+                        Color.clear.frame(height: model.showsPhotoMap ? 0 : 24)
+
                         if model.allItems.isEmpty {
-                            Text("当前筛选下，这一天没有可显示内容")
+                            Text("这一天没有可显示内容")
                                 .font(Theme.serif(17))
                                 .foregroundStyle(Theme.ink.opacity(0.65))
                                 .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
@@ -74,7 +80,6 @@ struct DayMagazineView: View {
                                               dateFont: model.coverDateFont.font(SectionTitleSize.small.size),
                                               blendMode: model.mapBlendMode,
                                               backgroundColor: model.pageBackgroundColor,
-                                              progressiveBlurEnabled: model.mapProgressiveBlurEnabled,
                                               isDarkPage: model.pageColorScheme == .dark)
                                 .frame(width: geo.size.width)
                         }
@@ -89,8 +94,15 @@ struct DayMagazineView: View {
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
                     }
-                    .padding(.top, model.showsPhotoMap ? 0 : stableTopInsetValue + 24)
                     .padding(.bottom, 24)
+                    .background {
+                        GeometryReader { contentGeometry in
+                            Color.clear.preference(
+                                key: ContentScrollBoundsKey.self,
+                                value: contentGeometry.frame(in: .named(heroCoordinateSpace))
+                            )
+                        }
+                    }
                     .contentShape(Rectangle())
                     .highPriorityGesture(columnPinchGesture)
                 }
@@ -99,27 +111,39 @@ struct DayMagazineView: View {
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
                 .animation(.easeInOut(duration: 0.35), value: model.sectionTintEnabled)
+                // A safe-area bar lets content pass underneath the controls.
+                // The system progressively blurs that backdrop, not the buttons.
+                .safeAreaBar(edge: .top, spacing: 0) {
+                    fixedHeader(proxy: proxy)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            fixedHeaderHeight = $0
+                        }
+                }
+                .scrollEdgeEffectStyle(.soft, for: .top)
                 .coordinateSpace(name: "dayScroll")
                 .onChange(of: model.instanceID) {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
-                .onScrollGeometryChange(for: ContentScrollEdges.self) { geometry in
-                    let minOffset = geometry.contentInsets.top
-                    let maxOffset = max(
-                        minOffset,
-                        geometry.contentSize.height
-                            + geometry.contentInsets.bottom
-                            - geometry.containerSize.height
-                    )
-                    return ContentScrollEdges(
-                        atTop: geometry.contentOffset.y <= minOffset + 1,
-                        atBottom: geometry.contentOffset.y >= maxOffset - 1
-                    )
-                } action: { _, edges in
-                    updateScrollEdges(edges)
+                .onChange(of: model.selectedMediaCategory) { _, _ in
+                    activeSegmentID = nil
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo("scroll_top", anchor: .top)
+                    }
+                }
+                .onPreferenceChange(ContentScrollBoundsKey.self) { bounds in
+                    guard let bounds else { return }
+                    updateScrollEdges(ContentScrollEdges(
+                        contentBounds: bounds,
+                        viewportBounds: CGRect(
+                            x: 0, y: fixedHeaderHeight,
+                            width: geo.size.width,
+                            height: max(0, geo.size.height - fixedHeaderHeight)
+                        )
+                    ))
                 }
                 .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
-                .overlay(alignment: .top) { topOverlay(proxy: proxy) }
                 .onChange(of: model.previewCurrentID) { _, id in
                     guard model.selected != nil, let id,
                           let blockID = model.blockID(forItemID: id) else { return }
@@ -128,13 +152,14 @@ struct DayMagazineView: View {
                     // animated `scrollTransition` and make the grid wobble when
                     // it is revealed on close.
                     if let rect = frameStore.cells[id]?.rect,
-                       rect.midY >= 0, rect.midY <= geo.size.height {
+                       rect.midY >= fixedHeaderHeight, rect.midY <= geo.size.height {
                         return
                     }
                     var t = Transaction()
                     t.disablesAnimations = true
                     withTransaction(t) { proxy.scrollTo(blockID, anchor: .center) }
                 }
+                .environment(\.colorScheme, model.pageColorScheme)
 
                 HeroOverlayView(model: model,
                                 frameStore: frameStore,
@@ -266,7 +291,7 @@ struct DayMagazineView: View {
     // MARK: Top bar
 
     @ViewBuilder
-    private func topOverlay(proxy: ScrollViewProxy) -> some View {
+    private func fixedHeader(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: 10) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -294,6 +319,43 @@ struct DayMagazineView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, stableTopInsetValue + 4)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .revealFade(shouldRevealContent, delay: 0.32)
+    }
+
+    private var mediaTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(model.availableMediaCategories) { category in
+                let isSelected = model.selectedMediaCategory == category
+                Button {
+                    model.selectMediaCategory(category)
+                } label: {
+                    Text(category.tabLabel)
+                        .font(Theme.serif(15, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(Theme.ink.opacity(isSelected ? 1 : 0.55))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(Theme.ink.opacity(isSelected ? 1 : 0))
+                                .frame(height: 2)
+                        }
+                }
+                .buttonStyle(.plain)
+                .disabled(model.selected != nil || activeDragBlock != nil || scrollDisabled)
+                .accessibilityLabel(category.label)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityIdentifier("day-media-tab-\(category.rawValue)")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("当天内容类别")
         .revealFade(shouldRevealContent, delay: 0.32)
     }
 
@@ -573,7 +635,8 @@ struct DayMagazineView: View {
 
     private func updateActiveSegment(_ positions: [String: CGFloat]) {
         guard !positions.isEmpty else { return }
-        let anchorY: CGFloat = 150
+        // The scroll viewport now includes the translucent fixed header.
+        let anchorY = fixedHeaderHeight + 24
         // Current block = the last one whose top has passed the anchor line.
         let passed = positions.filter { $0.value <= anchorY }
         let currentKey = passed.max(by: { $0.value < $1.value })?.key
@@ -619,16 +682,17 @@ struct DayMagazineView: View {
         let rows = sectionRows(section)
         if !rows.isEmpty {
             let tint = model.sectionTintActive
+            let hasHeading = section.placeHeading != nil || section.showsTimeHeading
             VStack(alignment: .leading, spacing: 0) {
                 sectionHeader(section)
                 ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
                     rowView(row, contentWidth: contentWidth)
-                        .padding(.top, rowTopSpacing(index: idx, rows: rows))
+                        .padding(.top, rowTopSpacing(index: idx, rows: rows) * (idx == 0 && !hasHeading ? 0.5 : 1))
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, tint ? 40 : 0)
-            .padding(.bottom, tint ? 120 : 0)
+            .padding(.top, tint ? (hasHeading ? 40 : 20) : 0)
+            .padding(.bottom, tint && hasHeading ? 120 : 0)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(tint ? model.sectionBackgroundColor(section) : Color.clear)
             .environment(\.colorScheme, tint ? model.sectionColorScheme(section) : model.pageColorScheme)
@@ -636,14 +700,22 @@ struct DayMagazineView: View {
         }
     }
 
+    @ViewBuilder
     private func sectionHeader(_ section: MagazineSection) -> some View {
-        // When the day moves across distinct places, the headline is the place
-        // name; otherwise it's the uppercase-English time-of-day band.
-        let showPlace = model.hasRoute
-        let title = showPlace ? (section.placeName ?? section.band.englishTitle)
-                              : section.band.englishTitle
-        return Text(title)
-            .font(model.coverDateFont.font(model.sectionTitleSize.size))
+        if let place = section.placeHeading {
+            sectionHeading(place, size: model.sectionTitleSize.size)
+        }
+        if section.showsTimeHeading && !section.timeHeadingIsNested {
+            sectionHeading(
+                section.band.englishTitle,
+                size: model.sectionTitleSize.size
+            )
+        }
+    }
+
+    private func sectionHeading(_ title: String, size: CGFloat) -> some View {
+        Text(title)
+            .font(model.coverDateFont.font(size))
             .foregroundStyle(Theme.ink)
             .lineLimit(1)
             .minimumScaleFactor(0.4)
@@ -651,10 +723,11 @@ struct DayMagazineView: View {
     }
 
     /// Spacing above each section. Segmented coloring keeps sections flush;
-    /// otherwise we keep a 64pt gap between sections and between the map's
-    /// track text and the first section title.
+    /// Otherwise use 64pt with headings and half that when headings are hidden.
     private func sectionTopSpacing(for index: Int) -> CGFloat {
-        model.sectionTintActive ? 0 : 64
+        guard !model.sectionTintActive else { return 0 }
+        let section = model.sections[index]
+        return section.placeHeading != nil || section.showsTimeHeading ? 64 : 32
     }
 
     @ViewBuilder
@@ -686,14 +759,18 @@ struct DayMagazineView: View {
     /// with photo blocks. A section spanning ≤ 2h gets one label under the
     /// title; a longer section is split into clock-aligned 2-hour segments,
     /// each labelled above its first photo with that segment's actual span.
+    /// Place-only sections keep a single overall range without splitting rows.
     private func sectionRows(_ section: MagazineSection) -> [SectionRow] {
         let blocks = section.blocks.filter { $0.template != .quote }
         guard !blocks.isEmpty else { return [] }
+        guard section.showsTimeHeading || section.placeHeading != nil else {
+            return contentRows(for: blocks)
+        }
         let allDates = blocks.flatMap(\.items).compactMap(\.creationDate).sorted()
         guard let first = allDates.first, let last = allDates.last else {
             return contentRows(for: blocks)
         }
-        if last.timeIntervalSince(first) <= 2 * 3600 {
+        if !section.showsTimeHeading || last.timeIntervalSince(first) <= 2 * 3600 {
             return [.label(timeRangeText(first, last))] + contentRows(for: blocks)
         }
         var rows: [SectionRow] = []
@@ -779,6 +856,13 @@ private struct AlignedGridEntry: Identifiable {
 }
 
 // MARK: - Scroll tracking
+
+private struct ContentScrollBoundsKey: PreferenceKey {
+    static var defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
 
 private struct BlockPositionKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]

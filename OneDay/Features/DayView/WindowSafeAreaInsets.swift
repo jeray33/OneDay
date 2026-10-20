@@ -1,12 +1,4 @@
-import SwiftUI
-
-/// Reports whether the content (magazine) scroll is pinned to the top or
-/// bottom edge, so the paged stack can decide when a vertical drag should
-/// flip to the cover/back layer instead of scrolling.
-struct ContentScrollEdges: Equatable {
-    var atTop: Bool = true
-    var atBottom: Bool = false
-}
+import UIKit
 
 /// Top safe-area inset of the active window. Needed because the paged stack
 /// draws full-bleed (ignoring safe area), so chrome must re-apply the inset.

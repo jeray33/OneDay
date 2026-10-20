@@ -10,13 +10,15 @@ nonisolated enum ImageClassification: String, Codable, Sendable {
 nonisolated enum ImageCategoryOverride: String, CaseIterable, Sendable {
     case automatic
     case photo
+    case screenshot
     case otherImage
 
     var label: String {
         switch self {
         case .automatic: return "自动判断"
         case .photo: return "归为照片"
-        case .otherImage: return "归为其他图片"
+        case .screenshot: return "归为截图"
+        case .otherImage: return "归为其它图片"
         }
     }
 }
