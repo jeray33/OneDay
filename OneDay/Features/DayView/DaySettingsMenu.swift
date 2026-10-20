@@ -14,6 +14,13 @@ struct DaySettingsMenu: View {
 
     var body: some View {
         Menu {
+            MediaCategoryMenuSection(
+                selection: Binding(
+                    get: { model.mediaCategorySelection },
+                    set: { model.mediaCategorySelection = $0 }
+                )
+            )
+            Divider()
             Toggle("显示共享照片", isOn: Binding(
                 get: { model.includeSharedAlbums },
                 set: { model.includeSharedAlbums = $0 }

@@ -1,4 +1,6 @@
 import SwiftUI
+import Combine
+import Photos
 import UIKit
 
 struct PhotoPreviewView: View {
@@ -47,6 +49,7 @@ struct PhotoPreviewView: View {
     @State private var undoItemID: String?
     @State private var undoOffset: CGSize = .zero
     @State private var undoScale: CGFloat = 1
+    @State private var imageCategoryOverride: ImageCategoryOverride = .automatic
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
          sessionOpacity: Double = 1, cardOpacity: Double = 1,
@@ -210,7 +213,16 @@ struct PhotoPreviewView: View {
             }
         }
         .task(id: selection) {
+            if let item = currentItem {
+                imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
+                Task { await OtherImageClassificationService.shared.classify([item.asset]) }
+            }
             await updateDynamicBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .imageClassificationChanged).receive(on: RunLoop.main)) { _ in
+            if let item = currentItem {
+                imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
+            }
         }
     }
 
@@ -362,6 +374,27 @@ struct PhotoPreviewView: View {
                         albumItem = item
                     } label: {
                         Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
+                    }
+                    if MediaFilter.supportsImageClassification(item.asset) {
+                        Menu {
+                            Picker("图片分类", selection: Binding(
+                                get: { imageCategoryOverride },
+                                set: { choice in
+                                    imageCategoryOverride = choice
+                                    ImageClassificationStore.shared.setOverride(choice, for: item.asset.localIdentifier)
+                                    model.refreshMediaClassifications()
+                                    if choice == .automatic {
+                                        Task { await OtherImageClassificationService.shared.classify([item.asset]) }
+                                    }
+                                }
+                            )) {
+                                ForEach(ImageCategoryOverride.allCases, id: \.rawValue) { choice in
+                                    Text(choice.label).tag(choice)
+                                }
+                            }
+                        } label: {
+                            Label("图片分类", systemImage: "tag")
+                        }
                     }
                     Divider()
                     Toggle(isOn: Binding(

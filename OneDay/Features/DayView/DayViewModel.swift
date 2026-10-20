@@ -53,7 +53,21 @@ final class DayViewModel {
     let date: Date
     private(set) var sections: [MagazineSection]
     private(set) var allItems: [PhotoItem]
-    var selected: PhotoItem?
+    var selected: PhotoItem? {
+        didSet {
+            guard selected == nil,
+                  pendingClassificationRefresh || pendingSourceItems != nil else { return }
+            // Let the hero flight finish restoring its source cell first.
+            Task { [weak self] in
+                guard let self, self.selected == nil else { return }
+                if let items = self.pendingSourceItems {
+                    self.pendingSourceItems = nil
+                    self.replaceSourceItems(items)
+                }
+                if self.pendingClassificationRefresh { self.refreshMediaClassifications() }
+            }
+        }
+    }
     /// The photo currently being viewed inside the preview. Drives the hero
     /// fly-back so closing returns to the photo on screen now (requirement B).
     var previewCurrentID: String?
@@ -121,7 +135,12 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var borderStyle: PhotoBorderStyle {
         didSet {
             UserDefaults.standard.set(borderStyle.rawValue, forKey: Self.borderStyleKey)
-            if borderStyle == .colored { Task { await computeFrameColors(for: Array(allItems.prefix(40))) } }
+            if borderStyle == .colored {
+                Task {
+                    await computeFrameColors(
+                        for: Array(allItems.prefix(40)) + coverPhotos + scatteredCoverPhotos.map(\.item))
+                }
+            }
         }
     }
     var photoShadow: PhotoShadowLevel {
@@ -237,7 +256,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var coverBackgroundMode: CoverBackgroundMode {
         didSet {
             UserDefaults.standard.set(coverBackgroundMode.rawValue, forKey: Self.coverBackgroundModeKey)
-            Task { await computeCoverBackgroundColor() }
+            Task { await computeCoverBackgroundColor(generation: editorialPreparationID) }
         }
     }
     var sectionTitleSize: SectionTitleSize {
@@ -274,14 +293,12 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     }
     /// When `true`, photos contributed by other members of the user's iCloud
     /// Shared Photo Library are included in the day view. Default is `true`
-    /// (on by first-run). Toggling re-filters the day, recomposes sections,
-    /// and re-runs cover/sticker/caption/place preparation so all visual
-    /// surfaces reflect the new item set.
+    /// (on by first-run). Only the body and its captions/places are re-filtered.
     var includeSharedAlbums: Bool = false {
         didSet {
             UserDefaults.standard.set(includeSharedAlbums, forKey: Self.includeSharedAlbumsKey)
             applySharedFilter(animated: true)
-            Task { await reprepareAfterFilterChange() }
+            scheduleReprepareAfterFilterChange()
         }
     }
     /// Test toggle: when `true`, shared-album photos the user contributed
@@ -292,13 +309,36 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         didSet {
             UserDefaults.standard.set(sharedContributorMatch, forKey: Self.sharedContributorMatchKey)
             applySharedFilter(animated: true)
-            Task { await reprepareAfterFilterChange() }
+            scheduleReprepareAfterFilterChange()
         }
     }
-    /// Mirror of the full photo set passed in at `init`, before the
-    /// shared-library filter is applied. Used to re-derive `allItems` when
-    /// `includeSharedAlbums` toggles, without having to refetch from Photos.
+    /// Category selection is independent from the tunnel selection.
+    var mediaCategorySelection: MediaCategorySelection {
+        didSet {
+            mediaCategorySelection.save(forKey: MediaCategorySelection.dayStorageKey)
+            applySharedFilter(animated: true)
+            scheduleReprepareAfterFilterChange()
+        }
+    }
+    /// Complete set passed at init, before shared-library and media-category
+    /// filters are applied. Reused when either filter changes.
     private var allItemsUnfiltered: [PhotoItem] = []
+    private(set) var sourceRevision = UUID()
+    private var filterPreparationID = UUID()
+    private var pendingClassificationRefresh = false
+    private var pendingSourceItems: [PhotoItem]?
+    private var editorialPreparationID = UUID()
+    private var editorialPreparationTask: Task<Void, Never>?
+
+    /// Fixed default source policy: own originals and other people's shared
+    /// media, without duplicate own shared contributions or display filters.
+    private var editorialItems: [PhotoItem] {
+        DayMediaScope.editorialItems(
+            from: allItemsUnfiltered,
+            mediaType: { $0.asset.mediaType },
+            isOwnSharedContribution: { $0.isOwnSharedContribution })
+    }
+
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var scatteredCoverPhotos: [ScatteredCoverPhoto] = []
@@ -312,6 +352,13 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private var coverBackgroundIsDark = false
     private(set) var backCoverBackgroundColor: Color = Color(white: 0.12)
     private var backCoverIsDark = true
+    private(set) var coverPlaces: [String] = []
+
+    var coverPhotoCount: Int { editorialItems.filter { !$0.isVideo }.count }
+    var coverVideoCount: Int { editorialItems.filter(\.isVideo).count }
+    var coverRouteLocations: [CLLocation] { editorialItems.compactMap(\.location) }
+    var hasCoverLocation: Bool { !coverRouteLocations.isEmpty }
+    var coverTravelKilometers: Double { routeDistanceKilometers(for: coverRouteLocations) }
 
     var minimalCoverPhoto: PhotoItem? {
         tunnelCoverPhoto ?? coverPhotos.first
@@ -327,10 +374,10 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     /// Editorial summary for the back cover.
     var backCoverSummary: BackCoverSummary {
         BackCoverSummary(
-            photoCount: photoCount,
-            videoCount: videoCount,
-            kilometers: travelKilometers,
-            places: headerPlaces
+            photoCount: coverPhotoCount,
+            videoCount: coverVideoCount,
+            kilometers: coverTravelKilometers,
+            places: coverPlaces
         )
     }
     private var photoFrameColors: [String: Color] = [:]
@@ -459,13 +506,18 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         // of init so phase-2 reads of `self` are never required mid-init.
         let savedShared = UserDefaults.standard.object(forKey: Self.includeSharedAlbumsKey) as? Bool ?? true
         let savedMatch = UserDefaults.standard.object(forKey: Self.sharedContributorMatchKey) as? Bool ?? true
-        let composedItems = Self.filterShared(
+        let savedMediaSelection = MediaCategorySelection.stored(
+            forKey: MediaCategorySelection.dayStorageKey
+        )
+        let sharedItems = Self.filterShared(
             sortedItems, includeShared: savedShared, contributorMatch: savedMatch)
+        let composedItems = Self.filterCategories(sharedItems, selection: savedMediaSelection)
         let composedSections = MagazineLayoutEngine.compose(composedItems, enabled: tplSet)
         self.allItemsUnfiltered = sortedItems
         self.allItems = composedItems
         self.includeSharedAlbums = savedShared
         self.sharedContributorMatch = savedMatch
+        self.mediaCategorySelection = savedMediaSelection
         self.sections = composedSections
     }
 
@@ -555,8 +607,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Re-derives `allItems` from `allItemsUnfiltered` according to the current
     /// `includeSharedAlbums` toggle, and rebuilds sections synchronously so the
-    /// new set is visible immediately. Cover/place/sticker/caption side-effects
-    /// are re-run asynchronously by the caller (`includeSharedAlbums.didSet`).
+    /// new body set is visible immediately. Cover/history state is not touched.
     /// Applies the two shared-photo filters to `items`:
     /// - `includeShared == false` removes every shared-album photo.
     /// - otherwise, `contributorMatch == true` removes the user's own
@@ -575,48 +626,191 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return items
     }
 
-    private func applySharedFilter(animated: Bool) {
-        let filtered = Self.filterShared(
+    static func filterCategories(
+        _ items: [PhotoItem],
+        selection: MediaCategorySelection
+    ) -> [PhotoItem] {
+        items.filter { selection.includes($0.asset) }
+    }
+
+    func refreshMediaClassifications() {
+        guard selected == nil else {
+            pendingClassificationRefresh = true
+            return
+        }
+        pendingClassificationRefresh = false
+        guard mediaCategorySelection.needsImageClassification else { return }
+        let previousIDs = allItems.map(\.id)
+        applySharedFilter(animated: true)
+        if allItems.map(\.id) != previousIDs {
+            scheduleReprepareAfterFilterChange()
+        }
+    }
+
+    private func applySharedFilter(animated: Bool, force: Bool = false) {
+        let sharedItems = Self.filterShared(
             allItemsUnfiltered,
             includeShared: includeSharedAlbums,
             contributorMatch: sharedContributorMatch)
-        guard filtered.map(\.id) != allItems.map(\.id) else { return }
+        let filtered = Self.filterCategories(sharedItems, selection: mediaCategorySelection)
+        guard force || filtered.map(\.id) != allItems.map(\.id) else { return }
+        if filtered.isEmpty {
+            warmColor = Color(red: 0.93, green: 0.78, blue: 0.62)
+            dominantColor = Color(white: 0.5)
+            vibrantColor = Color(white: 0.5)
+            brightColor = Color(white: 0.95)
+            bright2Color = Color(white: 1.0)
+            dominantIsDark = false
+            vibrantIsDark = false
+        }
+        visionDistances = [:]
         allItems = filtered
         rebuildSections(animated: animated)
     }
 
-    /// Keeps the post-filter visual state in sync: warm color seed, frame
-    /// colors, cover photos, background color, person stickers, scattered
-    /// cover layout, and captions all depend on the current `allItems`. Pulled
-    /// out of `prepare()` so that toggling can re-run them without re-paying
-    /// the Vision-warmup cost (Vision is rerun because its chain of consecutive
-    /// distances needs to be rebuilt for the filtered ordering).
-    fileprivate func reprepareAfterFilterChange() async {
-        await applyVisionGrouping()
-        await resolveSegmentNames()
-        await resolvePlaces()
-        if borderStyle == .colored { await computeFrameColors(for: Array(allItems.prefix(40))) }
-        await computeCoverPhotos()
-        await computeCoverBackgroundColor()
-        await computePersonStickers()
-        if scatteredCoverPhotos.isEmpty { computeScatteredCoverPhotos() }
-        await loadPhotoCaptions()
+    private func isCurrentFilterPreparation(_ generation: UUID?) -> Bool {
+        generation == nil || filterPreparationID == generation
+    }
+
+    private func scheduleReprepareAfterFilterChange() {
+        let generation = UUID()
+        filterPreparationID = generation
+        Task {
+            await OtherImageClassificationService.shared.indexIfNeeded(matching: mediaCategorySelection)
+            guard isCurrentFilterPreparation(generation) else { return }
+            await reprepareAfterFilterChange(generation: generation)
+        }
+    }
+
+    /// Refreshes only body-derived colors, grouping, places, and captions.
+    fileprivate func reprepareAfterFilterChange(generation: UUID) async {
+        await computeWarmColor(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
+        await applyVisionGrouping(generation: generation)
+        guard filterPreparationID == generation else { return }
+        await resolveSegmentNames(generation: generation)
+        guard filterPreparationID == generation else { return }
+        await resolvePlaces(generation: generation)
+        guard filterPreparationID == generation else { return }
+        if borderStyle == .colored {
+            await computeFrameColors(for: Array(allItems.prefix(40)), generation: generation)
+        }
+        guard filterPreparationID == generation else { return }
+        await loadPhotoCaptions(generation: generation)
     }
 
     // MARK: Preparation (Vision similarity + places + warm color)
 
     func prepare() async {
-        await computeWarmColor()
-        await applyVisionGrouping()
-        await resolveSegmentNames()
+        // This task has its own lifetime, so body-filter changes cannot abort it.
+        Task { await prepareEditorial() }
+        let generation = filterPreparationID
+        await OtherImageClassificationService.shared.indexIfNeeded(matching: mediaCategorySelection)
+        guard isCurrentFilterPreparation(generation) else { return }
+        await computeWarmColor(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
+        await applyVisionGrouping(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
+        await resolveSegmentNames(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
         rebuildSections()
-        await resolvePlaces()
-        if borderStyle == .colored { await computeFrameColors(for: Array(allItems.prefix(40))) }
-        await computeCoverPhotos()
-        await computeCoverBackgroundColor()
-        await computePersonStickers()
+        await resolvePlaces(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
+        if borderStyle == .colored {
+            await computeFrameColors(for: Array(allItems.prefix(40)), generation: generation)
+        }
+        guard isCurrentFilterPreparation(generation) else { return }
+        await loadPhotoCaptions(generation: generation)
+    }
+
+    /// Coalesced once per source revision, not once per body-filter revision.
+    func prepareEditorial() async {
+        if let task = editorialPreparationTask {
+            await task.value
+            return
+        }
+        let generation = editorialPreparationID
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.prepareEditorialContent(generation: generation)
+        }
+        editorialPreparationTask = task
+        await task.value
+    }
+
+    private func isCurrentEditorialPreparation(_ generation: UUID) -> Bool {
+        editorialPreparationID == generation && !Task.isCancelled
+    }
+
+    private func prepareEditorialContent(generation: UUID) async {
+        await computeCoverPhotos(generation: generation)
+        guard isCurrentEditorialPreparation(generation) else { return }
+        await computeCoverBackgroundColor(generation: generation)
+        guard isCurrentEditorialPreparation(generation) else { return }
         if scatteredCoverPhotos.isEmpty { computeScatteredCoverPhotos() }
-        await loadPhotoCaptions()
+        await prepareFrameColors(for: coverPhotos + scatteredCoverPhotos.map(\.item))
+        guard isCurrentEditorialPreparation(generation) else { return }
+        await computePersonStickers(generation: generation)
+        guard isCurrentEditorialPreparation(generation) else { return }
+
+        var seen = Set<String>()
+        var places: [String] = []
+        for segment in PhotoRoute.segments(for: editorialItems) {
+            let location = CLLocation(
+                latitude: segment.coordinate.latitude, longitude: segment.coordinate.longitude)
+            let name = await LocationResolver.shared.name(for: location)
+            guard isCurrentEditorialPreparation(generation) else { return }
+            if let name, seen.insert(name).inserted { places.append(name) }
+        }
+        coverPlaces = places
+    }
+
+    /// Real library updates replace the source; preview updates wait until close.
+    func replaceSourceItems(_ items: [PhotoItem]) {
+        guard selected == nil else {
+            pendingSourceItems = items
+            return
+        }
+        var sorted = items.sorted {
+            ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
+        }
+        let previousByID = Dictionary(allItemsUnfiltered.map { ($0.id, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+        for index in sorted.indices where sorted[index].caption == nil {
+            sorted[index].caption = previousByID[sorted[index].id]?.caption
+        }
+        let unchanged = sorted.count == allItemsUnfiltered.count
+            && zip(sorted, allItemsUnfiltered).allSatisfy { pair in
+                let (new, old) = pair
+                return new.id == old.id
+                    && new.asset.modificationDate == old.asset.modificationDate
+                    && new.creationDate == old.creationDate
+                    && new.isFromSharedLibrary == old.isFromSharedLibrary
+                    && new.isOwnSharedContribution == old.isOwnSharedContribution
+            }
+        allItemsUnfiltered = sorted
+        favoriteIDs = Set(sorted.filter(\.isFavorite).map(\.id))
+        hiddenIDs = Set(sorted.filter(\.isHidden).map(\.id))
+        guard !unchanged else { return }
+        sourceRevision = UUID()
+        invalidateEditorialPreparation()
+        applySharedFilter(animated: true, force: true)
+        scheduleReprepareAfterFilterChange()
+    }
+
+    private func invalidateEditorialPreparation() {
+        editorialPreparationID = UUID()
+        editorialPreparationTask?.cancel()
+        editorialPreparationTask = nil
+        let sourceIDs = Set(editorialItems.map(\.id))
+        coverPhotos.removeAll { !sourceIDs.contains($0.id) }
+        scatteredCoverPhotos.removeAll { !sourceIDs.contains($0.id) }
+        if let tunnelCoverPhoto, !sourceIDs.contains(tunnelCoverPhoto.id) {
+            self.tunnelCoverPhoto = nil
+        }
+        personStickers = []
+        coverPlaces = []
+        Task { await prepareEditorial() }
     }
 
     /// Updates the caption for a single photo in `allItems` and `sections`.
@@ -629,6 +823,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
 
         let id = item.id
+        if let index = allItemsUnfiltered.firstIndex(where: { $0.id == id }) {
+            allItemsUnfiltered[index].caption = caption
+        }
         if let index = allItems.firstIndex(where: { $0.id == id }) {
             allItems[index].caption = caption
         }
@@ -644,11 +841,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// Loads captions for all photos asynchronously and updates `allItems`.
-    private func loadPhotoCaptions() async {
-        guard !allItems.isEmpty else { return }
+    private func loadPhotoCaptions(generation: UUID? = nil) async {
+        let items = allItems
+        guard !items.isEmpty else { return }
 
         let pairs = await withTaskGroup(of: (Int, String?).self) { group in
-            for (index, item) in allItems.enumerated() {
+            for (index, item) in items.enumerated() {
                 group.addTask {
                     let caption = await PhotoCaptionManager.shared.caption(for: item.asset)
                     return (index, caption)
@@ -659,9 +857,23 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             return results
         }
 
+        guard isCurrentFilterPreparation(generation) else { return }
+        var captionsByID: [String: String] = [:]
+        for (index, caption) in pairs where items.indices.contains(index) {
+            if let caption { captionsByID[items[index].id] = caption }
+        }
         var updated = allItems
-        for (index, caption) in pairs { updated[index].caption = caption }
+        for index in updated.indices {
+            if let caption = captionsByID[updated[index].id] {
+                updated[index].caption = caption
+            }
+        }
         allItems = updated
+        for index in allItemsUnfiltered.indices {
+            if let caption = captionsByID[allItemsUnfiltered[index].id] {
+                allItemsUnfiltered[index].caption = caption
+            }
+        }
 
         // Propagate captions into the composed sections so every rendered copy
         // of a PhotoItem has the caption.
@@ -683,12 +895,17 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         await computeFrameColors(for: items)
     }
 
-    private func computeFrameColors(for items: [PhotoItem]) async {
+    private func computeFrameColors(
+        for items: [PhotoItem],
+        generation: UUID? = nil
+    ) async {
         let photos = items.filter { !$0.isVideo }
         for item in photos where photoFrameColors[item.id] == nil {
+            guard isCurrentFilterPreparation(generation) else { return }
             guard let img = await ImageLoader.shared.thumbnail(asset: item.asset,
                                                               size: CGSize(width: 48, height: 48)),
                   let base = img.averageColor else { continue }
+            guard isCurrentFilterPreparation(generation) else { return }
             var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
             base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
             // Boost saturation slightly; keep brightness high for a vivid but not harsh frame.
@@ -700,11 +917,13 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
     }
 
-    private func computeWarmColor() async {
-        guard let first = allItems.first(where: { !$0.isVideo }) ?? allItems.first else { return }
+    private func computeWarmColor(generation: UUID? = nil) async {
+        let items = allItems
+        guard let first = items.first(where: { !$0.isVideo }) ?? items.first else { return }
         guard let image = await ImageLoader.shared.thumbnail(asset: first.asset,
                                                             size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else { return }
+        guard isCurrentFilterPreparation(generation) else { return }
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
@@ -746,11 +965,13 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     // MARK: Cover
 
     /// Picks the 2 sharpest/best-composed non-video photos for the cover.
-    private func computeCoverPhotos() async {
-        let photos = allItems.filter { !$0.isVideo }
+    private func computeCoverPhotos(generation: UUID) async {
+        guard isCurrentEditorialPreparation(generation) else { return }
+        let photos = editorialItems.filter { !$0.isVideo }
         guard !photos.isEmpty else { coverPhotos = []; return }
         if photos.count <= 2 { coverPhotos = photos; return }
         let ranked = await PhotoSharpnessRanker.shared.rank(photos, top: 2)
+        guard isCurrentEditorialPreparation(generation) else { return }
         coverPhotos = ranked
     }
 
@@ -758,32 +979,35 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// +30° for the cover and +180° for the back. The selected mode controls
     /// whether those hues use the original vivid ranges or the pale `bright2`
     /// saturation/brightness range.
-    private func computeCoverBackgroundColor() async {
-        guard let hero = coverPhotos.first,
+    private func computeCoverBackgroundColor(generation: UUID) async {
+        let mode = coverBackgroundMode
+        guard let hero = coverPhotos.first ?? editorialItems.first,
               let image = await ImageLoader.shared.thumbnail(
                 asset: hero.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else {
+            guard isCurrentEditorialPreparation(generation), mode == coverBackgroundMode else { return }
             withAnimation(.easeInOut(duration: 0.3)) {
-                switch coverBackgroundMode {
+                switch mode {
                 case .vibrant:
-                    coverBackgroundColor = warmColor
+                    coverBackgroundColor = Color(red: 0.93, green: 0.78, blue: 0.62)
                     coverBackgroundIsDark = false
                     backCoverBackgroundColor = Color(white: 0.12)
                     backCoverIsDark = true
                 case .bright:
-                    coverBackgroundColor = bright2Color
+                    coverBackgroundColor = Color(white: 1.0)
                     coverBackgroundIsDark = false
-                    backCoverBackgroundColor = bright2Color
+                    backCoverBackgroundColor = Color(white: 1.0)
                     backCoverIsDark = false
                 }
             }
             return
         }
+        guard isCurrentEditorialPreparation(generation), mode == coverBackgroundMode else { return }
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
         let palette: (cover: Color, coverDark: Bool, back: Color, backDark: Bool)
-        switch coverBackgroundMode {
+        switch mode {
         case .vibrant:
             let (cover, coverDark) = rotatedColor(
                 baseHue: h, baseSat: s, baseBri: b,
@@ -829,14 +1053,16 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// Extracts up to 2 distinct person stickers (transparent foreground + white outline).
-    private func computePersonStickers() async {
-        let photos = allItems.filter { !$0.isVideo }
+    private func computePersonStickers(generation: UUID) async {
+        guard isCurrentEditorialPreparation(generation) else { return }
+        let photos = editorialItems.filter { !$0.isVideo }
         guard !photos.isEmpty else { personStickers = []; return }
         // Scan the cover photos first (most likely to contain the day's people),
         // then the rest chronologically.
         let coverIDs = Set(coverPhotos.map(\.id))
         let ordered = coverPhotos + photos.filter { !coverIDs.contains($0.id) }
         let stickers = await PersonStickerExtractor.shared.extract(from: ordered, max: 2)
+        guard isCurrentEditorialPreparation(generation) else { return }
         personStickers = stickers
     }
 
@@ -845,7 +1071,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// Sets scattered cover photos from the tunnel layer that landed on this day.
     /// Matches tunnel photos to this day's PhotoItems by asset identifier.
     func setTunnelCoverPhotos(from layer: TunnelLayer, drift: CGSize = .zero) {
-        let itemByID = Dictionary(allItems.map { ($0.asset.localIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
+        let itemByID = Dictionary(editorialItems.map { ($0.asset.localIdentifier, $0) }, uniquingKeysWith: { a, _ in a })
         var result: [ScatteredCoverPhoto] = []
         for tp in layer.photos {
             guard let item = itemByID[tp.assetIdentifier] else { continue }
@@ -868,7 +1094,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// Generates scattered cover photos for non-tunnel days: picks 3-5 random
     /// photos and assigns tube-wall-like coordinates.
     private func computeScatteredCoverPhotos() {
-        let photos = allItems.filter { !$0.isVideo }
+        let photos = editorialItems.filter { !$0.isVideo }
         guard !photos.isEmpty else { scatteredCoverPhotos = []; return }
         let count = min(photos.count, Int.random(in: 3...5))
         let chosen = photos.shuffled().prefix(count)
@@ -1030,18 +1256,22 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return tint(from: base).1 ? .dark : .light
     }
 
-    private func applyVisionGrouping() async {
-        guard allItems.count > 1 else { return }
-        await VisionSimilarity.shared.warmUp(Array(allItems.prefix(150)))
+    private func applyVisionGrouping(generation: UUID? = nil) async {
+        let items = allItems
+        guard items.count > 1 else { return }
+        await VisionSimilarity.shared.warmUp(Array(items.prefix(150)))
+        guard isCurrentFilterPreparation(generation) else { return }
 
         // Precompute Vision distances between consecutive items.
         var distances: [String: Float] = [:]
-        for i in 1..<allItems.count {
-            let a = allItems[i - 1], b = allItems[i]
+        for i in 1..<items.count {
+            guard isCurrentFilterPreparation(generation) else { return }
+            let a = items[i - 1], b = items[i]
             if let d = await VisionSimilarity.shared.distance(a, b) {
                 distances["\(a.id)|\(b.id)"] = d
             }
         }
+        guard isCurrentFilterPreparation(generation) else { return }
         visionDistances = distances
         rebuildSections()
     }
@@ -1135,11 +1365,14 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return nil
     }
 
-    private func resolveSegmentNames() async {
-        for segment in routeSegments where segmentNames[segment.id] == nil {
+    private func resolveSegmentNames(generation: UUID? = nil) async {
+        let segments = routeSegments
+        for segment in segments where segmentNames[segment.id] == nil {
+            guard isCurrentFilterPreparation(generation) else { return }
             let loc = CLLocation(latitude: segment.coordinate.latitude,
                                  longitude: segment.coordinate.longitude)
             if let name = await LocationResolver.shared.name(for: loc) {
+                guard isCurrentFilterPreparation(generation) else { return }
                 segmentNames[segment.id] = name
             }
         }
@@ -1147,7 +1380,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Total travel distance along the trajectory, in kilometers.
     var travelKilometers: Double {
-        let locations = routeLocations
+        routeDistanceKilometers(for: routeLocations)
+    }
+
+    private func routeDistanceKilometers(for locations: [CLLocation]) -> Double {
         guard locations.count >= 2 else { return 0 }
         var meters: CLLocationDistance = 0
         for i in 1..<locations.count {
@@ -1271,12 +1507,18 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return result
     }
 
-    func resolvePlaces() async {
+    func resolvePlaces(generation: UUID? = nil) async {
         // In place mode each section already carries its stop's resolved name.
         guard !hasRoute else { return }
-        for index in sections.indices {
-            guard let location = sections[index].anchorLocation else { continue }
+        let targets = sections.compactMap { section -> (UUID, CLLocation)? in
+            guard let location = section.anchorLocation else { return nil }
+            return (section.id, location)
+        }
+        for (sectionID, location) in targets {
+            guard isCurrentFilterPreparation(generation) else { return }
             if let name = await LocationResolver.shared.name(for: location) {
+                guard isCurrentFilterPreparation(generation),
+                      let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
                 sections[index].placeName = name
             }
         }
@@ -1299,23 +1541,21 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     func removeItems(ids: Set<String>) {
-        guard !ids.isEmpty else { return }
-        let toRemove = allItems.filter { ids.contains($0.id) }
-        for item in toRemove {
-            remove(item)
-        }
+        guard allItemsUnfiltered.contains(where: { ids.contains($0.id) }) else { return }
+        sourceRevision = UUID()
+        allItemsUnfiltered.removeAll { ids.contains($0.id) }
+        pendingSourceItems?.removeAll { ids.contains($0.id) }
+        allItems.removeAll { ids.contains($0.id) }
+        favoriteIDs.subtract(ids)
+        hiddenIDs.subtract(ids)
+        for id in ids { photoFrameColors.removeValue(forKey: id) }
+        invalidateEditorialPreparation()
+        applySharedFilter(animated: true, force: true)
+        scheduleReprepareAfterFilterChange()
     }
 
     private func remove(_ item: PhotoItem) {
-        allItems.removeAll { $0.id == item.id }
-        favoriteIDs.remove(item.id)
-        hiddenIDs.remove(item.id)
-        for index in sections.indices {
-            for blockIndex in sections[index].blocks.indices {
-                sections[index].blocks[blockIndex].items.removeAll { $0.id == item.id }
-            }
-            sections[index].blocks.removeAll { $0.items.isEmpty }
-        }
+        removeItems(ids: [item.id])
     }
 }
 

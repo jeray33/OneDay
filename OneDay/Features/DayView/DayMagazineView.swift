@@ -57,7 +57,16 @@ struct DayMagazineView: View {
                     VStack(spacing: 0) {
                         Color.clear.frame(height: 0).id("scroll_top")
 
-                        if model.showsPhotoMap {
+                        if model.allItems.isEmpty {
+                            Text("当前筛选下，这一天没有可显示内容")
+                                .font(Theme.serif(17))
+                                .foregroundStyle(Theme.ink.opacity(0.65))
+                                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 40)
+                        }
+
+                        if !model.allItems.isEmpty && model.showsPhotoMap {
                             DayRouteMapBanner(locations: model.routeLocations,
                                               stopCoordinates: model.routeStopCoordinates,
                                               stopNames: model.routeStops.map(\.name),

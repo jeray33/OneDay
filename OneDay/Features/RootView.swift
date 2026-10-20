@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import Photos
 import UIKit
 import CoreHaptics
@@ -12,9 +13,18 @@ struct RootView: View {
 
     @State private var phase: Phase = .home
     @State private var dayModel: DayViewModel?
-    @State private var eligibleDays: [Date] = []
+    @State private var navigationDays: [Date] = []
+    @State private var navigationDaysLoaded = false
+    @State private var navigationDaysLoading = false
     @State private var flashFrames: [FlashFrame] = []
     @State private var tunnelLayers: [TunnelLayer] = []
+    @State private var rewindCandidateIndex: RewindCandidateIndex?
+    @State private var tunnelSelections: [TunnelDaySelection] = []
+    @State private var tunnelPreparationTask: Task<Void, Never>?
+    @State private var tunnelUpdateTask: Task<Void, Never>?
+    @State private var tunnelUpdateID = UUID()
+    @State private var tunnelInteractionLocked = false
+    @State private var tunnelClassificationRevision = 0
     @State private var tunnelStartDate: Date?
     @State private var rewindHomeID = UUID()
     @State private var rewindPreparationID = UUID()
@@ -25,6 +35,10 @@ struct RootView: View {
     @State private var historyEntries: [TodayInHistoryEntry] = []
     @State private var historyLoading = false
     @State private var historyReferenceDay: Date?
+    @State private var historyPreparationID = UUID()
+    @State private var dayNavigationRequestID = UUID()
+    @State private var sourceRefreshRequestID = UUID()
+    @State private var tunnelNeedsUpdate = false
     @State private var showPermissionAlert = false
     @State private var showEmptyAlert = false
     @State private var dayFromTunnel = false
@@ -33,10 +47,15 @@ struct RootView: View {
     @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.tunnelPhotoScale") private var tunnelPhotoScaleRaw = TunnelPhotoScale.medium.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
+    @AppStorage(MediaCategorySelection.rewindStorageKey)
+    private var rewindMediaSelection = MediaCategorySelection.all
 
     private var rewindMode: RewindMode { RewindMode(rawValue: rewindModeRaw) ?? .flash }
     private var tunnelPhotoScale: TunnelPhotoScale { TunnelPhotoScale(rawValue: tunnelPhotoScaleRaw) ?? .medium }
     private var rewindSortOrder: RewindSortOrder { RewindSortOrder(rawValue: rewindSortOrderRaw) ?? .reverse }
+    private var effectiveRewindMediaSelection: MediaCategorySelection {
+        rewindMediaSelection.includingPhotos
+    }
 
     private let tunnelMinPhotos = 3
     private let tunnelPhotosPerDay = 3...5
@@ -58,7 +77,20 @@ struct RootView: View {
                         initialLoadProgress: tunnelOpeningProgress,
                         isOpening: tunnelOpeningActive,
                         dateNamespace: dateNamespace,
+                        mediaSelection: Binding(
+                            get: { effectiveRewindMediaSelection },
+                            set: { rewindMediaSelection = $0.includingPhotos }
+                        ),
                         startDate: tunnelStartDate,
+                        onInteractionLockChanged: { locked in
+                            tunnelInteractionLocked = locked
+                            if locked {
+                                tunnelUpdateID = UUID()
+                                tunnelUpdateTask?.cancel()
+                            } else if tunnelNeedsUpdate {
+                                scheduleTunnelUpdate()
+                            }
+                        },
                         onLand: { req in
                             let target = req.date
                             Task {
@@ -150,27 +182,52 @@ struct RootView: View {
             prepareHaptics()
         }
         .task(id: rewindModeRaw) {
-            if rewindMode == .rewind { await prepareRewind() }
+            guard rewindMode == .rewind else { return }
+            let task = Task { await prepareRewind() }
+            tunnelPreparationTask = task
+            await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
         }
         .onChange(of: dayModel?.date) { _, newDate in
             guard let newDate else {
                 historyEntries = []
                 historyLoading = false
                 historyReferenceDay = nil
+                historyPreparationID = UUID()
+                dayNavigationRequestID = UUID()
+                navigationDaysLoading = false
+                sourceRefreshRequestID = UUID()
                 return
             }
             guard phase == .day else { return }
-            prepareTodayInHistoryIfNeeded(for: newDate)
+            refreshDayContext(for: newDate)
         }
         .onChange(of: phase) { _, newPhase in
             if newPhase == .day, let date = dayModel?.date {
-                prepareTodayInHistoryIfNeeded(for: date)
+                refreshDayContext(for: date)
+            } else if newPhase != .day {
+                dayNavigationRequestID = UUID()
+                navigationDaysLoading = false
+                sourceRefreshRequestID = UUID()
+            }
+            if newPhase == .home, tunnelNeedsUpdate, rewindMode == .rewind {
+                tunnelInteractionLocked = false
+                scheduleTunnelUpdate()
             }
         }
         .onChange(of: rewindModeRaw) { _, newValue in
             let mode = RewindMode(rawValue: newValue) ?? .flash
             if mode != .rewind, phase == .home {
+                tunnelPreparationTask?.cancel()
+                tunnelUpdateTask?.cancel()
+                tunnelUpdateID = UUID()
                 rewindPreparationID = UUID()
+                rewindCandidateIndex = nil
+                tunnelSelections = []
+                tunnelNeedsUpdate = false
                 tunnelOpeningProgress = 0
                 tunnelOpeningActive = true
                 tunnelLayers = []
@@ -182,12 +239,146 @@ struct RootView: View {
             }
         }
         .onChange(of: rewindSortOrderRaw) { _, _ in
-            if rewindMode == .rewind, phase == .home,
-               !tunnelOpeningActive, !tunnelLayers.isEmpty {
+            guard rewindMode == .rewind, phase == .home else { return }
+            if !tunnelOpeningActive, !tunnelLayers.isEmpty {
                 tunnelLayers = applyRewindSort(to: tunnelLayers)
-                tunnelStartDate = nil
-                rewindHomeID = UUID()
+                let byDate = Dictionary(uniqueKeysWithValues: tunnelSelections.map { ($0.date, $0) })
+                tunnelSelections = tunnelLayers.compactMap { byDate[$0.date] }
             }
+            scheduleTunnelUpdate()
+        }
+        .onChange(of: rewindMediaSelection) { _, _ in
+            guard rewindMode == .rewind, phase == .home else { return }
+            scheduleTunnelUpdate()
+        }
+        .onChange(of: tunnelOpeningActive) { _, opening in
+            if !opening, tunnelNeedsUpdate { scheduleTunnelUpdate() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .imageClassificationChanged).receive(on: RunLoop.main)) { notification in
+            let changed = notification.userInfo?["changed"] as? Bool ?? false
+            let finished = notification.userInfo?["finished"] as? Bool ?? false
+            if changed {
+                if phase == .day { dayModel?.refreshMediaClassifications() }
+                if effectiveRewindMediaSelection.needsImageClassification {
+                    tunnelClassificationRevision += 1
+                    tunnelNeedsUpdate = true
+                }
+            }
+            guard finished else { return }
+            if tunnelNeedsUpdate, phase == .home, rewindMode == .rewind {
+                scheduleTunnelUpdate()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .photoLibraryContentChanged)
+            .debounce(for: .milliseconds(350), scheduler: RunLoop.main)) { _ in
+            refreshLibraryContext()
+        }
+    }
+
+    private func scheduleTunnelUpdate() {
+        tunnelNeedsUpdate = true
+        guard phase == .home, rewindMode == .rewind, !tunnelOpeningActive,
+              !tunnelInteractionLocked, rewindCandidateIndex != nil else { return }
+        // Stop stale initial sharpening, not the view's opening/camera state.
+        tunnelPreparationTask?.cancel()
+        rewindPreparationID = UUID()
+        tunnelUpdateTask?.cancel()
+        let requestID = UUID()
+        tunnelUpdateID = requestID
+        tunnelUpdateTask = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            await updateTunnelInPlace(requestID: requestID)
+        }
+    }
+
+    private func updateTunnelInPlace(requestID: UUID) async {
+        guard let index = rewindCandidateIndex else { return }
+        let selection = effectiveRewindMediaSelection
+        let order = rewindSortOrder
+        let classificationRevision = tunnelClassificationRevision
+        await OtherImageClassificationService.shared.indexIfNeeded(matching: selection)
+        let plan = await index.plan(
+            matching: selection, preserving: tunnelSelections,
+            minimumCount: tunnelMinPhotos, maximumDays: rewindRandomCount + 1,
+            newestFirst: order == .reverse
+        )
+        guard tunnelUpdateIsCurrent(requestID, selection: selection, order: order) else { return }
+        let groups = index.groups(for: plan)
+        // Remove excluded pictures immediately, but keep every surviving object.
+        let existingByDate = Dictionary(uniqueKeysWithValues: tunnelLayers.map { ($0.date, $0) })
+        let retained = plan.map { day in
+            let photos = Dictionary(uniqueKeysWithValues:
+                (existingByDate[day.date]?.photos ?? []).map { ($0.assetIdentifier, $0) })
+            return TunnelLayer(date: day.date, photos: day.assetIdentifiers.compactMap { photos[$0] })
+        }
+        tunnelSelections = plan
+        tunnelLayers = retained
+
+        let retainedIDs = Set(retained.flatMap(\.photos).map(\.assetIdentifier))
+        let missing = groups.compactMap { entry -> (date: Date, assets: [PHAsset])? in
+            let assets = entry.assets.filter { !retainedIDs.contains($0.localIdentifier) }
+            return assets.isEmpty ? nil : (entry.date, assets)
+        }
+        let batches = stride(from: 0, to: missing.count, by: tunnelLayerBatchSize).map {
+            Array(missing[$0..<min($0 + tunnelLayerBatchSize, missing.count)])
+        }
+        let photoScale = tunnelPhotoScale
+        for batch in batches {
+            let images = await ImageLoader.shared.thumbnails(
+                assets: batch.flatMap(\.assets), size: tunnelPreviewSize, quality: .fast,
+                priority: .userInitiated, contentMode: .aspectFit, maxConcurrent: tunnelLoadConcurrency
+            )
+            guard tunnelUpdateIsCurrent(requestID, selection: selection, order: order) else { return }
+            mergeTunnelPhotoChanges(Self.makeTunnelLayers(
+                batch, images: images, photoScale: photoScale, preserving: tunnelLayers
+            ))
+        }
+        guard tunnelUpdateIsCurrent(requestID, selection: selection, order: order) else { return }
+        // A classification batch may have arrived while these thumbnails loaded.
+        // Keep the pending flag until a plan includes that newer batch.
+        tunnelNeedsUpdate = classificationRevision != tunnelClassificationRevision
+        let currentPhotos = Dictionary(uniqueKeysWithValues:
+            tunnelLayers.flatMap(\.photos).map { ($0.assetIdentifier, $0) })
+        let unsharpened = groups.compactMap { entry -> (date: Date, assets: [PHAsset])? in
+            let assets = entry.assets.filter { currentPhotos[$0.localIdentifier]?.isHighQuality != true }
+            return assets.isEmpty ? nil : (entry.date, assets)
+        }
+        let sharpBatches = stride(from: 0, to: unsharpened.count, by: tunnelLayerBatchSize).map {
+            Array(unsharpened[$0..<min($0 + tunnelLayerBatchSize, unsharpened.count)])
+        }
+        // Do not re-request retained sharp images. Interrupted initial previews
+        // still get their pending quality upgrade without restarting the opening.
+        for batch in sharpBatches {
+            let images = await ImageLoader.shared.thumbnails(
+                assets: batch.flatMap(\.assets), size: tunnelHighQualitySize, quality: .highQuality,
+                priority: .background, contentMode: .aspectFit, maxConcurrent: tunnelLoadConcurrency
+            )
+            guard tunnelUpdateIsCurrent(requestID, selection: selection, order: order) else { return }
+            mergeTunnelPhotoChanges(Self.makeTunnelLayers(
+                batch, images: images, photoScale: photoScale, preserving: tunnelLayers, highQuality: true
+            ))
+        }
+    }
+
+    private func tunnelUpdateIsCurrent(
+        _ requestID: UUID, selection: MediaCategorySelection, order: RewindSortOrder
+    ) -> Bool {
+        tunnelUpdateID == requestID && !Task.isCancelled && phase == .home
+            && rewindMode == .rewind && !tunnelInteractionLocked
+            && effectiveRewindMediaSelection == selection && rewindSortOrder == order
+    }
+
+    private func mergeTunnelPhotoChanges(_ changed: [TunnelLayer]) {
+        let changedByDate = Dictionary(uniqueKeysWithValues: changed.map { ($0.date, $0) })
+        let currentByDate = Dictionary(uniqueKeysWithValues: tunnelLayers.map { ($0.date, $0) })
+        tunnelLayers = tunnelSelections.map { day in
+            var photos = Dictionary(uniqueKeysWithValues:
+                (currentByDate[day.date]?.photos ?? []).map { ($0.assetIdentifier, $0) })
+            for photo in changedByDate[day.date]?.photos ?? [] {
+                photos[photo.assetIdentifier] = photo
+            }
+            return TunnelLayer(date: day.date, photos: day.assetIdentifiers.compactMap { photos[$0] })
         }
     }
 
@@ -249,9 +440,7 @@ struct RootView: View {
         tunnelOpeningActive = true
         defer {
             if rewindPreparationID == preparationID {
-                if tunnelOpeningProgress < 1 {
-                    tunnelOpeningActive = false
-                }
+                tunnelOpeningActive = false
             }
         }
 
@@ -264,13 +453,18 @@ struct RootView: View {
         // Warm the shared-album cache off the critical path so the landing
         // day's `items(on:)` does not stall the cover entrance.
         Task.detached(priority: .utility) { await SharedAlbumCache.shared.warm() }
-        let group = await PhotoLibraryService.shared.rewindGroup(
-            randomCount: rewindRandomCount,
-            minPhotos: tunnelMinPhotos,
-            photosPerDay: tunnelPhotosPerDay
+        let index = await PhotoLibraryService.shared.rewindCandidates(photosPerDay: tunnelPhotosPerDay)
+        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
+        rewindCandidateIndex = index
+        let selection = effectiveRewindMediaSelection
+        await OtherImageClassificationService.shared.indexIfNeeded(matching: selection)
+        let plan = await index.plan(
+            matching: selection, preserving: [], minimumCount: tunnelMinPhotos,
+            maximumDays: rewindRandomCount + 1, newestFirst: rewindSortOrder == .reverse
         )
         guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
-        let sortedGroup = sortRewindGroup(group, by: rewindSortOrder)
+        tunnelSelections = plan
+        let sortedGroup = index.groups(for: plan)
         guard !sortedGroup.isEmpty else {
             showEmptyAlert = true
             return
@@ -392,12 +586,10 @@ struct RootView: View {
             initialGroup,
             images: initialHighQualityImages,
             photoScale: photoScale,
-            preserving: tunnelLayers
+            preserving: tunnelLayers,
+            highQuality: true
         )
         mergeTunnelLayers(sharpenedInitialLayers)
-
-        eligibleDays = await PhotoLibraryService.shared.eligibleDays()
-        guard rewindPreparationID == preparationID, !Task.isCancelled else { return }
 
         // Upgrade previews in small, low-priority batches. The shared loader
         // reuses cached results and cancellation propagates when the mode changes.
@@ -416,7 +608,8 @@ struct RootView: View {
                 batch,
                 images: images,
                 photoScale: photoScale,
-                preserving: tunnelLayers
+                preserving: tunnelLayers,
+                highQuality: true
             )
             mergeTunnelLayers(loaded)
         }
@@ -426,7 +619,8 @@ struct RootView: View {
         _ group: [(date: Date, assets: [PHAsset])],
         images: [UIImage?],
         photoScale: TunnelPhotoScale,
-        preserving existingLayers: [TunnelLayer]
+        preserving existingLayers: [TunnelLayer],
+        highQuality: Bool = false
     ) -> [TunnelLayer] {
         let existingByDate = Dictionary(
             uniqueKeysWithValues: existingLayers.map { ($0.date, $0) }
@@ -454,7 +648,9 @@ struct RootView: View {
                             angle: existing.angle,
                             radius: existing.radius,
                             zJitter: existing.zJitter,
-                            size: existing.size
+                            size: existing.size,
+                            id: existing.id,
+                            isHighQuality: highQuality
                         ))
                     } else {
                         let aspect = asset.pixelHeight > 0
@@ -471,7 +667,8 @@ struct RootView: View {
                             angle: dayPhase + baseAngle + Double.random(in: -0.4...0.4),
                             radius: Double.random(in: 0.45...1.0),
                             zJitter: Double.random(in: -0.34...0.34),
-                            size: size
+                            size: size,
+                            isHighQuality: highQuality
                         ))
                     }
                 } else if let existing = existingPhotos[asset.localIdentifier] {
@@ -510,7 +707,8 @@ struct RootView: View {
                 return
             }
 
-            eligibleDays = days
+            navigationDays = days
+            navigationDaysLoaded = true
 
             dayModel = DayViewModel(date: target, items: items)
             tunnelLayers = []
@@ -535,6 +733,25 @@ struct RootView: View {
         return items.isEmpty ? nil : items
     }
 
+    private func refreshDayContext(for day: Date) {
+        prepareTodayInHistoryIfNeeded(for: day)
+        loadNavigationDaysIfNeeded()
+    }
+
+    private func loadNavigationDaysIfNeeded() {
+        guard !navigationDaysLoaded, !navigationDaysLoading else { return }
+        navigationDaysLoading = true
+        let requestID = UUID()
+        dayNavigationRequestID = requestID
+        Task {
+            let days = await PhotoLibraryService.shared.eligibleDays()
+            guard dayNavigationRequestID == requestID, phase == .day else { return }
+            navigationDays = days
+            navigationDaysLoaded = true
+            navigationDaysLoading = false
+        }
+    }
+
     private func prepareTodayInHistoryIfNeeded(for day: Date) {
         let referenceDate = Calendar.current.startOfDay(for: day)
         guard historyReferenceDay != referenceDate else { return }
@@ -542,27 +759,34 @@ struct RootView: View {
         historyEntries = []
         historyLoading = true
 
+        let requestID = UUID()
+        historyPreparationID = requestID
         Task {
             let entries = await PhotoLibraryService.shared.todayInHistory(referenceDate: referenceDate)
-            guard historyReferenceDay == referenceDate else { return }
+            guard historyPreparationID == requestID,
+                  historyReferenceDay == referenceDate else { return }
             historyEntries = entries
             historyLoading = false
         }
     }
 
-    private func sortRewindGroup(
-        _ group: [(date: Date, assets: [PHAsset])],
-        by order: RewindSortOrder
-    ) -> [(date: Date, assets: [PHAsset])] {
-        guard !group.isEmpty else { return group }
-        let calendar = Calendar.current
-        let anchor = group.max { $0.date < $1.date }!
-        let rest = group.filter { !calendar.isDate($0.date, inSameDayAs: anchor.date) }
-        switch order {
-        case .reverse:
-            return [anchor] + rest.sorted { $0.date > $1.date }
-        case .random:
-            return [anchor] + rest.shuffled()
+    private func refreshLibraryContext() {
+        navigationDaysLoaded = false
+        navigationDaysLoading = false
+        dayNavigationRequestID = UUID()
+        historyReferenceDay = nil
+        historyPreparationID = UUID()
+        guard phase == .day, let model = dayModel else { return }
+        refreshDayContext(for: model.date)
+        let requestID = UUID()
+        sourceRefreshRequestID = requestID
+        let sourceRevision = model.sourceRevision
+        Task {
+            let items = await PhotoLibraryService.shared.items(on: model.date)
+            guard sourceRefreshRequestID == requestID, phase == .day,
+                  dayModel?.instanceID == model.instanceID,
+                  model.sourceRevision == sourceRevision else { return }
+            model.replaceSourceItems(items)
         }
     }
 
@@ -580,28 +804,30 @@ struct RootView: View {
     }
 
     private func previousDate(for date: Date) -> Date? {
-        let current = Calendar.current.startOfDay(for: date)
-        return eligibleDays.first { $0 < current }
+        DayMediaScope.previousDay(before: date, in: navigationDays)
     }
 
     private func nextDate(for date: Date) -> Date? {
-        let current = Calendar.current.startOfDay(for: date)
-        return eligibleDays.last { $0 > current }
+        DayMediaScope.nextDay(after: date, in: navigationDays)
     }
 
     private func navigate(to date: Date) {
         guard !navLoading else { return }
+        let origin = dayModel?.instanceID
         navLoading = true
         Task {
             defer { navLoading = false }
-            if let model = await makeDayModel(for: date) {
+            let model = await makeDayModel(for: date)
+            guard phase == .day, dayModel?.instanceID == origin else { return }
+            if let model {
                 dayFromTunnel = false
                 withAnimation(.easeInOut(duration: 0.35)) {
                     dayModel = model
                     phase = .day
                 }
             } else {
-                eligibleDays = await PhotoLibraryService.shared.eligibleDays()
+                navigationDaysLoaded = false
+                loadNavigationDaysIfNeeded()
             }
         }
     }
@@ -632,7 +858,7 @@ struct RootView: View {
     }
 
     private func closeDay() {
-        if rewindMode == .rewind, !tunnelLayers.isEmpty {
+        if rewindMode == .rewind, rewindCandidateIndex != nil {
             tunnelStartDate = dayModel?.date
             rewindHomeID = UUID()
             withAnimation(.easeInOut(duration: 0.4)) {
@@ -644,10 +870,19 @@ struct RootView: View {
     }
 
     private func goHome() {
+        tunnelPreparationTask?.cancel()
+        tunnelUpdateTask?.cancel()
+        tunnelUpdateID = UUID()
+        rewindPreparationID = UUID()
+        rewindCandidateIndex = nil
+        tunnelSelections = []
+        tunnelNeedsUpdate = false
         withAnimation(.easeInOut(duration: 0.4)) {
             phase = .home
             dayModel = nil
-            eligibleDays = []
+            navigationDays = []
+            navigationDaysLoaded = false
+            navigationDaysLoading = false
             flashFrames = []
             tunnelLayers = []
             tunnelStartDate = nil

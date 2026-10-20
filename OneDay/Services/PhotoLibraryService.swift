@@ -102,26 +102,13 @@ final class PhotoLibraryService {
 
     /// UserDefaults key for the contributor-match test toggle. Kept in sync with
     /// `DayViewModel.sharedContributorMatchKey`.
-    static let sharedContributorMatchKey = "OneDay.sharedContributorMatch"
+    nonisolated static let sharedContributorMatchKey = "OneDay.sharedContributorMatch"
 
-    /// Test toggle controlling whether shared-album photos the user contributed
-    /// themselves are distinguished (and hidden) from those shared by others.
-    /// Default `true`. Read by `todayInHistory`, which has no view model to
-    /// apply the live filter; the day view applies the same flag through
-    /// `DayViewModel.sharedContributorMatch`.
-    nonisolated static var sharedContributorMatchEnabled: Bool {
-        UserDefaults.standard.object(forKey: sharedContributorMatchKey) as? Bool ?? true
-    }
-
-    /// Distinct calendar days (start-of-day) that contain at least one eligible asset, excluding today.
+    /// All supported-media days, excluding today. Independent from display filters.
     func eligibleDays() async -> [Date] {
         let shared = await SharedAlbumCache.shared.current()
         return await Task.detached(priority: .userInitiated) { [shared] in
             let options = PHFetchOptions()
-            options.predicate = NSPredicate(
-                format: "NOT ((mediaSubtype & %d) != 0)",
-                PHAssetMediaSubtype.photoScreenshot.rawValue
-            )
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
             let calendar = Calendar.current
@@ -129,10 +116,11 @@ final class PhotoLibraryService {
             var days = Set<Date>()
 
             func consider(_ asset: PHAsset) {
-                guard let date = asset.creationDate else { return }
-                guard MediaFilter.isEligible(asset) else { return }
-                let day = calendar.startOfDay(for: date)
-                if day < today { days.insert(day) }
+                guard DayMediaScope.isSupported(asset.mediaType),
+                      let day = DayMediaScope.navigationDay(
+                        for: asset.creationDate, today: today, calendar: calendar
+                      ) else { return }
+                days.insert(day)
             }
 
             // General library.
@@ -141,10 +129,7 @@ final class PhotoLibraryService {
             }
 
             // Shared albums are invisible to the general fetch above, so merge
-            // them in explicitly. Without this, days that contain only
-            // shared-album photos never appear in the timeline. (Day listing
-            // is contributor-agnostic; the contributor-match filter only
-            // affects what is shown/badged inside a day, not which days exist.)
+            // them in explicitly. Day listing remains contributor-agnostic.
             for asset in shared.sharedAssets {
                 consider(asset)
             }
@@ -157,54 +142,39 @@ final class PhotoLibraryService {
         await eligibleDays().randomElement()
     }
 
-    /// Build the "time rewind" tunnel group: the most recent eligible day up to and
-    /// including today, plus `randomCount` random other eligible days, each day
-    /// contributing `photosPerDay` random photos. The first day is the anchor (today
-    /// if it has eligible photos, otherwise the nearest past day). The remaining
-    /// days are returned in an unspecified order; the caller applies the user's
-    /// sort order (reverse or random).
-    func rewindGroup(
-        randomCount: Int,
-        minPhotos: Int,
-        photosPerDay: ClosedRange<Int>
-    ) async -> [(date: Date, assets: [PHAsset])] {
+    /// Keep every supported candidate, including currently hidden categories.
+    /// Date/asset priorities and preview counts stay fixed until a new session.
+    func rewindCandidates(photosPerDay: ClosedRange<Int>) async -> RewindCandidateIndex {
         await Task.detached(priority: .userInitiated) {
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
-                format: "mediaType == %d AND NOT ((mediaSubtype & %d) != 0)",
+                format: "mediaType == %d OR mediaType == %d",
                 PHAssetMediaType.image.rawValue,
-                PHAssetMediaSubtype.photoScreenshot.rawValue
+                PHAssetMediaType.video.rawValue
             )
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
             let result = PHAsset.fetchAssets(with: options)
 
             let calendar = Calendar.current
             let today = calendar.startOfDay(for: Date())
-            var groups: [Date: [PHAsset]] = [:]
+            var groups: [Date: [String]] = [:]
+            var assetsByID: [String: PHAsset] = [:]
 
             result.enumerateObjects { asset, _, _ in
-                guard MediaFilter.isEligible(asset) else { return }
                 guard let date = asset.creationDate else { return }
                 let day = calendar.startOfDay(for: date)
                 guard day <= today else { return }
-                groups[day, default: []].append(asset)
+                groups[day, default: []].append(asset.localIdentifier)
+                assetsByID[asset.localIdentifier] = asset
             }
 
-            // Anchor: the most recent day that has at least one eligible photo.
-            let allDaysDesc = groups.keys.sorted(by: >)
-            guard let anchorDay = allDaysDesc.first else { return [] }
-
-            // Other days must have enough photos to look good in the tunnel.
-            let candidateDays = allDaysDesc.filter { $0 != anchorDay && groups[$0]!.count >= minPhotos }
-            let randomPicked = candidateDays.shuffled().prefix(min(randomCount, candidateDays.count))
-
-            let selectedDays = [anchorDay] + randomPicked
-            return selectedDays.map { day in
-                let all = groups[day]!
-                let count = Int.random(in: photosPerDay)
-                let chosen = all.shuffled().prefix(min(count, all.count))
-                return (date: day, assets: Array(chosen))
+            let days = groups.keys.sorted(by: >).shuffled().map { date in
+                TunnelCandidateDay(
+                    date: date, assetIdentifiers: groups[date, default: []].shuffled(),
+                    previewCount: Int.random(in: photosPerDay)
+                )
             }
+            return RewindCandidateIndex(days: days, assetsByID: assetsByID)
         }.value
     }
 
@@ -244,50 +214,39 @@ final class PhotoLibraryService {
     /// so the result is always a real, navigable day.
     func nearestEligibleDay(before date: Date) async -> Date? {
         let days = await eligibleDays() // sorted descending (newest first)
-        let current = Calendar.current.startOfDay(for: date)
-        return days.first { $0 < current }
+        return DayMediaScope.previousDay(before: date, in: days)
     }
 
     /// Nearest eligible day strictly later than `date` (today is already excluded).
     func nearestEligibleDay(after date: Date) async -> Date? {
         let days = await eligibleDays() // sorted descending (newest first)
-        let current = Calendar.current.startOfDay(for: date)
-        return days.last { $0 > current }
+        return DayMediaScope.nextDay(after: date, in: days)
     }
 
-    /// Calendar days that share the reference month/day. Each year contributes up to
-    /// `photoLimit` random still photos; membership stays stable for this result.
-    func todayInHistory(referenceDate: Date = Date(), photoLimit: Int = 3) async -> [TodayInHistoryEntry] {
+    /// Same-month/day entries from all supported media. Shared-album duplicates
+    /// contributed by the owner are excluded, regardless of body display settings.
+    func todayInHistory(
+        referenceDate: Date = Date(),
+        photoLimit: Int = 3
+    ) async -> [TodayInHistoryEntry] {
         let shared = await SharedAlbumCache.shared.current()
-        let matchEnabled = Self.sharedContributorMatchEnabled
-        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { [shared, matchEnabled] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
-            // When the contributor-match test toggle is on, merge only photos
-            // shared by others; otherwise merge every shared-album photo.
-            let sharedToMerge = matchEnabled ? shared.foreignSharedAssets : shared.sharedAssets
+        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { [shared] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
+            let sharedToMerge = shared.foreignSharedAssets
             let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             let options = PHFetchOptions()
-            options.predicate = NSPredicate(
-                format: "NOT ((mediaSubtype & %d) != 0)",
-                PHAssetMediaSubtype.photoScreenshot.rawValue
-            )
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
             let result = PHAsset.fetchAssets(with: options)
 
             let calendar = Calendar.current
-            let reference = calendar.dateComponents([.year, .month, .day], from: referenceDate)
-            guard let referenceMonth = reference.month,
-                  let referenceDay = reference.day else { return ([], sharedIDs) }
-
             var assetsByDate: [Date: [PHAsset]] = [:]
             var seen = Set<String>()
 
             func consider(_ asset: PHAsset) {
-                guard MediaFilter.isEligible(asset), let date = asset.creationDate else { return }
-                let components = calendar.dateComponents([.year, .month, .day], from: date)
-                guard components.month == referenceMonth,
-                      components.day == referenceDay else { return }
+                guard DayMediaScope.isSupported(asset.mediaType),
+                      let day = DayMediaScope.historyDay(
+                        for: asset.creationDate, referenceDate: referenceDate, calendar: calendar
+                      ) else { return }
                 guard seen.insert(asset.localIdentifier).inserted else { return }
-                let day = calendar.startOfDay(for: date)
                 assetsByDate[day, default: []].append(asset)
             }
 
@@ -301,9 +260,8 @@ final class PhotoLibraryService {
             let mapped = assetsByDate.keys.sorted(by: >).map { date in
                 let allAssets = assetsByDate[date] ?? []
                 let selected = allAssets
-                    .filter { $0.mediaType == .image }
                     .shuffled()
-                    .prefix(min(photoLimit, allAssets.filter { $0.mediaType == .image }.count))
+                    .prefix(min(photoLimit, allAssets.count))
                     .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
                 let year = calendar.component(.year, from: date)
                 return (date, year, allAssets, Array(selected))
@@ -335,9 +293,8 @@ final class PhotoLibraryService {
 
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
-                format: "creationDate >= %@ AND creationDate < %@ AND NOT ((mediaSubtype & %d) != 0)",
-                start as NSDate, end as NSDate,
-                PHAssetMediaSubtype.photoScreenshot.rawValue
+                format: "creationDate >= %@ AND creationDate < %@",
+                start as NSDate, end as NSDate
             )
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
 

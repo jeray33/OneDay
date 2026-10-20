@@ -28,13 +28,26 @@ struct TunnelLayer: Identifiable {
 
 /// A single photo floating on the tube wall of its day.
 struct TunnelPhoto: Identifiable {
-    let id = UUID()
+    let id: UUID
     let image: UIImage
     let assetIdentifier: String
     let angle: Double     // radians around the tube axis
     let radius: Double    // 0...1 fraction of the reference radius
     let zJitter: Double   // per-photo depth offset (drives staggered speed)
     let size: CGSize      // display size at scale = 1 (aspect-correct)
+    let isHighQuality: Bool
+
+    init(image: UIImage, assetIdentifier: String, angle: Double, radius: Double,
+         zJitter: Double, size: CGSize, id: UUID = UUID(), isHighQuality: Bool = false) {
+        self.id = id
+        self.image = image
+        self.assetIdentifier = assetIdentifier
+        self.angle = angle
+        self.radius = radius
+        self.zJitter = zJitter
+        self.size = size
+        self.isHighQuality = isHighQuality
+    }
 }
 
 enum TunnelPhotoBlur: String, CaseIterable, Identifiable {
@@ -75,7 +88,9 @@ struct TunnelRewindView: View {
     let initialLoadProgress: Double
     let isOpening: Bool
     let dateNamespace: Namespace.ID
+    @Binding var mediaSelection: MediaCategorySelection
     var startDate: Date? = nil
+    var onInteractionLockChanged: (Bool) -> Void
     var onLand: (TunnelDayRequest) -> Void
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -125,7 +140,16 @@ struct TunnelRewindView: View {
     private let dateRevealDelay: Double = 0.3   // seconds to wait before date starts (after tunnel begins)
 
     // MARK: Motion state
-    private enum Mode { case autoPlay, manualIdle, manualDrag, momentum, settling, photoZooming, rushingOut, done }
+    private enum Mode: Equatable {
+        case autoPlay, manualIdle, manualDrag, momentum, settling, photoZooming, rushingOut, done
+
+        var locksContent: Bool {
+            switch self {
+            case .settling, .photoZooming, .rushingOut, .done: return true
+            default: return false
+            }
+        }
+    }
 
     @State private var progress: Double
     @State private var clock: Double = 0
@@ -165,14 +189,18 @@ struct TunnelRewindView: View {
          initialLoadProgress: Double = 1,
          isOpening: Bool = false,
          dateNamespace: Namespace.ID,
+         mediaSelection: Binding<MediaCategorySelection>,
          startDate: Date? = nil,
+         onInteractionLockChanged: @escaping (Bool) -> Void = { _ in },
          onLand: @escaping (TunnelDayRequest) -> Void) {
         self.model = model
         self.layers = layers
         self.initialLoadProgress = initialLoadProgress
         self.isOpening = isOpening
         self.dateNamespace = dateNamespace
+        _mediaSelection = mediaSelection
         self.startDate = startDate
+        self.onInteractionLockChanged = onInteractionLockChanged
         self.onLand = onLand
         let startIndex = startDate.flatMap { d in
             layers.firstIndex { Calendar.current.isDate($0.date, inSameDayAs: d) }
@@ -206,7 +234,7 @@ struct TunnelRewindView: View {
         Double(index) * depthSpacing.factor - focal
     }
 
-    var body: some View {
+    private var tunnelContent: some View {
         GeometryReader { geo in
             ZStack {
                 background.color.ignoresSafeArea()
@@ -244,15 +272,7 @@ struct TunnelRewindView: View {
                         mode == .manualIdle || mode == .manualDrag || mode == .momentum
                     ) ? dragGesture(in: geo.size) : nil)
                     .onTapGesture { if mode == .autoPlay { handleTap() } }
-                if textPosition == .bottom {
-                    VStack {
-                        Spacer()
-                        animatedDateOverlay
-                            .padding(.bottom, 96)
-                    }
-                } else {
-                    animatedDateOverlay
-                }
+                tunnelDateOverlay
                 VStack {
                     Spacer()
                     if mode == .manualIdle && !openingIsActive {
@@ -293,12 +313,22 @@ struct TunnelRewindView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .environment(\.colorScheme, background.scheme)
         }
+    }
+
+    private var observedTunnelContent: some View {
+        tunnelContent
         .opacity(isFinishing ? 0 : 1)
         .onChange(of: layers.map(\.date), initial: true) { _, dates in
-            layerDates = dates
-            progress = clampTravel(progress)
-            updateFocus()
+            updateLayerDates(dates)
         }
+        .onChange(of: mode, initial: true) { _, mode in
+            onInteractionLockChanged(mode.locksContent)
+        }
+        .onDisappear { onInteractionLockChanged(false) }
+    }
+
+    var body: some View {
+        observedTunnelContent
         .onChange(of: initialLoadProgress, initial: true) { _, newProgress in
             openingTargetProgress = min(max(newProgress, 0), 1)
         }
@@ -313,6 +343,44 @@ struct TunnelRewindView: View {
             startDeviceMotion()
             defer { stopDeviceMotion() }
             await runLoop()
+        }
+    }
+
+    @ViewBuilder
+    private var tunnelDateOverlay: some View {
+        if layers.isEmpty && !isOpening {
+            Text("当前筛选下没有可回顾的内容")
+                .font(Theme.serif(15))
+                .foregroundStyle(.secondary)
+        } else if !layers.isEmpty {
+            if textPosition == .bottom {
+                VStack {
+                    Spacer()
+                    animatedDateOverlay.padding(.bottom, 96)
+                }
+            } else {
+                animatedDateOverlay
+            }
+        }
+    }
+
+    private func updateLayerDates(_ dates: [Date]) {
+        let oldProgress = progress
+        progress = TunnelSelectionPlanner.remapProgress(
+            progress, oldDates: layerDates, newDates: dates, spacing: depthSpacing.factor
+        )
+        dragStartProgress += progress - oldProgress
+        settleTarget += progress - oldProgress
+        layerDates = dates
+        if dates.isEmpty {
+            mode = .manualIdle
+            velocity = 0
+            pendingLandDate = nil
+            lastFocus = -1
+        } else {
+            // Re-indexing is not camera travel: do not play a tick or reset motion.
+            lastFocus = focusIndex(progress)
+            displayDate = dates[lastFocus]
         }
     }
 
@@ -476,6 +544,11 @@ struct TunnelRewindView: View {
                     Label(m.label, systemImage: m.icon).tag(m)
                 }
             }
+            Divider()
+            MediaCategoryMenuSection(
+                selection: $mediaSelection,
+                photoAlwaysOn: true
+            )
         } label: {
             Image(systemName: "square.stack.3d.up")
                 .font(.system(size: 15, weight: .bold))

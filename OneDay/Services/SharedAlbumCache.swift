@@ -1,3 +1,4 @@
+import Foundation
 import Photos
 
 /// Session-level cache for the library-wide data needed to merge and tag
@@ -114,6 +115,9 @@ actor SharedAlbumCache {
             let fresh = await Task.detached(priority: .utility) { Self.compute() }.value
             snapshot = fresh
             isRefreshing = false
+            // Notify after the debounced snapshot is ready, not on classification
+            // or each intermediate PhotoKit change during iCloud synchronization.
+            NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
         }
     }
 
@@ -166,5 +170,6 @@ final class SharedAlbumLibraryObserver: NSObject, PHPhotoLibraryChangeObserver {
 
     func photoLibraryDidChange(_ changeInstance: PHChange) {
         Task { await SharedAlbumCache.shared.markStale() }
+        Task { await OtherImageClassificationService.shared.libraryDidChange() }
     }
 }

@@ -79,7 +79,7 @@ struct DayBackCoverView: View {
             }
             .frame(minHeight: 180)
         } else if entries.isEmpty {
-            Text("往年的今天还没有照片")
+            Text("往年的今天没有可显示内容")
                 .font(Theme.serif(16))
                 .foregroundStyle(Theme.ink.opacity(0.62))
                 .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)

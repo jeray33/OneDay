@@ -26,8 +26,8 @@ struct DayCoverView: View {
                         photosLayer(in: size)
                         stickersLayer(in: size)
 
-                        if model.hasAnyLocation {
-                            TornPaperMapPatch(locations: model.routeLocations)
+                        if model.hasCoverLocation {
+                            TornPaperMapPatch(locations: model.coverRouteLocations)
                                 .frame(width: size.width * 0.6)
                                 .rotationEffect(.degrees(-2.5))
                                 .position(x: size.width * 0.54, y: size.height * 0.78)
@@ -62,6 +62,7 @@ struct DayCoverView: View {
             }
         }
         .ignoresSafeArea()
+        .task(id: model.instanceID) { await model.prepareEditorial() }
         .onAppear {
             let fromTunnel = model.scatteredInitialDrift != .zero
             scatteredAppeared = false
@@ -215,19 +216,19 @@ struct DayCoverView: View {
 
     private var countsText: String {
         var parts: [String] = []
-        if model.photoCount > 0 { parts.append("\(model.photoCount) 张照片") }
-        if model.videoCount > 0 { parts.append("\(model.videoCount) 段视频") }
+        if model.coverPhotoCount > 0 { parts.append("\(model.coverPhotoCount) 张照片") }
+        if model.coverVideoCount > 0 { parts.append("\(model.coverVideoCount) 段视频") }
         return parts.joined(separator: " · ")
     }
 
     private var secondaryText: String? {
         var parts: [String] = []
-        let km = model.travelKilometers
+        let km = model.coverTravelKilometers
         if km >= 0.05 {
             parts.append(km >= 1 ? String(format: "行程 %.1f 公里", km)
                                  : String(format: "行程 %.0f 米", km * 1000))
         }
-        let places = model.headerPlaces
+        let places = model.coverPlaces
         if let first = places.first {
             if let last = places.last, last != first {
                 parts.append("\(first) → \(last)")
