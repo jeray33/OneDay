@@ -33,6 +33,27 @@ nonisolated enum DayMediaScope {
         return calendar.startOfDay(for: creationDate)
     }
 
+    /// `navigationDay` for a capture already mapped to its day key by
+    /// `CaptureClock` (the key is a device-calendar midnight).
+    static func navigationDay(
+        forDayKey day: Date?, today: Date = Date(), calendar: Calendar = .current
+    ) -> Date? {
+        guard let day else { return nil }
+        return day < calendar.startOfDay(for: today) ? day : nil
+    }
+
+    /// `historyDay` for a capture already mapped to its day key: the key's
+    /// device-calendar month/day is the capture's local month/day.
+    static func historyDay(
+        forDayKey day: Date?, referenceDate: Date, calendar: Calendar = .current
+    ) -> Date? {
+        guard let day else { return nil }
+        let reference = calendar.dateComponents([.month, .day], from: referenceDate)
+        let candidate = calendar.dateComponents([.month, .day], from: day)
+        guard candidate.month == reference.month, candidate.day == reference.day else { return nil }
+        return day
+    }
+
     static func previousDay(
         before date: Date, in descendingDays: [Date], calendar: Calendar = .current
     ) -> Date? {

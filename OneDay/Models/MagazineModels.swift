@@ -99,9 +99,13 @@ enum TimeBand: Int, CaseIterable {
         }
     }
 
-    static func band(for date: Date?) -> TimeBand {
+    /// The band of `date`'s clock hour read in `timeZone` (the capture's
+    /// local zone; see `CaptureClock`).
+    static func band(for date: Date?, in timeZone: TimeZone = .current) -> TimeBand {
         guard let date else { return .noon }
-        let h = Calendar.current.component(.hour, from: date)
+        var calendar = Calendar.current
+        calendar.timeZone = timeZone
+        let h = calendar.component(.hour, from: date)
         switch h {
         case 0..<5: return .dawn
         case 5..<11: return .morning

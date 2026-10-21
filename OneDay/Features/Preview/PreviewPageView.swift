@@ -53,10 +53,15 @@ struct PreviewPageView: View {
 
     private var dateLine: String? {
         let date = item.creationDate ?? Date()
-        let c = DateText.components(date)
+        let zone = item.captureTimeZone
+        let c = DateText.components(date, in: zone)
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        return "\(c.year).\(c.month).\(c.day) \(DateText.weekday(date)) \(f.string(from: date))"
+        f.timeZone = zone
+        let line = "\(c.year).\(c.month).\(c.day) \(DateText.weekday(date, in: zone)) \(f.string(from: date))"
+        // Local capture time abroad, labeled so it is not read as home time.
+        guard let offset = CaptureClock.current().offsetLabel(for: zone, at: date) else { return line }
+        return "\(line) \(offset)"
     }
 
     private var infoCaption: String? {

@@ -839,6 +839,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
                     && new.creationDate == old.creationDate
                     && new.isFromSharedLibrary == old.isFromSharedLibrary
                     && new.isOwnSharedContribution == old.isOwnSharedContribution
+                    && new.captureTimeZone == old.captureTimeZone
             }
         allItemsUnfiltered = sorted
         favoriteIDs = Set(sorted.filter(\.isFavorite).map(\.id))

@@ -17,6 +17,11 @@ struct PhotoItem: Identifiable, Hashable {
     /// uploads (and their duplicate badge). Populated by `PhotoItem.build(from:)`.
     var isOwnSharedContribution: Bool = false
 
+    /// The zone the capture's local date and clock time are read in (see
+    /// `CaptureClock`). Set by `PhotoLibraryService.items(on:)`; the device
+    /// zone elsewhere.
+    var captureTimeZone: TimeZone = .current
+
     /// Explicit initializer that requires the shared-library flag to be set
     /// at construction. Forces every caller to use `PhotoItem.build(from:)`
     /// so no `PhotoItem` is ever silently left with `isFromSharedLibrary=false`.

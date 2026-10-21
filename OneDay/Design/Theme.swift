@@ -697,14 +697,22 @@ enum CoverDateFont: String, CaseIterable, Identifiable {
 enum DateText {
     static let weekdaySymbols = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
-    static func weekday(_ date: Date) -> String {
-        let w = Calendar.current.component(.weekday, from: date)
+    /// `timeZone` reads a capture instant in its local zone; day keys use
+    /// the default device zone.
+    static func weekday(_ date: Date, in timeZone: TimeZone? = nil) -> String {
+        let w = calendar(timeZone).component(.weekday, from: date)
         return weekdaySymbols[(w - 1) % 7]
     }
 
-    static func components(_ date: Date) -> (year: Int, month: Int, day: Int) {
-        let c = Calendar.current.dateComponents([.year, .month, .day], from: date)
+    static func components(_ date: Date, in timeZone: TimeZone? = nil) -> (year: Int, month: Int, day: Int) {
+        let c = calendar(timeZone).dateComponents([.year, .month, .day], from: date)
         return (c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    private static func calendar(_ timeZone: TimeZone?) -> Calendar {
+        var calendar = Calendar.current
+        if let timeZone { calendar.timeZone = timeZone }
+        return calendar
     }
 
     /// Cover top caption, e.g. "2 年前的一天".

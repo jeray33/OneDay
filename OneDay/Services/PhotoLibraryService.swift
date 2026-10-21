@@ -1,5 +1,8 @@
 import Photos
 import Foundation
+import os
+
+private nonisolated let captureLog = Logger(subsystem: "OneDay", category: "CaptureClock")
 
 struct TodayInHistoryEntry: Identifiable {
     let date: Date
@@ -111,29 +114,28 @@ final class PhotoLibraryService {
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
-            let calendar = Calendar.current
+            let clock = CaptureClock.current()
+            let calendar = clock.calendar
             let today = calendar.startOfDay(for: Date())
-            var days = Set<Date>()
-
-            func consider(_ asset: PHAsset) {
-                guard DayMediaScope.isSupported(asset.mediaType),
-                      let day = DayMediaScope.navigationDay(
-                        for: asset.creationDate, today: today, calendar: calendar
-                      ) else { return }
-                days.insert(day)
-            }
+            let started = Date()
+            var assets: [PHAsset] = []
 
             // General library.
             PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in
-                consider(asset)
+                if DayMediaScope.isSupported(asset.mediaType) { assets.append(asset) }
             }
 
             // Shared albums are invisible to the general fetch above, so merge
             // them in explicitly. Day listing remains contributor-agnostic.
-            for asset in shared.sharedAssets {
-                consider(asset)
-            }
+            assets.append(contentsOf: shared.sharedAssets.filter { DayMediaScope.isSupported($0.mediaType) })
 
+            var days = Set<Date>()
+            for entry in clock.days(for: assets) {
+                if let day = DayMediaScope.navigationDay(forDayKey: entry.day, today: today, calendar: calendar) {
+                    days.insert(day)
+                }
+            }
+            captureLog.log("eligibleDays: \(assets.count, privacy: .public) assets, local=\(clock.isEnabled, privacy: .public), \(Date().timeIntervalSince(started), format: .fixed(precision: 3), privacy: .public)s")
             return days.sorted(by: >)
         }.value
     }
@@ -145,7 +147,8 @@ final class PhotoLibraryService {
     /// Keep every supported candidate, including currently hidden categories.
     /// Date/asset priorities and preview counts stay fixed until a new session.
     func rewindCandidates(photosPerDay: ClosedRange<Int>) async -> RewindCandidateIndex {
-        await Task.detached(priority: .userInitiated) {
+        let shared = await SharedAlbumCache.shared.current()
+        return await Task.detached(priority: .userInitiated) { [shared] in
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
                 format: "mediaType == %d OR mediaType == %d",
@@ -155,15 +158,20 @@ final class PhotoLibraryService {
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
             let result = PHAsset.fetchAssets(with: options)
 
-            let calendar = Calendar.current
-            let today = calendar.startOfDay(for: Date())
+            let clock = CaptureClock.current()
+            let today = clock.calendar.startOfDay(for: Date())
             var groups: [Date: [String]] = [:]
             var assetsByID: [String: PHAsset] = [:]
 
-            result.enumerateObjects { asset, _, _ in
-                guard let date = asset.creationDate else { return }
-                let day = calendar.startOfDay(for: date)
-                guard day <= today else { return }
+            var general: [PHAsset] = []
+            result.enumerateObjects { asset, _, _ in general.append(asset) }
+            // Shared-album captures only lend their zones to unlocated
+            // neighbors here, matching what `items(on:)` sees for the same day.
+            let neighbors = shared.sharedAssets.filter { DayMediaScope.isSupported($0.mediaType) }
+            let entries = clock.days(for: general + neighbors)
+
+            for (asset, entry) in zip(general, entries) {
+                guard let day = entry.day, day <= today else { continue }
                 groups[day, default: []].append(asset.localIdentifier)
                 assetsByID[asset.localIdentifier] = asset
             }
@@ -230,27 +238,45 @@ final class PhotoLibraryService {
         photoLimit: Int = 3
     ) async -> [TodayInHistoryEntry] {
         let shared = await SharedAlbumCache.shared.current()
-        let (groups, sharedIDs) = await Task.detached(priority: .userInitiated) { [shared] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>) in
+        let (groups, sharedIDs, zoneByID) = await Task.detached(priority: .userInitiated) { [shared] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>, [String: TimeZone]) in
             let sharedToMerge = shared.foreignSharedAssets
             let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
             let result = PHAsset.fetchAssets(with: options)
 
-            let calendar = Calendar.current
+            let clock = CaptureClock.current()
+            let calendar = clock.calendar
             var assetsByDate: [Date: [PHAsset]] = [:]
             var seen = Set<String>()
 
+            var general: [PHAsset] = []
+            result.enumerateObjects { asset, _, _ in
+                if DayMediaScope.isSupported(asset.mediaType) { general.append(asset) }
+            }
+            // Day keys come from the same population as every other entry
+            // point (own library plus all shared-album captures).
+            let population = general + shared.sharedAssets.filter { DayMediaScope.isSupported($0.mediaType) }
+            var dayByID: [String: Date] = [:]
+            var zoneByID: [String: TimeZone] = [:]
+            for (asset, entry) in zip(population, clock.days(for: population)) {
+                if dayByID[asset.localIdentifier] == nil, let day = entry.day {
+                    dayByID[asset.localIdentifier] = day
+                    zoneByID[asset.localIdentifier] = entry.zone
+                }
+            }
+
             func consider(_ asset: PHAsset) {
-                guard DayMediaScope.isSupported(asset.mediaType),
-                      let day = DayMediaScope.historyDay(
-                        for: asset.creationDate, referenceDate: referenceDate, calendar: calendar
+                guard DayMediaScope.isSupported(asset.mediaType) else { return }
+                let key = dayByID[asset.localIdentifier] ?? clock.days(for: [asset]).first?.day
+                guard let day = DayMediaScope.historyDay(
+                        forDayKey: key, referenceDate: referenceDate, calendar: calendar
                       ) else { return }
                 guard seen.insert(asset.localIdentifier).inserted else { return }
                 assetsByDate[day, default: []].append(asset)
             }
 
-            result.enumerateObjects { asset, _, _ in consider(asset) }
+            general.forEach(consider)
 
             // Shared-album photos are invisible to the general fetch; merge them.
             for asset in sharedToMerge {
@@ -266,45 +292,89 @@ final class PhotoLibraryService {
                 let year = calendar.component(.year, from: date)
                 return (date, year, allAssets, Array(selected))
             }
-            return (mapped, sharedIDs)
+            return (mapped, sharedIDs, zoneByID)
         }.value
+
+        func items(_ assets: [PHAsset]) -> [PhotoItem] {
+            var built = PhotoItem.build(from: assets, sharedIDs: sharedIDs)
+            for index in built.indices {
+                if let zone = zoneByID[assets[index].localIdentifier] {
+                    built[index].captureTimeZone = zone
+                }
+            }
+            return built
+        }
 
         var entries: [TodayInHistoryEntry] = []
         for (date, year, allAssets, selectedAssets) in groups {
-            let allItems = PhotoItem.build(from: allAssets, sharedIDs: sharedIDs)
+            let allItems = items(allAssets)
             let placeText = await PhotoRoute.placeText(for: allItems)
             entries.append(TodayInHistoryEntry(
                 date: date,
                 year: year,
                 placeText: placeText,
-                photos: PhotoItem.build(from: selectedAssets, sharedIDs: sharedIDs),
+                photos: items(selectedAssets),
                 totalMediaCount: allAssets.count
             ))
         }
         return entries
     }
 
+    /// The capture-local day key of one asset, judged from the same
+    /// neighbors `items(on:)` uses, so opening that day always contains it.
+    func captureDay(for asset: PHAsset) async -> Date? {
+        guard let date = asset.creationDate else { return nil }
+        let clock = CaptureClock.current()
+        guard clock.isEnabled else { return clock.calendar.startOfDay(for: date) }
+        let shared = await SharedAlbumCache.shared.current()
+        return await Task.detached(priority: .userInitiated) { [shared] () -> Date? in
+            let window = CaptureClock.inferenceWindow
+            let lower = date.addingTimeInterval(-window)
+            let upper = date.addingTimeInterval(window)
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(
+                format: "creationDate >= %@ AND creationDate <= %@",
+                lower as NSDate, upper as NSDate
+            )
+            var population: [PHAsset] = [asset]
+            PHAsset.fetchAssets(with: options).enumerateObjects { neighbor, _, _ in
+                if MediaFilter.isEligible(neighbor), neighbor.localIdentifier != asset.localIdentifier {
+                    population.append(neighbor)
+                }
+            }
+            population += shared.sharedAssets.filter { neighbor in
+                guard let time = neighbor.creationDate, time >= lower, time <= upper,
+                      neighbor.localIdentifier != asset.localIdentifier else { return false }
+                return MediaFilter.isEligible(neighbor)
+            }
+            return clock.days(for: population).first?.day
+        }.value
+    }
+
     func items(on day: Date) async -> [PhotoItem] {
         let shared = await SharedAlbumCache.shared.current()
         return await Task.detached(priority: .userInitiated) { [shared] () -> [PhotoItem] in
-            let calendar = Calendar.current
+            let clock = CaptureClock.current()
+            let calendar = clock.calendar
             let start = calendar.startOfDay(for: day)
             guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
+            // A capture-local day can sit up to a day off the device-zone day,
+            // and unlocated captures need their neighbors, so fetch wider and
+            // keep only captures whose own day key is this day.
+            let margin = clock.isEnabled ? CaptureClock.fetchMargin : 0
+            let windowStart = start.addingTimeInterval(-margin)
+            let windowEnd = end.addingTimeInterval(margin)
 
             let options = PHFetchOptions()
             options.predicate = NSPredicate(
                 format: "creationDate >= %@ AND creationDate < %@",
-                start as NSDate, end as NSDate
+                windowStart as NSDate, windowEnd as NSDate
             )
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
 
-            var seen = Set<String>()
-            var generalAssets: [PHAsset] = []
+            var generalWindow: [PHAsset] = []
             PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in
-                guard MediaFilter.isEligible(asset) else { return }
-                if seen.insert(asset.localIdentifier).inserted {
-                    generalAssets.append(asset)
-                }
+                if MediaFilter.isEligible(asset) { generalWindow.append(asset) }
             }
 
             // Shared-album photos are absent from the general fetch above, so
@@ -316,21 +386,33 @@ final class PhotoLibraryService {
             // contributions so the view model can hide them when the
             // contributor-match toggle is on. Both sets come from the cached,
             // library-wide snapshot instead of a per-day full-library scan.
-            for asset in shared.sharedAssets {
-                guard let date = asset.creationDate, date >= start, date < end else { continue }
-                guard MediaFilter.isEligible(asset) else { continue }
+            let sharedWindow = shared.sharedAssets.filter { asset in
+                guard let date = asset.creationDate, date >= windowStart, date < windowEnd else { return false }
+                return MediaFilter.isEligible(asset)
+            }
+
+            let population = generalWindow + sharedWindow
+            var seen = Set<String>()
+            var generalAssets: [PHAsset] = []
+            var zoneByID: [String: TimeZone] = [:]
+            for (asset, entry) in zip(population, clock.days(for: population)) where entry.day == start {
                 if seen.insert(asset.localIdentifier).inserted {
                     generalAssets.append(asset)
+                    zoneByID[asset.localIdentifier] = entry.zone
                 }
             }
 
             let sorted = generalAssets.sorted {
                 ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
             }
-            return PhotoItem.build(
+            var items = PhotoItem.build(
                 from: sorted,
                 sharedIDs: shared.sharedAssetIDs,
                 ownContributionIDs: shared.ownContributionIDs)
+            for index in items.indices {
+                items[index].captureTimeZone = zoneByID[sorted[index].localIdentifier] ?? clock.deviceZone
+            }
+            return items
         }.value
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 /// Provides a consistent ellipsis button that opens the full settings menu.
 struct DaySettingsMenu: View {
     let model: DayViewModel
+    @AppStorage(CaptureClock.enabledKey) private var localCaptureTime = true
 
     private var selectableTemplates: [BlockTemplate] {
         BlockTemplate.allCases.filter { $0.isSelectable }
@@ -24,6 +25,15 @@ struct DaySettingsMenu: View {
                     set: { model.sharedContributorMatch = $0 }
                 ))
             }
+            Toggle("按拍摄地时间", isOn: Binding(
+                get: { localCaptureTime },
+                set: { enabled in
+                    localCaptureTime = enabled
+                    // Day membership and clock times both change: reload the
+                    // day list and the open day exactly like a library change.
+                    NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
+                }
+            ))
             Menu("背景") {
                 Picker("", selection: Binding(
                     get: { model.background },
@@ -351,6 +361,12 @@ struct DaySettingsMenu: View {
                     Label(model.isDragEnabled ? "锁定照片位置" : "自由摆放照片",
                           systemImage: model.isDragEnabled ? "lock" : "hand.draw")
                 }
+            }
+            // Required by the bundled GeoNames data's CC BY 4.0 license:
+            // source, license, and that the data was modified.
+            Section("地名与时区数据来自 GeoNames，依据 CC BY 4.0 许可使用，经筛选和压缩处理") {
+                Link("GeoNames 官网", destination: URL(string: "https://www.geonames.org")!)
+                Link("CC BY 4.0 许可", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/deed.zh-hans")!)
             }
         } label: {
             Image(systemName: "ellipsis")

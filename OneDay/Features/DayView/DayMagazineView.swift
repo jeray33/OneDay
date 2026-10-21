@@ -778,11 +778,12 @@ struct DayMagazineView: View {
         guard section.showsTimeHeading || section.placeHeading != nil else {
             return contentRows(for: blocks)
         }
-        let allDates = blocks.flatMap(\.items).compactMap(\.creationDate).sorted()
-        guard let first = allDates.first, let last = allDates.last else {
+        let allDated = datedItems(blocks.flatMap(\.items))
+        guard let first = allDated.first, let last = allDated.last,
+              let firstDate = first.creationDate, let lastDate = last.creationDate else {
             return contentRows(for: blocks)
         }
-        if !section.showsTimeHeading || last.timeIntervalSince(first) <= 2 * 3600 {
+        if !section.showsTimeHeading || lastDate.timeIntervalSince(firstDate) <= 2 * 3600 {
             return [.label(timeRangeText(first, last))] + contentRows(for: blocks)
         }
         var rows: [SectionRow] = []
@@ -790,15 +791,15 @@ struct DayMagazineView: View {
         var bucketBlocks: [MagazineBlock] = []
         func flush() {
             guard !bucketBlocks.isEmpty else { return }
-            let dates = bucketBlocks.flatMap(\.items).compactMap(\.creationDate).sorted()
-            if let f = dates.first, let l = dates.last {
+            let dated = datedItems(bucketBlocks.flatMap(\.items))
+            if let f = dated.first, let l = dated.last {
                 rows.append(.label(timeRangeText(f, l)))
             }
             rows.append(contentsOf: contentRows(for: bucketBlocks))
             bucketBlocks.removeAll()
         }
         for block in blocks {
-            let t = block.items.compactMap(\.creationDate).min() ?? first
+            let t = datedItems(block.items).first ?? first
             let bucket = alignedBucket(t)
             if currentBucket == nil { currentBucket = bucket }
             if bucket != currentBucket { flush(); currentBucket = bucket }
@@ -817,9 +818,17 @@ struct DayMagazineView: View {
         }
     }
 
-    /// Rounds a date down to a clock-aligned even hour (…14:00, 16:00…).
-    private func alignedBucket(_ date: Date) -> Date {
-        let cal = Calendar.current
+    /// Items that carry a capture date, oldest first.
+    private func datedItems(_ items: [PhotoItem]) -> [PhotoItem] {
+        items.filter { $0.creationDate != nil }.sorted { $0.creationDate! < $1.creationDate! }
+    }
+
+    /// Rounds a capture down to a clock-aligned even hour (…14:00, 16:00…)
+    /// of its local time.
+    private func alignedBucket(_ item: PhotoItem) -> Date {
+        let date = item.creationDate ?? .distantPast
+        var cal = Calendar.current
+        cal.timeZone = item.captureTimeZone
         var c = cal.dateComponents([.year, .month, .day, .hour], from: date)
         c.hour = ((c.hour ?? 0) / 2) * 2
         c.minute = 0
@@ -827,10 +836,14 @@ struct DayMagazineView: View {
         return cal.date(from: c) ?? date
     }
 
-    private func timeRangeText(_ start: Date, _ end: Date) -> String {
+    /// Each end reads in its own capture's local zone.
+    private func timeRangeText(_ start: PhotoItem, _ end: PhotoItem) -> String {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        let s = f.string(from: start), e = f.string(from: end)
+        f.timeZone = start.captureTimeZone
+        let s = f.string(from: start.creationDate ?? .distantPast)
+        f.timeZone = end.captureTimeZone
+        let e = f.string(from: end.creationDate ?? .distantPast)
         return s == e ? s : "\(s) - \(e)"
     }
 

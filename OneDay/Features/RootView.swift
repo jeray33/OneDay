@@ -848,7 +848,10 @@ struct RootView: View {
                 group.addTask {
                     guard let image = await ImageLoader.shared.thumbnail(
                         asset: asset, size: CGSize(width: 240, height: 300)) else { return nil }
-                    return FlashFrame(date: asset.creationDate ?? Date(),
+                    // The capture-local day, so landing on this frame opens
+                    // the day the photo actually belongs to.
+                    let day = await PhotoLibraryService.shared.captureDay(for: asset)
+                    return FlashFrame(date: day ?? asset.creationDate ?? Date(),
                                       image: image,
                                       location: asset.location)
                 }

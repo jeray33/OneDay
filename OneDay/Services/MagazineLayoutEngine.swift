@@ -16,7 +16,7 @@ enum MagazineLayoutEngine {
                         places: [(id: String, name: String?, items: [PhotoItem])] = []) -> [MagazineSection] {
         let sorted = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         let groups = policy.groups(items: sorted, places: places) {
-            TimeBand.band(for: $0.creationDate).rawValue
+            TimeBand.band(for: $0.creationDate, in: $0.captureTimeZone).rawValue
         }
         let sim: (PhotoItem, PhotoItem) -> Bool = similar ?? { isBurstPair($0, $1) }
 
@@ -24,7 +24,8 @@ enum MagazineLayoutEngine {
         for planned in groups {
             let group = planned.items
             let band = planned.timeBand.flatMap(TimeBand.init(rawValue:))
-                ?? TimeBand.band(for: group.first?.creationDate)
+                ?? TimeBand.band(for: group.first?.creationDate,
+                                 in: group.first?.captureTimeZone ?? .current)
             var blocks: [MagazineBlock] = []
             for (index, moment) in splitMoments(group).enumerated() {
                 blocks.append(contentsOf: makeBlocks(moment, seed: index, similar: sim))
@@ -235,12 +236,18 @@ enum MagazineLayoutEngine {
         }
     }
 
+    /// Each end reads in its own capture's local zone.
     private static func timeRange(_ items: [PhotoItem]) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
-        let dates = items.compactMap { $0.creationDate }.sorted()
-        guard let first = dates.first else { return "" }
-        guard let last = dates.last, last != first else { return formatter.string(from: first) }
-        return "\(formatter.string(from: first)) – \(formatter.string(from: last))"
+        func text(_ item: PhotoItem) -> String {
+            formatter.timeZone = item.captureTimeZone
+            return formatter.string(from: item.creationDate ?? .distantPast)
+        }
+        let dated = items.filter { $0.creationDate != nil }
+            .sorted { $0.creationDate! < $1.creationDate! }
+        guard let first = dated.first else { return "" }
+        guard let last = dated.last, last.creationDate != first.creationDate else { return text(first) }
+        return "\(text(first)) – \(text(last))"
     }
 }
