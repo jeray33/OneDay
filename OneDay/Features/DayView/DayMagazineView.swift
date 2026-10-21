@@ -75,7 +75,7 @@ struct DayMagazineView: View {
                         if !model.allItems.isEmpty && model.showsPhotoMap {
                             DayRouteMapBanner(locations: model.routeLocations,
                                               stopCoordinates: model.routeStopCoordinates,
-                                              stopNames: model.routeStops.map(\.name),
+                                              stopNames: model.routeStopDisplayNames,
                                               date: model.date,
                                               dateFont: model.coverDateFont.font(SectionTitleSize.small.size),
                                               blendMode: model.mapBlendMode,
@@ -301,8 +301,8 @@ struct DayMagazineView: View {
                     .glassEffect(.regular.interactive(), in: .circle)
             }
             if model.routeStops.count >= 2 && model.showLocationBar {
-                let stops = model.routeStops.map {
-                    RouteSelectorView.Stop(id: $0.id, name: $0.name)
+                let stops = zip(model.routeStops, model.routeStopDisplayNames).map {
+                    RouteSelectorView.Stop(id: $0.0.id, name: $0.1)
                 }
                 RouteSelectorView(stops: stops, activeID: activeSegmentID) { id in
                     guard let stop = model.routeStops.first(where: { $0.id == id }),
@@ -336,14 +336,15 @@ struct DayMagazineView: View {
                         .foregroundStyle(Theme.ink.opacity(isSelected ? 1 : 0.55))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                        .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .contentShape(Rectangle())
+                        .padding(.bottom, 6)
                         .overlay(alignment: .bottom) {
                             Rectangle()
                                 .fill(Theme.ink.opacity(isSelected ? 1 : 0))
                                 .frame(height: 2)
                         }
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .bottom)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(model.selected != nil || activeDragBlock != nil || scrollDisabled)
@@ -353,7 +354,6 @@ struct DayMagazineView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.bottom, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("当天内容类别")
         .revealFade(shouldRevealContent, delay: 0.32)
@@ -682,7 +682,9 @@ struct DayMagazineView: View {
         let rows = sectionRows(section)
         if !rows.isEmpty {
             let tint = model.sectionTintActive
-            let hasHeading = section.placeHeading != nil || section.showsTimeHeading
+            let hasHeading = section.placeHeading != nil
+                || section.placeHeadingPending
+                || section.showsTimeHeading
             VStack(alignment: .leading, spacing: 0) {
                 sectionHeader(section)
                 ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
@@ -702,32 +704,42 @@ struct DayMagazineView: View {
 
     @ViewBuilder
     private func sectionHeader(_ section: MagazineSection) -> some View {
-        if let place = section.placeHeading {
-            sectionHeading(place, size: model.sectionTitleSize.size)
+        if section.placeHeading != nil || section.placeHeadingPending {
+            sectionHeading(section.placeHeading ?? "定位中…",
+                           size: model.sectionTitleSize.size,
+                           visible: true)
+                .opacity(section.placeHeading == nil ? 0.35 : 1)
+                .animation(.easeInOut(duration: 0.3), value: section.placeHeading)
         }
         if section.showsTimeHeading && !section.timeHeadingIsNested {
             sectionHeading(
                 section.band.englishTitle,
-                size: model.sectionTitleSize.size
+                size: model.sectionTitleSize.size,
+                visible: true
             )
         }
     }
 
-    private func sectionHeading(_ title: String, size: CGFloat) -> some View {
+    private func sectionHeading(_ title: String, size: CGFloat, visible: Bool) -> some View {
         Text(title)
             .font(model.coverDateFont.font(size))
             .foregroundStyle(Theme.ink)
             .lineLimit(1)
             .minimumScaleFactor(0.4)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(visible ? 1 : 0)
+            .animation(.easeIn(duration: 0.3), value: title)
     }
 
     /// Spacing above each section. Segmented coloring keeps sections flush;
     /// Otherwise use 64pt with headings and half that when headings are hidden.
+    /// A pending place heading already reserves its heading slot.
     private func sectionTopSpacing(for index: Int) -> CGFloat {
         guard !model.sectionTintActive else { return 0 }
         let section = model.sections[index]
-        return section.placeHeading != nil || section.showsTimeHeading ? 64 : 32
+        return section.placeHeading != nil
+            || section.placeHeadingPending
+            || section.showsTimeHeading ? 64 : 32
     }
 
     @ViewBuilder

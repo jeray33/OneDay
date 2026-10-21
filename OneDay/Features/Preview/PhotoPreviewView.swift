@@ -12,6 +12,7 @@ struct PhotoPreviewView: View {
     /// Host-driven opacity of the photo card. 0 while the flight layer owns the
     /// photo, 1 once it has landed.
     var cardOpacity: Double = 1
+    var isSessionOpen: Bool = true
     var onSelectionChanged: (String) -> Void = { _ in }
     /// Requests close. Passes the live drag translation, scale and the current
     /// photo id so the host can fly the photo back to its grid cell.
@@ -24,6 +25,8 @@ struct PhotoPreviewView: View {
     @AppStorage("OneDay.previewSwipeSpeedBiasLevel") private var swipeSpeedBiasLevel = SwipeSpeedBiasLevel.medium.rawValue
 
     @State private var selection: String
+    @State private var livePhotoVisitID = UUID()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var dragOffset: CGSize = .zero
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
@@ -52,13 +55,14 @@ struct PhotoPreviewView: View {
     @State private var imageCategoryOverride: ImageCategoryOverride = .automatic
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
-         sessionOpacity: Double = 1, cardOpacity: Double = 1,
+         sessionOpacity: Double = 1, cardOpacity: Double = 1, isSessionOpen: Bool = true,
          onSelectionChanged: @escaping (String) -> Void = { _ in },
          onClose: @escaping (CGSize, CGFloat, String) -> Void = { _, _, _ in }) {
         self.model = model
         self.namespace = namespace
         self.sessionOpacity = sessionOpacity
         self.cardOpacity = cardOpacity
+        self.isSessionOpen = isSessionOpen
         self.onSelectionChanged = onSelectionChanged
         self.onClose = onClose
         _selection = State(initialValue: current.id)
@@ -109,6 +113,14 @@ struct PhotoPreviewView: View {
         isFlipTransitioning || flipAngle > 0.001
     }
 
+    private var allowsLivePlayback: Bool {
+        isSessionOpen && scenePhase == .active && !isClosing
+            && !isZoomed && !isFlipActive && dragStartSelection == nil
+            && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
+            && albumItem == nil && editingItem == nil && !showAlbumConfig && !showPendingDelete
+            && !isMutatingHidden
+    }
+
     var body: some View {
         ZStack {
             (dynamicBg ?? model.pageBackgroundColor)
@@ -130,7 +142,10 @@ struct PhotoPreviewView: View {
                         flipAngle: flipAngle,
                         swipeEffectConfig: swipeEffectConfig,
                         onFlipRequest: { requestFlip(toBack: true) },
-                        onFlipBackRequest: { requestFlip(toBack: false) }
+                        onFlipBackRequest: { requestFlip(toBack: false) },
+                        isSelected: selection == item.id,
+                        livePhotoVisitID: livePhotoVisitID,
+                        allowsLivePlayback: allowsLivePlayback && selection == item.id
                     )
                     .tag(item.id)
                 }
@@ -186,6 +201,7 @@ struct PhotoPreviewView: View {
             // (issues when dragging up/down then sideways). Skip entirely while
             // vertically locked.
             guard !isVerticalDragLocked else { return }
+            livePhotoVisitID = UUID()
             // Defer committing the page to the grid until a drag settles, so
             // transient TabView paging during a fast flick doesn't churn it.
             if dragStartSelection == nil {

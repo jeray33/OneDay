@@ -25,10 +25,15 @@ struct PreviewPageView: View {
     var swipeEffectConfig: SwipePreviewEffectConfig = .init()
     var onFlipRequest: () -> Void = {}
     var onFlipBackRequest: () -> Void = {}
+    var isSelected = false
+    var livePhotoVisitID: UUID? = nil
+    var allowsLivePlayback = false
 
     @State private var image: UIImage?
     @State private var player: AVPlayer?
     @State private var place: String?
+    @State private var placeAdminLine: String?
+    @State private var placeStatus: PlaceLineStatus = .loading
     @State private var metadataSnapshot: PhotoMetadataSnapshot?
     @State private var isMetadataLoading = false
 
@@ -71,7 +76,7 @@ struct PreviewPageView: View {
                 // The zoomable card fills the whole page so a pinch / double-tap
                 // can magnify the photo edge-to-edge. At rest (scale 1) the
                 // bordered card is centered inside at its display size.
-                flippableCard(card: card, swipeProgress: swipeProgress)
+                flippableCard(card: card, swipeProgress: swipeProgress, pageIsCentered: abs(rawProgress) < 0.005)
                     .scaleEffect(photoScale, anchor: .center)
                     .offset(x: photoOffsetX + swipeOffsetX)
                     .offset(y: photoOffsetY)
@@ -88,6 +93,11 @@ struct PreviewPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .task(id: item.id) {
                 await load(targetSize: geo.size)
+            }
+            .task(id: item.id) {
+                // Resolves in parallel with the image load; the place name
+                // must not wait for a full-quality frame (which may sit in
+                // iCloud) and the frame must not wait for the geocoder.
                 await updatePlace()
             }
             .onChange(of: item.id) {
@@ -104,9 +114,9 @@ struct PreviewPageView: View {
         .ignoresSafeArea()
     }
 
-    private func flippableCard(card: CGSize, swipeProgress: Double) -> some View {
+    private func flippableCard(card: CGSize, swipeProgress: Double, pageIsCentered: Bool) -> some View {
         ZStack {
-            mediaCard(card: card)
+            mediaCard(card: card, pageIsCentered: pageIsCentered)
                 .rotation3DEffect(
                     .degrees(flipAngle),
                     axis: (x: 0, y: 1, z: 0),
@@ -115,7 +125,11 @@ struct PreviewPageView: View {
                 .opacity(flipAngle <= 90 ? 1 : 0)
                 .allowsHitTesting(!isBackVisible)
 
-            PhotoMetadataBackView(snapshot: metadataSnapshot, isLoading: isMetadataLoading)
+            PhotoMetadataBackView(snapshot: metadataSnapshot,
+                                  isLoading: isMetadataLoading,
+                                  place: place,
+                                  adminLine: placeAdminLine,
+                                  placeStatus: placeStatus)
                 .frame(width: card.width, height: card.height)
                 .rotation3DEffect(
                     .degrees(flipAngle - 180),
@@ -291,7 +305,7 @@ struct PreviewPageView: View {
     }
 
     @ViewBuilder
-    private func mediaCard(card: CGSize) -> some View {
+    private func mediaCard(card: CGSize, pageIsCentered: Bool) -> some View {
         if item.isVideo {
             if let player {
                 VideoPlayer(player: player)
@@ -319,7 +333,11 @@ struct PreviewPageView: View {
                 onZoomChanged: onZoomChanged,
                 caption: nil,
                 captionColor: captionColor,
-                onEditCaption: nil
+                onEditCaption: nil,
+                livePhotoAsset: item.isLivePhoto ? item.asset : nil,
+                isSelected: isSelected,
+                livePhotoVisitID: livePhotoVisitID,
+                allowsLivePlayback: allowsLivePlayback && pageIsCentered && !isZoomed && abs(flipAngle) < 0.001
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -416,8 +434,23 @@ struct PreviewPageView: View {
     private func updatePlace() async {
         guard let location = item.location else {
             place = nil
+            placeAdminLine = nil
+            placeStatus = .none
             return
         }
-        place = await LocationResolver.shared.name(for: location)
+        place = nil
+        placeAdminLine = nil
+        placeStatus = .loading
+        let resolution = await LocationResolver.shared.place(for: location, priority: .userVisible)
+        switch resolution {
+        case .resolved(let fields):
+            place = PlaceNaming.photoTitle(fields)
+            placeAdminLine = PlaceNaming.adminLine(fields)
+            placeStatus = .resolved
+        case .noResult:
+            placeStatus = .unavailable
+        case .failed:
+            placeStatus = .failed
+        }
     }
 }

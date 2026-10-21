@@ -181,7 +181,8 @@ struct DayFlowView: View {
     private func resolvePlaces() async {
         for frame in flashFrames {
             guard let location = frame.location else { continue }
-            if let name = await LocationResolver.shared.name(for: location) {
+            if let name = await LocationResolver.shared.photoTitle(
+                for: location, priority: .background) {
                 places[frame.id] = name
             }
         }

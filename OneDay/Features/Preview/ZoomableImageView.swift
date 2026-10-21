@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Photos
 
 /// A UIScrollView that reports back when it needs to re-layout its content,
 /// so centering stays correct once the view actually receives its size.
@@ -25,6 +26,10 @@ struct ZoomableImageView: UIViewRepresentable {
     var caption: String? = nil
     var captionColor: Color = .black
     var onEditCaption: (() -> Void)? = nil
+    var livePhotoAsset: PHAsset? = nil
+    var isSelected = false
+    var livePhotoVisitID: UUID? = nil
+    var allowsLivePlayback = false
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let scrollView = ZoomScrollView()
@@ -95,10 +100,16 @@ struct ZoomableImageView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onZoomChanged: onZoomChanged, onEditCaption: onEditCaption) }
 
+    static func dismantleUIView(_ uiView: ZoomScrollView, coordinator: Coordinator) {
+        uiView.onLayout = nil
+        coordinator.livePlayer?.reset()
+    }
+
     final class Coordinator: NSObject, UIScrollViewDelegate {
         let card = UIView()
         let imageView = UIImageView()
         let captionLabel = UILabel()
+        private(set) var livePlayer: LivePhotoPlayerController?
         var displaySize: CGSize = .zero
         var sideBorder: CGFloat = 8
         var topBorder: CGFloat = 8
@@ -132,6 +143,23 @@ struct ZoomableImageView: UIViewRepresentable {
             captionLabel.text = view.caption
             captionLabel.textColor = UIColor(view.captionColor)
             captionLabel.isHidden = view.caption?.isEmpty ?? true
+            if view.livePhotoAsset != nil, livePlayer == nil {
+                let player = LivePhotoPlayerController()
+                card.insertSubview(player.liveView, aboveSubview: imageView)
+                card.insertSubview(player.badge, aboveSubview: player.liveView)
+                livePlayer = player
+            }
+            livePlayer?.liveView.layer.cornerRadius = innerRadius
+            livePlayer?.update(
+                asset: view.livePhotoAsset,
+                selected: view.isSelected,
+                visitID: view.livePhotoVisitID,
+                permitted: view.allowsLivePlayback,
+                targetSize: CGSize(
+                    width: max(1, displaySize.width - sideBorder * 2) * imageView.traitCollection.displayScale,
+                    height: max(1, displaySize.height - topBorder - captionHeight) * imageView.traitCollection.displayScale
+                )
+            )
         }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { card }
@@ -151,6 +179,15 @@ struct ZoomableImageView: UIViewRepresentable {
                 imageView.frame = CGRect(x: sideBorder, y: topBorder,
                                          width: displaySize.width - sideBorder * 2,
                                          height: max(imageH, 0))
+                if let livePlayer {
+                    livePlayer.liveView.frame = imageView.frame
+                    let badgeSize = livePlayer.badge.sizeThatFits(imageView.bounds.size)
+                    livePlayer.badge.frame = CGRect(
+                        x: imageView.frame.minX + 8, y: imageView.frame.minY + 8,
+                        width: min(badgeSize.width, max(0, imageView.bounds.width - 16)),
+                        height: badgeSize.height
+                    )
+                }
 
                 let hasCaption = !(caption?.isEmpty ?? true)
                 captionLabel.isHidden = !hasCaption
@@ -178,6 +215,7 @@ struct ZoomableImageView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             centerContent(scrollView)
             let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+            livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
                 onZoomChanged(zoomed)
@@ -187,6 +225,7 @@ struct ZoomableImageView: UIViewRepresentable {
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
             centerContent(scrollView)
             let zoomed = scale > scrollView.minimumZoomScale + 0.01
+            livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
                 onZoomChanged(zoomed)

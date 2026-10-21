@@ -24,6 +24,9 @@ nonisolated struct TitleSegmentationPolicy {
 
     struct Group<Item> {
         let items: [Item]
+        /// The route stop the group belongs to (nil in pure time mode), so
+        /// headings can update in place after place names resolve.
+        let placeID: String?
         let placeName: String?
         let showsPlaceHeading: Bool
         let timeBand: Int?
@@ -31,33 +34,36 @@ nonisolated struct TitleSegmentationPolicy {
 
     /// Inputs are chronological. Only time grouping changes boundaries, not
     /// item order within each group. A return visit remains a separate place.
+    /// `places` carries each stop's id; an unresolved stop passes
+    /// `name == nil` and the heading layer reserves its space instead of
+    /// inventing a placeholder name here.
     func groups<Item>(
         items: [Item],
-        places: [(name: String?, items: [Item])],
+        places: [(id: String, name: String?, items: [Item])],
         timeBand: (Item) -> Int
     ) -> [Group<Item>] {
         let nonemptyPlaces = places.filter { !$0.items.isEmpty }
         if placeEnabled, nonemptyPlaces.count >= 2 {
-            return nonemptyPlaces.enumerated().flatMap { index, place -> [Group<Item>] in
-                let name = place.name.flatMap { $0.isEmpty ? nil : $0 } ?? "地点 \(index + 1)"
+            return nonemptyPlaces.flatMap { place -> [Group<Item>] in
+                let name = place.name.flatMap { $0.isEmpty ? nil : $0 }
                 if nestedTimeEnabled {
                     return splitByTime(place.items, timeBand: timeBand).enumerated().map { offset, group in
-                        Group(items: group.items, placeName: name,
+                        Group(items: group.items, placeID: place.id, placeName: name,
                               showsPlaceHeading: offset == 0, timeBand: group.band)
                     }
                 }
-                return [Group(items: place.items, placeName: name,
+                return [Group(items: place.items, placeID: place.id, placeName: name,
                               showsPlaceHeading: true, timeBand: nil)]
             }
         }
         if timeEnabled {
             return splitByTime(items, timeBand: timeBand).map {
-                Group(items: $0.items, placeName: nil,
+                Group(items: $0.items, placeID: nil, placeName: nil,
                       showsPlaceHeading: false, timeBand: $0.band)
             }
         }
         return items.isEmpty ? [] : [
-            Group(items: items, placeName: nil, showsPlaceHeading: false, timeBand: nil)
+            Group(items: items, placeID: nil, placeName: nil, showsPlaceHeading: false, timeBand: nil)
         ]
     }
 

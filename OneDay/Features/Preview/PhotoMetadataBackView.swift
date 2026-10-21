@@ -3,6 +3,13 @@ import SwiftUI
 struct PhotoMetadataBackView: View {
     let snapshot: PhotoMetadataSnapshot?
     let isLoading: Bool
+    /// Place title resolved by `LocationResolver`, identical to the one shown
+    /// below the photo on the front side.
+    let place: String?
+    /// Administrative line for the same resolution (e.g. 中国 · 北京市 · 海淀区).
+    let adminLine: String?
+    /// Resolution status of the place line (loading / failed / none).
+    let placeStatus: PlaceLineStatus
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -100,16 +107,36 @@ struct PhotoMetadataBackView: View {
 
     private func locationList(_ snapshot: PhotoMetadataSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            let place = extractValue(from: snapshot, candidates: ["location.placeName"], fallback: "—")
-            let admin = extractValue(from: snapshot, candidates: ["location.adminArea"], fallback: "—")
-            if place != "—" || admin != "—" {
-                detailRow("地点名", place == "—" ? "未知地点" : place)
-                detailRow("行政区", admin == "—" ? "未知行政区" : admin)
+            let rows = rowDictionary(from: snapshot)
+            if rows["location.latitude"] != nil {
+                placeRows
+                detailRow("纬度", rows["location.latitude"] ?? "—")
+                detailRow("经度", rows["location.longitude"] ?? "—")
+                detailRow("海拔", rows["location.altitude"] ?? "—")
             } else {
-                detailRow("纬度", extractValue(from: snapshot, candidates: ["location.latitude", "GPSLatitude"], fallback: "—"))
-                detailRow("经度", extractValue(from: snapshot, candidates: ["location.longitude", "GPSLongitude"], fallback: "—"))
-                detailRow("海拔", extractValue(from: snapshot, candidates: ["location.altitude", "GPSAltitude"], fallback: "—"))
+                detailRow("位置", "未记录")
             }
+        }
+    }
+
+    /// The place name always comes from the same resolution as the front-side
+    /// line, so back and front can never disagree.
+    @ViewBuilder
+    private var placeRows: some View {
+        switch placeStatus {
+        case .resolved:
+            detailRow("地点名", place ?? "未知地点")
+            if let adminLine, !adminLine.isEmpty {
+                detailRow("行政区", adminLine)
+            }
+        case .loading:
+            detailRow("地点名", "定位中…")
+        case .unavailable:
+            detailRow("地点名", "未知地点")
+        case .failed:
+            detailRow("地点名", "定位失败")
+        case .none:
+            EmptyView()
         }
     }
 

@@ -147,6 +147,7 @@ struct HeroOverlayView: View {
                         namespace: namespace,
                         sessionOpacity: sessionOpacity,
                         cardOpacity: cardOpacity,
+                        isSessionOpen: heroPhase == .open,
                         onSelectionChanged: { id in model.previewCurrentID = id },
                         onClose: { drag, scale, id in closeHero(dragOffset: drag, scale: scale, id: id) }
                     )

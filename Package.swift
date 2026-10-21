@@ -23,7 +23,7 @@ let package = Package(
                 "SharedAlbumCache.swift",
                 "VisionSimilarity.swift"
             ],
-            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift"],
+            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift", "LivePhotoPlaybackPolicy.swift", "PlaceNaming.swift", "OfflinePlaceIndex.swift"],
             linkerSettings: [.linkedFramework("Photos"), .linkedFramework("ImageIO")]
         ),
         .testTarget(

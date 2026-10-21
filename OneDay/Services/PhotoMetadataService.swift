@@ -24,6 +24,9 @@ struct PhotoMetadataSnapshot: Sendable {
 
 actor PhotoMetadataService {
     static let shared = PhotoMetadataService()
+    /// Whole-snapshot cache, kept for the process lifetime: the snapshot only
+    /// carries raw asset/file data, never reverse-geocode results (those live
+    /// in `LocationResolver`, where failures are never cached long-term).
     private var cache: [String: PhotoMetadataSnapshot] = [:]
 
     func metadata(for asset: PHAsset) async -> PhotoMetadataSnapshot {
@@ -33,9 +36,6 @@ actor PhotoMetadataService {
 
         var sections: [PhotoMetadataSnapshot.Section] = []
         sections.append(assetSection(for: asset))
-        if let location = asset.location {
-            sections.append(await locationSection(for: location))
-        }
         sections.append(resourceSection(for: asset))
 
         if let url = await originalURL(for: asset) {
@@ -225,16 +225,6 @@ actor PhotoMetadataService {
     }
 
 
-    private func locationSection(for location: CLLocation) async -> PhotoMetadataSnapshot.Section {
-        let resolved = await resolveLocation(location)
-        var rows: [PhotoMetadataSnapshot.Row] = []
-        rows.append(row("location.placeName", resolved.placeName ?? "—"))
-        rows.append(row("location.adminArea", resolved.adminArea ?? "—"))
-        rows.append(row("location.latitude", String(format: "%.8f", location.coordinate.latitude)))
-        rows.append(row("location.longitude", String(format: "%.8f", location.coordinate.longitude)))
-        rows.append(row("location.altitude", String(format: "%.2f m", location.altitude)))
-        return .init(id: "location", title: "位置信息", rows: rows)
-    }
     private func locationRows(_ location: CLLocation) -> [PhotoMetadataSnapshot.Row] {
         var rows: [PhotoMetadataSnapshot.Row] = []
         rows.append(row("location.latitude", String(format: "%.8f", location.coordinate.latitude)))
@@ -250,23 +240,6 @@ actor PhotoMetadataService {
         }
         rows.append(row("location.timestamp", iso8601(location.timestamp)))
         return rows
-    }
-
-    private func resolveLocation(_ location: CLLocation) async -> (placeName: String?, adminArea: String?) {
-        await withCheckedContinuation { continuation in
-            CLGeocoder().reverseGeocodeLocation(location) { placemarks, _ in
-                guard let mark = placemarks?.first else {
-                    continuation.resume(returning: (nil, nil))
-                    return
-                }
-                let placeName = mark.name
-                let areaParts = [mark.country, mark.administrativeArea, mark.locality, mark.subLocality]
-                    .compactMap { $0 }
-                    .filter { !$0.isEmpty }
-                let adminArea = areaParts.isEmpty ? nil : areaParts.joined(separator: " · ")
-                continuation.resume(returning: (placeName, adminArea))
-            }
-        }
     }
 
     private func row(_ key: String, _ value: String) -> PhotoMetadataSnapshot.Row {

@@ -37,13 +37,13 @@ final class TitleSegmentationPolicyTests: XCTestCase {
                 policy.nestedTimeEnabled = mask & 2 != 0
                 policy.timeEnabled = mask & 4 != 0
                 for count in 0...2 {
-                    let places: [(name: String?, items: [Item])]
+                    let places: [(id: String, name: String?, items: [Item])]
                     switch count {
                     case 0: places = []
-                    case 1: places = [("公园", items)]
+                    case 1: places = [(id: "p1", name: "公园", items: items)]
                     default:
-                        places = [("公园", Array(items.prefix(3))),
-                                  ("商场", Array(items.suffix(2)))]
+                        places = [(id: "p1", name: "公园", items: Array(items.prefix(3))),
+                                  (id: "p2", name: "商场", items: Array(items.suffix(2)))]
                     }
                     let groups = policy.groups(items: items, places: places, timeBand: \.band)
                     XCTAssertEqual(groups.flatMap(\.items), items, "mask \(mask), places \(count)")
@@ -65,17 +65,23 @@ final class TitleSegmentationPolicyTests: XCTestCase {
         }
     }
 
-    func testUnknownPlacesUseNumberedNamesAndReturnVisitsStaySeparate() {
+    func testUnresolvedPlacesPassNoNameAndReturnVisitsStaySeparate() {
         withDefaults { defaults in
             var policy = TitleSegmentationPolicy(defaults: defaults)
             policy.nestedTimeEnabled = true
-            let places: [(name: String?, items: [Item])] = [
-                ("公园", [items[0]]), (nil, [items[1], items[2]]),
-                ("公园", [items[3]]), ("", [items[4]])
+            // Unresolved stops pass `name == nil`; the heading layer reserves
+            // space instead of inventing "地点 N" in the data model.
+            let places: [(id: String, name: String?, items: [Item])] = [
+                (id: "p1", name: "公园", items: [items[0]]),
+                (id: "p2", name: nil, items: [items[1], items[2]]),
+                (id: "p3", name: "公园", items: [items[3]]),
+                (id: "p4", name: "", items: [items[4]])
             ]
             let groups = policy.groups(items: items, places: places, timeBand: \.band)
-            XCTAssertEqual(groups.filter(\.showsPlaceHeading).compactMap(\.placeName),
-                           ["公园", "地点 2", "公园", "地点 4"])
+            XCTAssertEqual(groups.filter(\.showsPlaceHeading).map(\.placeName),
+                           ["公园", nil, "公园", nil])
+            XCTAssertEqual(groups.map(\.placeID),
+                           ["p1", "p2", "p2", "p3", "p4"])
             XCTAssertEqual(groups.flatMap(\.items), items)
         }
     }
@@ -103,7 +109,8 @@ final class TitleSegmentationPolicyTests: XCTestCase {
             let empty: [Item] = []
             XCTAssertTrue(policy.groups(items: empty, places: [], timeBand: \.band).isEmpty)
             let groups = policy.groups(
-                items: items, places: [("空", []), ("公园", items)], timeBand: \.band)
+                items: items, places: [(id: "e", name: "空", items: []), (id: "p", name: "公园", items: items)],
+                timeBand: \.band)
             XCTAssertEqual(groups.compactMap(\.timeBand), [1, 3, 5])
             XCTAssertTrue(groups.allSatisfy { $0.placeName == nil })
         }

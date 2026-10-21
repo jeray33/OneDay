@@ -13,7 +13,7 @@ enum MagazineLayoutEngine {
                         similar: ((PhotoItem, PhotoItem) -> Bool)? = nil,
                         enabled: Set<BlockTemplate> = [],
                         policy: TitleSegmentationPolicy,
-                        places: [(name: String?, items: [PhotoItem])] = []) -> [MagazineSection] {
+                        places: [(id: String, name: String?, items: [PhotoItem])] = []) -> [MagazineSection] {
         let sorted = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
         let groups = policy.groups(items: sorted, places: places) {
             TimeBand.band(for: $0.creationDate).rawValue
@@ -29,7 +29,11 @@ enum MagazineLayoutEngine {
             for (index, moment) in splitMoments(group).enumerated() {
                 blocks.append(contentsOf: makeBlocks(moment, seed: index, similar: sim))
             }
-            if planned.placeName == nil, planned.timeBand != nil,
+            // Quotes only appear in pure time sections; a section that belongs
+            // to a place stop always reserves its heading instead, whatever
+            // the stop's name state is, so blocks never re-flow when a title
+            // resolves.
+            if planned.placeID == nil, planned.timeBand != nil,
                group.count >= 4, let phrase = quotePhrase(for: band) {
                 blocks.insert(MagazineBlock(template: .quote, items: [], caption: phrase), at: 0)
             }
@@ -38,11 +42,13 @@ enum MagazineLayoutEngine {
                 band: band,
                 timeText: timeRange(group),
                 placeName: planned.placeName,
+                placeStopID: planned.placeID,
                 anchorLocation: anchor,
                 blocks: blocks,
                 placeHeading: planned.showsPlaceHeading ? planned.placeName : nil,
+                placeHeadingPending: planned.showsPlaceHeading && planned.placeName == nil,
                 showsTimeHeading: planned.timeBand != nil,
-                timeHeadingIsNested: planned.placeName != nil && planned.timeBand != nil
+                timeHeadingIsNested: planned.placeID != nil && planned.timeBand != nil
             ))
         }
         // Apply user-selected template filter (skip when all templates enabled)

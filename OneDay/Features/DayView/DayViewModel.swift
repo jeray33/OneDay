@@ -412,6 +412,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var pageBackgroundColor: Color {
         switch background {
         case .paper:    return Color(white: 0.96)
+        case .pureWhite: return Color(white: 1.0)
         case .dark:     return Color(white: 0.07)
         case .warm:     return warmColor
         case .dominant: return dominantColor
@@ -569,10 +570,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Ordered place groups covering every item. Located items define the stop
     /// boundaries; non-located items attach to the current stop chronologically
-    /// so nothing is dropped.
-    private func placeGroups() -> [(name: String?, items: [PhotoItem])] {
+    /// so nothing is dropped. A stop whose title has not resolved yet passes no
+    /// name so its heading reserves space instead of a stale placeholder.
+    private func placeGroups() -> [(id: String, name: String?, items: [PhotoItem])] {
         let stops = routeStops
         guard !stops.isEmpty else { return [] }
+        let names = routeStopDisplayNames
         var stopOfItem: [String: Int] = [:]
         for (i, stop) in stops.enumerated() {
             for id in stop.itemIDs { stopOfItem[id] = i }
@@ -583,7 +586,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             if let idx = stopOfItem[item.id] { current = idx }
             groups[current].append(item)
         }
-        return zip(stops, groups).map { ($0.name, $1) }
+        return zip(stops, groups).enumerated().map { offset, pair in
+            (id: pair.0.id,
+             name: pair.0.nameState == .loading ? nil : names[offset],
+             items: pair.1)
+        }
     }
 
     /// Rebuilds the body using the saved place/time segmentation choices.
@@ -715,7 +722,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         guard isCurrentFilterPreparation(generation) else { return }
         await applyVisionGrouping(generation: generation)
         guard filterPreparationID == generation else { return }
-        await resolveSegmentNames(generation: generation)
+        await resolveSegmentPlaces(generation: generation)
         guard filterPreparationID == generation else { return }
         await resolvePlaces(generation: generation)
         guard filterPreparationID == generation else { return }
@@ -738,9 +745,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         guard isCurrentFilterPreparation(generation) else { return }
         await applyVisionGrouping(generation: generation)
         guard isCurrentFilterPreparation(generation) else { return }
-        await resolveSegmentNames(generation: generation)
-        guard isCurrentFilterPreparation(generation) else { return }
         rebuildSections()
+        await resolveSegmentPlaces(generation: generation)
+        guard isCurrentFilterPreparation(generation) else { return }
         await resolvePlaces(generation: generation)
         guard isCurrentFilterPreparation(generation) else { return }
         if borderStyle == .colored {
@@ -793,14 +800,19 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         await computePersonStickers(generation: generation)
         guard isCurrentEditorialPreparation(generation) else { return }
 
-        var seen = Set<String>()
-        var places: [String] = []
+        var stopPlaces: [PlaceNaming.StopPlace] = []
         for segment in PhotoRoute.segments(for: editorialItems) {
             let location = CLLocation(
                 latitude: segment.coordinate.latitude, longitude: segment.coordinate.longitude)
-            let name = await LocationResolver.shared.name(for: location)
+            let resolution = await LocationResolver.shared.place(for: location, priority: .pageContent)
             guard isCurrentEditorialPreparation(generation) else { return }
-            if let name, seen.insert(name).inserted { places.append(name) }
+            stopPlaces.append(PlaceNaming.StopPlace(resolution))
+        }
+        var places: [String] = []
+        var seen = Set<String>()
+        for title in PlaceNaming.stopTitles(for: stopPlaces) {
+            guard case .title(let name) = title, seen.insert(name).inserted else { continue }
+            places.append(name)
         }
         coverPlaces = places
     }
@@ -1324,7 +1336,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// affected by time-band sectioning. Revisits appear as separate stops.
     typealias RouteSegment = PhotoRouteSegment
 
-    private var segmentNames: [String: String] = [:]
+    /// Reverse-geocoded place per route segment, keyed by segment id. A
+    /// missing entry means the stop is still resolving.
+    private var segmentPlaces: [String: PlaceNaming.StopPlace] = [:]
 
     /// Real trajectory: every located photo/video in chronological order.
     var routeLocations: [CLLocation] {
@@ -1340,29 +1354,65 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// A displayed route stop. Consecutive segments that resolve to the exact
-    /// same place name are merged into one stop.
+    /// same title merge into one stop; consecutive unresolvable stops merge
+    /// into one placeholder.
     struct RouteStop: Identifiable {
+        enum NameState: Equatable {
+            case loading
+            case resolved(String)
+            case unavailable
+        }
+
         let id: String
-        let name: String?
+        let nameState: NameState
         let firstItemID: String
         let itemIDs: [String]
+
+        var name: String? {
+            if case .resolved(let title) = nameState { return title }
+            return nil
+        }
     }
 
     var routeStops: [RouteStop] {
+        let segments = routeSegments
+        guard !segments.isEmpty else { return [] }
+        let titles = PlaceNaming.stopTitles(for: segments.map { segmentPlaces[$0.id] ?? .loading })
         var stops: [RouteStop] = []
-        for segment in routeSegments {
-            let name = segmentNames[segment.id]
-            if let last = stops.last, let lastName = last.name, let name, lastName == name {
-                stops[stops.count - 1] = RouteStop(id: last.id, name: last.name,
+        for (segment, title) in zip(segments, titles) {
+            let state: RouteStop.NameState
+            switch title {
+            case .loading: state = .loading
+            case .title(let name): state = .resolved(name)
+            case .unavailable: state = .unavailable
+            }
+            // Only two real, identical names merge; loading or unavailable
+            // stops always stay separate.
+            if let last = stops.last, let lastName = last.name, case .resolved(let name) = state,
+               lastName == name {
+                stops[stops.count - 1] = RouteStop(id: last.id, nameState: last.nameState,
                                                    firstItemID: last.firstItemID,
                                                    itemIDs: last.itemIDs + segment.itemIDs)
             } else {
-                stops.append(RouteStop(id: segment.id, name: name,
+                stops.append(RouteStop(id: segment.id, nameState: state,
                                        firstItemID: segment.firstItemID,
                                        itemIDs: segment.itemIDs))
             }
         }
         return stops
+    }
+
+    /// Fully materialized stop names for the top selector and the map banner:
+    /// resolved titles, "定位中…" while resolving, and "地点 N" only once the
+    /// geocoder has definitively failed for that stop this session.
+    var routeStopDisplayNames: [String] {
+        routeStops.enumerated().map { index, stop in
+            switch stop.nameState {
+            case .resolved(let title): return title
+            case .loading: return "定位中…"
+            case .unavailable: return "地点 \(index + 1)"
+            }
+        }
     }
 
     var hasRoute: Bool { routeStops.count >= 2 }
@@ -1406,16 +1456,48 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return nil
     }
 
-    private func resolveSegmentNames(generation: UUID? = nil) async {
+    /// Resolves every route stop's place once, then applies the resulting
+    /// titles to the already-built sections.
+    private func resolveSegmentPlaces(generation: UUID? = nil) async {
         let segments = routeSegments
-        for segment in segments where segmentNames[segment.id] == nil {
+        guard !segments.isEmpty else { return }
+        for segment in segments where segmentPlaces[segment.id] == nil {
             guard isCurrentFilterPreparation(generation) else { return }
             let loc = CLLocation(latitude: segment.coordinate.latitude,
                                  longitude: segment.coordinate.longitude)
-            if let name = await LocationResolver.shared.name(for: loc) {
-                guard isCurrentFilterPreparation(generation) else { return }
-                segmentNames[segment.id] = name
+            let resolution = await LocationResolver.shared.place(for: loc, priority: .pageContent)
+            guard isCurrentFilterPreparation(generation) else { return }
+            segmentPlaces[segment.id] = PlaceNaming.StopPlace(resolution)
+        }
+        applyPlaceNames()
+    }
+
+    /// Re-applies resolved stop titles to the sections. When same-titled
+    /// stops merge (or a stop's failure changes the grouping), the body is
+    /// rebuilt without animation; otherwise only the headings update in place
+    /// so the layout and scroll position stay untouched.
+    private func applyPlaceNames() {
+        let similar: ((PhotoItem, PhotoItem) -> Bool)? =
+            visionDistances.isEmpty ? nil : { [weak self] a, b in
+                self?.visionSimilar(a, b) ?? false
             }
+        let newSections = MagazineLayoutEngine.compose(
+            allItems, similar: similar, enabled: enabledTemplates,
+            policy: titleSegmentation, places: placeGroups())
+
+        guard newSections.count == sections.count,
+              zip(newSections, sections).allSatisfy({ new, old in
+                  new.placeStopID == old.placeStopID && new.structure == old.structure
+              }) else {
+            sections = newSections
+            Task { await computeSectionTints() }
+            return
+        }
+
+        for index in sections.indices {
+            sections[index].placeName = newSections[index].placeName
+            sections[index].placeHeading = newSections[index].placeHeading
+            sections[index].placeHeadingPending = newSections[index].placeHeadingPending
         }
     }
 
@@ -1536,18 +1618,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         try? await PhotoActionService.shared.createAlbum(named: name)
     }
 
-    var headerPlaces: [String] {
-        var seen = Set<String>()
-        var result: [String] = []
-        for section in sections {
-            if let place = section.placeName, !seen.contains(place) {
-                seen.insert(place)
-                result.append(place)
-            }
-        }
-        return result
-    }
-
     func resolvePlaces(generation: UUID? = nil) async {
         // In place mode each section already carries its stop's resolved name.
         guard !hasRoute else { return }
@@ -1557,11 +1627,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         for (sectionID, location) in targets {
             guard isCurrentFilterPreparation(generation) else { return }
-            if let name = await LocationResolver.shared.name(for: location) {
-                guard isCurrentFilterPreparation(generation),
-                      let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
-                sections[index].placeName = name
-            }
+            guard case .resolved(let fields) = await LocationResolver.shared.place(
+                for: location, priority: .pageContent) else { continue }
+            guard isCurrentFilterPreparation(generation),
+                  let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
+            sections[index].placeName = PlaceNaming.photoTitle(fields)
         }
     }
 

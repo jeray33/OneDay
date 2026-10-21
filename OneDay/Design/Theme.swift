@@ -126,12 +126,13 @@ enum PhotoCornerRadius: String, CaseIterable, Identifiable {
 }
 
 enum PageBackground: String, CaseIterable, Identifiable {
-    case paper, dark, warm, dominant, vibrant, bright, bright2
+    case paper, pureWhite, dark, warm, dominant, vibrant, bright, bright2
     var id: Self { self }
 
     var label: String {
         switch self {
         case .paper:    return "白色"
+        case .pureWhite: return "纯白色"
         case .dark:     return "黑色"
         case .warm:     return "暖橙"
         case .dominant: return "照片主色"
@@ -144,6 +145,7 @@ enum PageBackground: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .paper:    return "sun.max"
+        case .pureWhite: return "circle"
         case .dark:     return "moon"
         case .warm:     return "circle.righthalf.filled"
         case .dominant: return "paintpalette"

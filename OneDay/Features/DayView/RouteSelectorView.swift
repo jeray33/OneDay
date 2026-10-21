@@ -6,7 +6,8 @@ import SwiftUI
 struct RouteSelectorView: View {
     struct Stop: Identifiable {
         let id: String
-        let name: String?
+        /// Fully materialized display name (resolved title or placeholder).
+        let name: String
     }
 
     let stops: [Stop]
@@ -47,7 +48,7 @@ struct RouteSelectorView: View {
                 Circle()
                     .fill(active ? Theme.accent : Theme.ink.opacity(0.35))
                     .frame(width: active ? 9 : 8, height: active ? 9 : 8)
-                Text(stop.name ?? "定位中…")
+                Text(stop.name)
                     .font(Theme.serif(12, weight: active ? .semibold : .regular))
                     .foregroundStyle(active ? Theme.ink : Theme.ink.opacity(0.55))
                     .lineLimit(1)

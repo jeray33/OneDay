@@ -118,13 +118,27 @@ struct MagazineSection: Identifiable {
     let band: TimeBand
     let timeText: String
     var placeName: String?
+    /// Identifies the route stop this section belongs to, so headings can
+    /// update in place after reverse geocoding lands. Nil in time-only mode.
+    var placeStopID: String? = nil
     let anchorLocation: CLLocation?
     var blocks: [MagazineBlock]
     var placeHeading: String? = nil
+    /// True while the stop exists but its title has not resolved yet; the
+    /// heading reserves its height and fades in when the title lands.
+    var placeHeadingPending = false
     var showsTimeHeading = true
     var timeHeadingIsNested = false
 
     var title: String { band.title }
+
+    /// Layout identity for detecting name-only updates: block templates and
+    /// their photo ids, independent of place titles.
+    var structure: [String] {
+        blocks.map { block in
+            block.template.rawValue + "|" + block.items.map(\.id).joined(separator: ",")
+        }
+    }
 
     /// First photo of the section, used as the source for the section's tint.
     var heroItem: PhotoItem? { blocks.first(where: { !$0.items.isEmpty })?.items.first }

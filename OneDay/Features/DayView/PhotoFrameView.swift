@@ -3,6 +3,8 @@ import SwiftUI
 /// A photo or video thumbnail with the signature white magazine border.
 /// `width` is the TOTAL framed width (image + border), so blocks never overflow.
 struct PhotoFrameView: View {
+    @Environment(\.displayScale) private var displayScale
+
     let item: PhotoItem
     var width: CGFloat
     var border: CGFloat = 8
@@ -78,6 +80,11 @@ struct PhotoFrameView: View {
             .padding(.bottom, bottomBorder)
             .background(borderColor)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Theme.ink.opacity(0.15), lineWidth: 1 / max(displayScale, 1))
+                    .allowsHitTesting(false)
+            }
             .shadow(color: .black.opacity(0.16 * Double(shadowLevel.scale)),
                     radius: 7 * shadowLevel.scale,
                     x: 0,

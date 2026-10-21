@@ -13,8 +13,9 @@ struct DayRouteMapBanner: View {
     let locations: [CLLocation]
     /// Route stop centroids (one dot per stop) to avoid hundreds of dots.
     let stopCoordinates: [CLLocationCoordinate2D]
-    /// Display names for each stop, used to render the location track text below the map.
-    let stopNames: [String?]
+    /// Display names for each stop (resolved titles, or "定位中…" / "地点 N"
+    /// placeholders), used to render the location track text below the map.
+    let stopNames: [String]
     /// The day's date rendered as a big title below the track text.
     let date: Date
     let dateFont: Font
@@ -120,10 +121,7 @@ struct DayRouteMapBanner: View {
     }
 
     private var trackText: some View {
-        let names = stopNames.enumerated().map { index, name in
-            name ?? "地点\(index + 1)"
-        }
-        return Text(names.joined(separator: " → "))
+        Text(stopNames.joined(separator: " → "))
             .font(Theme.serif(12, weight: .regular))
             .foregroundStyle(Theme.ink)
             .multilineTextAlignment(.leading)

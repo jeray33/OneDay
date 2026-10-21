@@ -190,6 +190,32 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         }
     }
 
+    /// Only deliver the final current-version resource. Termination cancels iCloud work too.
+    func livePhotoStream(asset: PHAsset, targetSize: CGSize) -> AsyncStream<PHLivePhoto> {
+        AsyncStream { continuation in
+            let options = PHLivePhotoRequestOptions()
+            options.version = .current
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            let requestID = manager.requestLivePhoto(
+                for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options
+            ) { photo, info in
+                let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+                let failed = info?[PHImageErrorKey] != nil
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if cancelled || failed {
+                    continuation.finish()
+                } else if !degraded {
+                    if let photo { continuation.yield(photo) }
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                self.manager.cancelImageRequest(requestID)
+            }
+        }
+    }
+
     func playerItem(for asset: PHAsset) async -> AVPlayerItem? {
         await withCheckedContinuation { continuation in
             let options = PHVideoRequestOptions()
