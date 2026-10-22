@@ -74,6 +74,15 @@ final class DayScrubberPolicyTests: XCTestCase {
         XCTAssertEqual(fractions, [0.5, 0.62])
     }
 
+    func testSingleSectionGetsNoMark() {
+        XCTAssertTrue(DayScrubberPolicy
+            .markFractions(sectionDistances: [300], scrollableDistance: 1000)
+            .isEmpty)
+        XCTAssertEqual(DayScrubberPolicy
+            .markFractions(sectionDistances: [300, 700], scrollableDistance: 1000),
+            [0.3, 0.7])
+    }
+
     func testMarkFractionsEmptyWhenUnscrollable() {
         XCTAssertTrue(DayScrubberPolicy
             .markFractions(sectionDistances: [100], scrollableDistance: 0)

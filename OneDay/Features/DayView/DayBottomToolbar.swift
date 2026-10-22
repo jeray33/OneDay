@@ -132,10 +132,10 @@ struct DayBottomToolbar: View {
     private let detentEnterRadius: CGFloat = 9
     private let detentExitRadius: CGFloat = 15
     // Bottom-aligned tick heights on a shared baseline.
-    private let tickHeight: CGFloat = 10
-    private let markHeight: CGFloat = 15
-    private let indicatorHeight: CGFloat = 19
-    private let indicatorScrubbingHeight: CGFloat = 21
+    private let tickHeight: CGFloat = 20
+    private let markHeight: CGFloat = 20
+    private let indicatorHeight: CGFloat = 20
+    private let indicatorScrubbingHeight: CGFloat = 24
 
     private var canGoPrev: Bool { prevDate != nil && !navLoading }
     private var canGoNext: Bool { nextDate != nil && !navLoading }
@@ -352,7 +352,9 @@ struct DayBottomToolbar: View {
         let markTicks = Set(marks.map(\.tick))
         let currentX = indicatorX(progress: state.metrics.progress, count: count,
                                   usable: usable, marks: marks)
-        let baseline = (size.height + indicatorScrubbingHeight) / 2
+        // Fine ticks are centred in the track; taller ticks share their
+        // bottom and grow upward.
+        let baseline = (size.height + tickHeight) / 2
 
         // One evenly spaced row; section starts are the same ticks drawn
         // taller. Ends stay unmarked and the passed side reads darker.

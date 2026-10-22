@@ -64,12 +64,13 @@ nonisolated enum DayScrubberPolicy {
     /// Distances are section-top positions measured below the content top.
     /// Marks too close to the very top or beyond the reachable bottom are
     /// dropped, and neighbours closer than `mergeSpacing` collapse into one
-    /// so the track never turns into a wall of long lines.
+    /// so the track never turns into a wall of long lines. A single section
+    /// gets no mark: there is nothing to jump between.
     static func markFractions(sectionDistances: [CGFloat],
                               scrollableDistance: CGFloat,
                               edgeMargin: CGFloat = 48,
                               mergeSpacing: CGFloat = 48) -> [CGFloat] {
-        guard scrollableDistance > 0 else { return [] }
+        guard scrollableDistance > 0, sectionDistances.count >= 2 else { return [] }
         let sorted = sectionDistances
             .filter { $0 > edgeMargin && $0 < scrollableDistance - edgeMargin / 2 }
             .sorted()
