@@ -869,6 +869,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Updates the caption for a single photo in `allItems` and `sections`.
     func updateCaption(_ caption: String?, for item: PhotoItem) async {
+        guard item.sharedCapabilities.canEditCaption else { return }
         do {
             try await PhotoCaptionManager.shared.setCaption(caption, for: item.asset)
         } catch {
@@ -1523,6 +1524,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     func toggleFavorite(_ item: PhotoItem) async {
+        guard item.sharedCapabilities.canFavorite else { return }
         let next = !favoriteIDs.contains(item.id)
         do {
             try await PhotoActionService.shared.setFavorite(next, on: item.asset)
@@ -1538,6 +1540,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     @discardableResult
     func setHidden(_ hidden: Bool, item: PhotoItem) async -> Bool {
+        guard item.sharedCapabilities.canHide else { return false }
         do {
             try await PhotoActionService.shared.setHidden(hidden, on: item.asset)
             if hidden {
@@ -1583,6 +1586,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     @discardableResult
     func addToAlbum(_ album: AlbumInfo, item: PhotoItem) async -> Bool {
+        guard item.sharedCapabilities.canEditAlbums else { return false }
         do {
             try await PhotoActionService.shared.addToAlbum(identifier: album.id, assets: [item.asset])
             return true
@@ -1593,6 +1597,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     @discardableResult
     func removeFromAlbum(_ album: AlbumInfo, item: PhotoItem) async -> Bool {
+        guard item.sharedCapabilities.canEditAlbums else { return false }
         do {
             try await PhotoActionService.shared.removeFromAlbum(identifier: album.id, assets: [item.asset])
             return true
@@ -1610,6 +1615,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     func createAlbum(named name: String, item: PhotoItem) async {
+        guard item.sharedCapabilities.canEditAlbums else { return }
         try? await PhotoActionService.shared.addToAlbum(named: name, assets: [item.asset])
     }
 
@@ -1637,17 +1643,22 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     func perform(_ action: LibraryAction, on item: PhotoItem) async {
+        let caps = item.sharedCapabilities
         switch action {
         case .toggleFavorite:
+            guard caps.canFavorite else { return }
             await toggleFavorite(item)
         case .delete:
+            guard caps.canDelete else { return }
             do {
                 try await PhotoActionService.shared.delete([item.asset])
                 remove(item)
             } catch { }
         case .addToAlbum(let name):
+            guard caps.canEditAlbums else { return }
             try? await PhotoActionService.shared.addToAlbum(named: name, assets: [item.asset])
         case .pickAlbum:
+            guard caps.canEditAlbums else { return }
             albumPickerItem = item
         }
     }

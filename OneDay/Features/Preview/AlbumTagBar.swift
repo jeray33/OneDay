@@ -6,6 +6,10 @@ struct AlbumTagBar: View {
     let albums: [AlbumInfo]
     /// Album ids that currently contain the previewed photo.
     let membershipIDs: Set<String>
+    /// When `true` the current photo cannot be re-filed or hidden (e.g. it
+    /// was shared by someone else): chips render dimmed and inert, but taps
+    /// still fire `onTapAlbum` so the host can explain why.
+    var isReadOnly: Bool = false
     var onConfigure: () -> Void
     var onTapAlbum: (AlbumInfo) -> Void
     @State private var flashAlbumID: String?
@@ -55,19 +59,25 @@ struct AlbumTagBar: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(.black)
+            .foregroundStyle(.black.opacity(isReadOnly ? 0.45 : 1))
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("隐藏当前照片")
+        .accessibilityLabel(isReadOnly ? "当前照片不能隐藏" : "隐藏当前照片")
     }
 
     private func regularAlbumChip(_ album: AlbumInfo) -> some View {
-        let inAlbum = membershipIDs.contains(album.id)
+        // Read-only photos never show membership: the dimmed chips are inert
+        // suggestions, not toggles.
+        let inAlbum = membershipIDs.contains(album.id) && !isReadOnly
         let flashing = flashAlbumID == album.id
         return Button {
+            guard !isReadOnly else {
+                onTapAlbum(album)
+                return
+            }
             flashAlbumID = album.id
             onTapAlbum(album)
             Task { @MainActor in
@@ -90,7 +100,7 @@ struct AlbumTagBar: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(.black)
+            .foregroundStyle(.black.opacity(isReadOnly ? 0.45 : 1))
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(
@@ -105,6 +115,8 @@ struct AlbumTagBar: View {
             .animation(.easeInOut(duration: 0.18), value: flashing)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(inAlbum ? "从相簿 \(album.title) 移除" : "加入相簿 \(album.title)")
+        .accessibilityLabel(isReadOnly
+            ? "当前照片不能归类"
+            : (inAlbum ? "从相簿 \(album.title) 移除" : "加入相簿 \(album.title)"))
     }
 }

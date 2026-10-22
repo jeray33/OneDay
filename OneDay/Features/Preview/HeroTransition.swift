@@ -18,6 +18,12 @@ enum HeroPhase {
 struct HeroCellInfo: Equatable {
     var rect: CGRect
     var border: CGFloat
+    var bottomBorder: CGFloat
+    var cornerRadius: CGFloat
+
+    var cornerGeometry: PhotoCornerGeometry {
+        PhotoCornerGeometry(referenceWidth: rect.width, cornerRadius: cornerRadius)
+    }
 }
 
 /// Live on-screen info of the photo grid cells, keyed by item id. Kept in a
@@ -55,23 +61,24 @@ extension CGRect {
     }
 }
 
+private struct HeroSourceIDKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    var heroSourceID: String? {
+        get { self[HeroSourceIDKey.self] }
+        set { self[HeroSourceIDKey.self] = newValue }
+    }
+}
+
 extension View {
-    /// Marks a photo grid cell as a hero source: publishes its live frame and
-    /// real border width, and hides it (keeping its layout slot) while its photo
-    /// is presented.
-    func heroCell(id: String, hiddenID: String?, border: CGFloat) -> some View {
+    /// PhotoFrameView reports the actual image card, excluding any caption.
+    /// Hide the complete cell while preserving its layout slot.
+    func heroCell(id: String, hiddenID: String?) -> some View {
         self
             .opacity(id == hiddenID ? 0 : 1)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: HeroCellFrameKey.self,
-                        value: [id: HeroCellInfo(
-                            rect: geo.frame(in: .named(heroCoordinateSpace)),
-                            border: border)]
-                    )
-                }
-            )
+            .environment(\.heroSourceID, id)
     }
 }
 
@@ -83,23 +90,33 @@ struct HeroFlightView: View {
     let rect: CGRect
     let borderColor: Color
     let borderWidth: CGFloat
+    let bottomBorderWidth: CGFloat
+    let cornerRadius: CGFloat
 
     var body: some View {
+        let viewport = PhotoFrameGeometry.imageSize(
+            card: rect.size, border: borderWidth, bottomBorder: bottomBorderWidth
+        )
         Group {
             if let image {
+                let fill = PhotoFrameGeometry.fillSize(image: image.size, viewport: viewport)
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFit()
-                    .frame(width: max(rect.width - borderWidth * 2, 0),
-                           height: max(rect.height - borderWidth * 2, 0))
-                    .clipped()
-                    .padding(borderWidth)
+                    .frame(width: fill.width, height: fill.height)
+                    .frame(width: viewport.width, height: viewport.height)
+                    .clipShape(RoundedRectangle(
+                        cornerRadius: max(cornerRadius - borderWidth, 0), style: .continuous
+                    ))
+                    .padding(.horizontal, borderWidth)
+                    .padding(.top, borderWidth)
+                    .padding(.bottom, bottomBorderWidth)
                     .background(borderColor)
             } else {
                 borderColor
             }
         }
         .frame(width: rect.width, height: rect.height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .position(x: rect.midX, y: rect.midY)
         .allowsHitTesting(false)
     }
@@ -125,8 +142,10 @@ struct HeroOverlayView: View {
     @State private var heroFlightRect: CGRect = .zero
     @State private var heroImage: UIImage?
     @State private var heroBorderColor: Color = .white
-    @State private var heroSourceBorder: CGFloat = 4
-    @State private var heroProgress: CGFloat = 0
+    @State private var heroFlightBorder: CGFloat = 4
+    @State private var heroFlightBottomBorder: CGFloat = 4
+    @State private var heroFlightRadius: CGFloat = 0
+    @State private var openedCornerGeometry: PhotoCornerGeometry?
     @State private var heroDidLandOpen = false
     @State private var sessionOpacity: Double = 0
     @State private var cardOpacity: Double = 0
@@ -135,6 +154,10 @@ struct HeroOverlayView: View {
     private var heroCardBorder: CGFloat {
         let base = (12 * model.borderWidth.scale).rounded()
         return model.borderStyle.isPolaroid ? max(base, 10) : base
+    }
+
+    private var heroCardBottomBorder: CGFloat {
+        heroCardBorder + (model.borderStyle.isPolaroid ? 46 : 0)
     }
 
     var body: some View {
@@ -148,6 +171,7 @@ struct HeroOverlayView: View {
                         sessionOpacity: sessionOpacity,
                         cardOpacity: cardOpacity,
                         isSessionOpen: heroPhase == .open,
+                        cornerGeometry: { cornerGeometry(for: $0) },
                         onSelectionChanged: { id in model.previewCurrentID = id },
                         onClose: { drag, scale, id in closeHero(dragOffset: drag, scale: scale, id: id) }
                     )
@@ -157,7 +181,9 @@ struct HeroOverlayView: View {
                             image: heroImage,
                             rect: heroFlightRect,
                             borderColor: heroBorderColor,
-                            borderWidth: heroSourceBorder + (heroCardBorder - heroSourceBorder) * heroProgress
+                            borderWidth: heroFlightBorder,
+                            bottomBorderWidth: heroFlightBottomBorder,
+                            cornerRadius: heroFlightRadius
                         )
                         .transition(.identity)
                     }
@@ -172,7 +198,6 @@ struct HeroOverlayView: View {
                     guard let id = model.previewCurrentID,
                           let item = model.allItems.first(where: { $0.id == id }) else { return }
                     heroBorderColor = model.frameColor(for: item)
-                    if let cell = frameStore.cells[id] { heroSourceBorder = cell.border }
                     if let img = await ImageLoader.shared.thumbnail(
                         asset: item.asset,
                         size: CGSize(width: 1000, height: 1000),
@@ -206,14 +231,22 @@ struct HeroOverlayView: View {
                 heroImage = img
                 heroBorderColor = model.frameColor(for: item)
                 if let source {
-                    heroSourceBorder = source.border
+                    heroFlightBorder = source.border
+                    heroFlightBottomBorder = source.bottomBorder
+                    heroFlightRadius = source.cornerRadius
+                    openedCornerGeometry = source.cornerGeometry
                     heroFlightRect = source.rect
                 } else {
-                    heroSourceBorder = 0
+                    heroFlightBorder = 0
+                    heroFlightBottomBorder = 0
                     heroFlightRect = CGRect(x: screenCenter().x - 40, y: screenCenter().y - 40,
                                             width: 80, height: 80)
+                    openedCornerGeometry = PhotoCornerGeometry(
+                        referenceWidth: max(screen.width - 40, 1),
+                        cornerRadius: model.photoCornerRadius.value
+                    )
+                    heroFlightRadius = openedCornerGeometry?.radius(for: heroFlightRect.size) ?? 0
                 }
-                heroProgress = 0
                 heroDidLandOpen = false
                 sessionOpacity = 0
                 cardOpacity = 0
@@ -230,7 +263,9 @@ struct HeroOverlayView: View {
         withAnimation(.easeOut(duration: 0.32)) { sessionOpacity = 1 }
         withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
             heroFlightRect = card
-            heroProgress = 1
+            heroFlightBorder = heroCardBorder
+            heroFlightBottomBorder = heroCardBottomBorder
+            heroFlightRadius = previewCornerRadius(for: heroOpenID, size: card.size)
         } completion: {
             withAnimation(.easeInOut(duration: 0.14)) {
                 cardOpacity = 1
@@ -255,10 +290,11 @@ struct HeroOverlayView: View {
             return
         }
 
-        if let dest { heroSourceBorder = dest.border }
         let visual = rest.scaledAboutCenter(scale).offsetBy(dragOffset)
         heroFlightRect = visual
-        heroProgress = 1
+        heroFlightBorder = heroCardBorder * scale
+        heroFlightBottomBorder = heroCardBottomBorder * scale
+        heroFlightRadius = previewCornerRadius(for: id, size: rest.size) * scale
         heroPhase = .closeFlying
         // Hide the live card instantly (not a fade): the flight layer already
         // sits at the exact same visual rect, so this swap is seamless and no
@@ -267,7 +303,11 @@ struct HeroOverlayView: View {
         withAnimation(.easeOut(duration: 0.4)) { sessionOpacity = 0 }
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
             heroFlightRect = dest?.rect ?? visual
-            heroProgress = dest != nil ? 0 : 1
+            if let dest {
+                heroFlightBorder = dest.border
+                heroFlightBottomBorder = dest.bottomBorder
+                heroFlightRadius = dest.cornerRadius
+            }
         } completion: {
             finishClose()
         }
@@ -280,7 +320,7 @@ struct HeroOverlayView: View {
         heroImage = nil
         heroPhase = .idle
         heroDidLandOpen = false
-        heroProgress = 0
+        openedCornerGeometry = nil
         sessionOpacity = 0
         cardOpacity = 0
     }
@@ -288,5 +328,14 @@ struct HeroOverlayView: View {
     private func screenCenter() -> CGPoint {
         let b = UIScreen.main.bounds
         return CGPoint(x: b.midX, y: b.midY)
+    }
+
+    private func cornerGeometry(for id: String) -> PhotoCornerGeometry? {
+        frameStore.cells[id]?.cornerGeometry ?? openedCornerGeometry
+    }
+
+    private func previewCornerRadius(for id: String?, size: CGSize) -> CGFloat {
+        guard let id else { return 0 }
+        return cornerGeometry(for: id)?.radius(for: size) ?? model.photoCornerRadius.value
     }
 }

@@ -30,6 +30,7 @@ struct ZoomableImageView: UIViewRepresentable {
     var isSelected = false
     var livePhotoVisitID: UUID? = nil
     var allowsLivePlayback = false
+    var interactionRecoveryID: UUID?
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let scrollView = ZoomScrollView()
@@ -48,6 +49,7 @@ struct ZoomableImageView: UIViewRepresentable {
         let card = context.coordinator.card
         card.backgroundColor = UIColor(cardColor)
         card.layer.cornerRadius = cornerRadius
+        card.layer.cornerCurve = .continuous
         card.layer.masksToBounds = cornerRadius > 0
         scrollView.addSubview(card)
 
@@ -57,6 +59,7 @@ struct ZoomableImageView: UIViewRepresentable {
         imageView.clipsToBounds = true
         let innerRadius = max(cornerRadius - sideBorder, 0)
         imageView.layer.cornerRadius = innerRadius
+        imageView.layer.cornerCurve = .continuous
         imageView.layer.masksToBounds = innerRadius > 0
         card.addSubview(imageView)
 
@@ -89,12 +92,16 @@ struct ZoomableImageView: UIViewRepresentable {
         scrollView.addGestureRecognizer(doubleTap)
 
         context.coordinator.apply(self)
+        context.coordinator.lastRecoveryID = interactionRecoveryID
         return scrollView
     }
 
     func updateUIView(_ uiView: ZoomScrollView, context: Context) {
         context.coordinator.imageView.image = image
         context.coordinator.apply(self)
+        context.coordinator.recoverInteraction(
+            uiView, id: interactionRecoveryID, selected: isSelected
+        )
         context.coordinator.relayout(uiView)
     }
 
@@ -120,6 +127,34 @@ struct ZoomableImageView: UIViewRepresentable {
         let onZoomChanged: (Bool) -> Void
         let onEditCaption: (() -> Void)?
         private var wasZoomed = false
+        private var isSelected = false
+        private var isRecoveringInteraction = false
+        var lastRecoveryID: UUID?
+
+        func recoverInteraction(_ scrollView: UIScrollView, id: UUID?, selected: Bool) {
+            guard id != lastRecoveryID else { return }
+            lastRecoveryID = id
+            // Cancel native pan/pinch/deceleration without discarding the user's
+            // actual zoom level. Only the selected page may update parent state.
+            isRecoveringInteraction = true
+            scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+            for gesture in [scrollView.panGestureRecognizer, scrollView.pinchGestureRecognizer].compactMap({ $0 }) {
+                let enabled = gesture.isEnabled
+                gesture.isEnabled = false
+                gesture.isEnabled = enabled
+            }
+            relayout(scrollView)
+            isRecoveringInteraction = false
+            guard selected else { return }
+            DispatchQueue.main.async { [weak self, weak scrollView] in
+                guard let self, let scrollView, self.lastRecoveryID == id,
+                      self.isSelected else { return }
+                let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+                self.wasZoomed = zoomed
+                self.livePlayer?.setZoomed(zoomed)
+                self.onZoomChanged(zoomed)
+            }
+        }
 
         init(onZoomChanged: @escaping (Bool) -> Void, onEditCaption: (() -> Void)?) {
             self.onZoomChanged = onZoomChanged
@@ -127,6 +162,7 @@ struct ZoomableImageView: UIViewRepresentable {
         }
 
         func apply(_ view: ZoomableImageView) {
+            isSelected = view.isSelected
             displaySize = view.displaySize
             sideBorder = view.sideBorder
             topBorder = view.topBorder
@@ -150,6 +186,7 @@ struct ZoomableImageView: UIViewRepresentable {
                 livePlayer = player
             }
             livePlayer?.liveView.layer.cornerRadius = innerRadius
+            livePlayer?.liveView.layer.cornerCurve = .continuous
             livePlayer?.update(
                 asset: view.livePhotoAsset,
                 selected: view.isSelected,
@@ -214,21 +251,23 @@ struct ZoomableImageView: UIViewRepresentable {
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             centerContent(scrollView)
+            guard !isRecoveringInteraction else { return }
             let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
             livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
-                onZoomChanged(zoomed)
+                if isSelected { onZoomChanged(zoomed) }
             }
         }
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
             centerContent(scrollView)
+            guard !isRecoveringInteraction else { return }
             let zoomed = scale > scrollView.minimumZoomScale + 0.01
             livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
-                onZoomChanged(zoomed)
+                if isSelected { onZoomChanged(zoomed) }
             }
         }
 

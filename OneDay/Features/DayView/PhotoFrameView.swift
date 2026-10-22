@@ -4,6 +4,7 @@ import SwiftUI
 /// `width` is the TOTAL framed width (image + border), so blocks never overflow.
 struct PhotoFrameView: View {
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.heroSourceID) private var heroSourceID
 
     let item: PhotoItem
     var width: CGFloat
@@ -51,7 +52,7 @@ struct PhotoFrameView: View {
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
-                    if let onEditCaption {
+                    if let onEditCaption, item.sharedCapabilities.canEditCaption {
                         Button {
                             onEditCaption(item)
                         } label: {
@@ -80,6 +81,24 @@ struct PhotoFrameView: View {
             .padding(.bottom, bottomBorder)
             .background(borderColor)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .background {
+                if heroSourceID == item.id {
+                    GeometryReader { geo in
+                        let rect = geo.frame(in: .named(heroCoordinateSpace))
+                        let scaleX = geo.size.width > 0 ? rect.width / geo.size.width : 1
+                        let scaleY = geo.size.height > 0 ? rect.height / geo.size.height : 1
+                        Color.clear.preference(
+                            key: HeroCellFrameKey.self,
+                            value: [item.id: HeroCellInfo(
+                                rect: rect,
+                                border: border * scaleX,
+                                bottomBorder: bottomBorder * scaleY,
+                                cornerRadius: cornerRadius * scaleX
+                            )]
+                        )
+                    }
+                }
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Theme.ink.opacity(0.15), lineWidth: 1 / max(displayScale, 1))

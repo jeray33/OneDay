@@ -77,6 +77,6 @@ struct StackedClusterView: View {
                        showCaption: showCaptions,
                        cornerRadius: cornerRadius,
                        onEditCaption: onEditCaption)
-            .heroCell(id: item.id, hiddenID: hiddenItemID, border: border)
+            .heroCell(id: item.id, hiddenID: hiddenItemID)
     }
 }

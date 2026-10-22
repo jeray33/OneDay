@@ -4,6 +4,7 @@ import Photos
 import UIKit
 
 struct PhotoPreviewView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: DayViewModel
     let namespace: Namespace.ID
     /// Host-driven fade for background + chrome during the open/close hero
@@ -13,6 +14,7 @@ struct PhotoPreviewView: View {
     /// photo, 1 once it has landed.
     var cardOpacity: Double = 1
     var isSessionOpen: Bool = true
+    var cornerGeometry: (String) -> PhotoCornerGeometry?
     var onSelectionChanged: (String) -> Void = { _ in }
     /// Requests close. Passes the live drag translation, scale and the current
     /// photo id so the host can fly the photo back to its grid cell.
@@ -25,6 +27,8 @@ struct PhotoPreviewView: View {
     @AppStorage("OneDay.previewSwipeSpeedBiasLevel") private var swipeSpeedBiasLevel = SwipeSpeedBiasLevel.medium.rawValue
 
     @State private var selection: String
+    // Reuse page preloads without blanking the stationary footer on selection.
+    @State private var previewPlaces: [String: String] = [:]
     @State private var livePhotoVisitID = UUID()
     @Environment(\.scenePhase) private var scenePhase
     @State private var dragOffset: CGSize = .zero
@@ -53,9 +57,22 @@ struct PhotoPreviewView: View {
     @State private var undoOffset: CGSize = .zero
     @State private var undoScale: CGFloat = 1
     @State private var imageCategoryOverride: ImageCategoryOverride = .automatic
+    @State private var toastText: String?
+    @State private var toastID: UUID?
+    @State private var deleteRestrictionWarned = false
+    @GestureState private var dragGestureActive = false
+    @State private var dragSequence = UUID()
+    @State private var interactionPolicy = PreviewInteractionPolicy()
+    @State private var interactionRecoveryID = UUID()
+    @State private var dragCancellationTask: Task<Void, Never>?
+    @State private var stagingTask: Task<Void, Never>?
+    @State private var undoTask: Task<Void, Never>?
+    @State private var flipTask: Task<Void, Never>?
+    @State private var swipeHapticTask: Task<Void, Never>?
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
          sessionOpacity: Double = 1, cardOpacity: Double = 1, isSessionOpen: Bool = true,
+         cornerGeometry: @escaping (String) -> PhotoCornerGeometry? = { _ in nil },
          onSelectionChanged: @escaping (String) -> Void = { _ in },
          onClose: @escaping (CGSize, CGFloat, String) -> Void = { _, _, _ in }) {
         self.model = model
@@ -63,6 +80,7 @@ struct PhotoPreviewView: View {
         self.sessionOpacity = sessionOpacity
         self.cardOpacity = cardOpacity
         self.isSessionOpen = isSessionOpen
+        self.cornerGeometry = cornerGeometry
         self.onSelectionChanged = onSelectionChanged
         self.onClose = onClose
         _selection = State(initialValue: current.id)
@@ -81,11 +99,28 @@ struct PhotoPreviewView: View {
         return allItems.first { $0.id == lastID }
     }
 
+    /// Capabilities of the currently previewed photo; permissive when there is
+    /// no selection (e.g. an empty day) so dismiss gestures keep working.
+    private var currentItemCapabilities: SharedAssetPolicy {
+        currentItem?.sharedCapabilities ?? .unrestricted
+    }
+    /// True while the previewed photo may not be deleted (e.g. shared by a
+    /// friend): the up-swipe becomes a rubber band instead of staging.
+    private var isDeleteRestricted: Bool {
+        !currentItemCapabilities.canDelete
+    }
+    /// 0…1 opacity for the "cannot delete" hint, driven by the damped drag.
+    private var deleteRestrictionHintProgress: Double {
+        guard isDeleteRestricted else { return 0 }
+        return min(max(-dragOffset.height, 0) / 64, 1)
+    }
+
     private var dragProgress: CGFloat {
         min(max(dragOffset.height, 0) / 320, 1)
     }
     private var deleteProgress: CGFloat {
-        min(max(-dragOffset.height, 0) / 280, 1)
+        guard !isDeleteRestricted else { return 0 }
+        return min(max(-dragOffset.height, 0) / 280, 1)
     }
     private var activeScale: CGFloat {
         let base = 1 - dragProgress * 0.18 - deleteProgress * 0.45
@@ -122,6 +157,13 @@ struct PhotoPreviewView: View {
     }
 
     var body: some View {
+        GeometryReader { geometry in
+            previewContent(size: geometry.size)
+        }
+        .ignoresSafeArea()
+    }
+
+    private func previewContent(size: CGSize) -> some View {
         ZStack {
             (dynamicBg ?? model.pageBackgroundColor)
                 .ignoresSafeArea()
@@ -145,7 +187,12 @@ struct PhotoPreviewView: View {
                         onFlipBackRequest: { requestFlip(toBack: false) },
                         isSelected: selection == item.id,
                         livePhotoVisitID: livePhotoVisitID,
-                        allowsLivePlayback: allowsLivePlayback && selection == item.id
+                        allowsLivePlayback: allowsLivePlayback && selection == item.id,
+                        onPlaceResolved: { id, title in
+                            previewPlaces[id] = title
+                        },
+                        interactionRecoveryID: interactionRecoveryID,
+                        cornerGeometry: cornerGeometry(item.id)
                     )
                     .tag(item.id)
                 }
@@ -154,12 +201,20 @@ struct PhotoPreviewView: View {
             .ignoresSafeArea()
             .opacity((isVerticalDragLocked ? 0 : 1) * cardOpacity)
             .allowsHitTesting(!isVerticalDragLocked && !isFlipActive && !isClosing)
-            .simultaneousGesture(dismissDrag)
 
             verticalDragOverlay
             undoRestoreOverlay
+
+            // This layer stays outside TabView, so only the media pages slide.
+            bottomInfo
         }
+        // Keep the recognizer on a stable ancestor, not the page we hide and
+        // disable while a vertical drag is in progress.
+        .coordinateSpace(name: "previewInteraction")
+        .simultaneousGesture(dismissDrag(in: size))
         .overlay(alignment: .top) { topBar }
+        .overlay(alignment: .top) { deleteRestrictionHint }
+        .overlay(alignment: .top) { toastView }
         .overlay(alignment: .bottom) { bottomControls }
         .statusBarHidden()
         .sheet(item: $albumItem) { item in
@@ -193,6 +248,25 @@ struct PhotoPreviewView: View {
             refreshTagAlbums()
             refreshMembership()
             ensureValidSelectionAfterFiltering()
+        }
+        .onChange(of: dragGestureActive) { _, active in
+            guard !active, dragStartSelection != nil else { return }
+            let sequence = dragSequence
+            dragCancellationTask?.cancel()
+            dragCancellationTask = Task { @MainActor in
+                // Normal onEnded consumes the drag first. GestureState also
+                // resets on cancellation, which has no onEnded callback.
+                await Task.yield()
+                guard !Task.isCancelled, sequence == dragSequence,
+                      !dragGestureActive, dragStartSelection != nil else { return }
+                resetDrag(animated: scenePhase == .active)
+            }
+        }
+        .onChange(of: scenePhase) { _, _ in
+            recoverFromInterruption()
+        }
+        .onDisappear {
+            recoverFromInterruption(notifySelection: false)
         }
         .onChange(of: selection) {
             // A vertical dismiss drag pins `selection` back to its start every
@@ -242,15 +316,38 @@ struct PhotoPreviewView: View {
         }
     }
 
+    private var bottomInfo: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if let item = currentItem {
+                PreviewInfoView(item: item, model: model,
+                                place: item.location == nil ? nil : previewPlaces[item.id]) {
+                    requestFlip(toBack: true)
+                }
+            }
+        }
+        .padding(.bottom, bottomSafeAreaInset() + 12)
+        .ignoresSafeArea()
+        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity * cardOpacity)
+        .animation(.easeInOut(duration: 0.16), value: isZoomed || isFlipActive)
+        .allowsHitTesting(!isZoomed && !isFlipActive && !isClosing
+                         && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
+                         && controlsOpacity > 0.15 && sessionOpacity * cardOpacity > 0.15)
+    }
+
     private var bottomControls: some View {
         VStack(spacing: 8) {
-            albumTagBar
+            if model.showAlbumTagBar {
+                albumTagBar
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 24)))
+            }
             bottomActionBar
         }
         .padding(.bottom, bottomSafeAreaInset() + 10)
         .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
         .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
+        .animation(PreviewTagBarTransition.animation(reduceMotion: reduceMotion), value: model.showAlbumTagBar)
         .allowsHitTesting(!(isZoomed || isFlipActive) && max(dragProgress, deleteProgress) < 0.15
                           && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete)
     }
@@ -272,16 +369,27 @@ struct PhotoPreviewView: View {
     /// Close from a button / programmatic path: hand back to the host with a
     /// resting card (no drag), letting it fly the photo home.
     private func performDismiss() {
-        guard !isClosing else { return }
+        guard scenePhase == .active, isSessionOpen, !isClosing else { return }
         isClosing = true
         onClose(.zero, 1, selection)
     }
 
-    private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 12)
+    private func dismissDrag(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .named("previewInteraction"))
+            .updating($dragGestureActive) { _, active, _ in active = true }
             .onChanged { value in
-                guard !isZoomed, !isStagingDelete, !isFlipActive else { return }
-                if dragStartSelection == nil { dragStartSelection = selection }
+                guard scenePhase == .active, isSessionOpen, !isClosing,
+                      !isZoomed, !isStagingDelete, !isFlipActive, undoItemID == nil,
+                      PreviewInteractionPolicy.allowsStart(
+                        y: value.startLocation.y, height: size.height,
+                        topInset: topSafeAreaInset(), bottomInset: bottomSafeAreaInset()
+                      ) else { return }
+                if dragStartSelection == nil {
+                    dragCancellationTask?.cancel()
+                    dragSequence = UUID()
+                    dragStartSelection = selection
+                    deleteRestrictionWarned = false
+                }
                 let t = value.translation
                 if abs(t.width) > 12, abs(t.width) > abs(t.height) {
                     observedHorizontalSwipe = true
@@ -297,61 +405,69 @@ struct PhotoPreviewView: View {
                     }
                 }
                 if isVerticalDragLocked {
-                    dragOffset = CGSize(width: value.translation.width * 0.35,
-                                        height: value.translation.height)
+                    if isDeleteRestricted, t.height < 0 {
+                        // Photos that must not be deleted (e.g. shared by a
+                        // friend) rubber-band instead of staging: damped
+                        // travel, no shrink, a warning buzz at the limit.
+                        dragOffset = CGSize(width: t.width * 0.35,
+                                            height: max(t.height * 0.32, -90))
+                        if -dragOffset.height > 64, !deleteRestrictionWarned {
+                            deleteRestrictionWarned = true
+                            let feedback = UINotificationFeedbackGenerator()
+                            feedback.prepare()
+                            feedback.notificationOccurred(.warning)
+                        }
+                    } else {
+                        dragOffset = CGSize(width: value.translation.width * 0.35,
+                                            height: value.translation.height)
+                    }
                     if let dragStartSelection, selection != dragStartSelection {
                         selection = dragStartSelection
                     }
                 }
             }
             .onEnded { value in
-                guard !isZoomed, !isStagingDelete, !isFlipActive else { return }
+                guard dragStartSelection != nil else { return }
                 let startedSelection = dragStartSelection
                 dragStartSelection = nil
+                dragCancellationTask?.cancel()
+                guard scenePhase == .active, isSessionOpen, !isClosing,
+                      !isZoomed, !isStagingDelete, !isFlipActive, undoItemID == nil else {
+                    resetDrag(animated: false)
+                    return
+                }
                 let horizontalDistance = abs(value.translation.width)
                 if observedHorizontalSwipe && horizontalDistance > 20 {
                     pendingSwipeSettleHaptic = true
-                    Task {
-                        try? await Task.sleep(nanoseconds: 700_000_000)
-                        if pendingSwipeSettleHaptic {
-                            pendingSwipeSettleHaptic = false
-                        }
+                    swipeHapticTask?.cancel()
+                    let generation = interactionPolicy.generation
+                    swipeHapticTask = Task { @MainActor in
+                        do { try await Task.sleep(nanoseconds: 700_000_000) }
+                        catch { return }
+                        guard canCompleteInteraction(generation) else { return }
+                        pendingSwipeSettleHaptic = false
                     }
                 }
                 observedHorizontalSwipe = false
-                guard isVerticalDragLocked else {
-                    // Horizontal browse settled: commit the final page now that
-                    // the drag is over (mid-drag updates were suppressed above).
-                    onSelectionChanged(selection)
-                    return
-                }
-                let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
-                guard verticalDominant else {
-                    isVerticalDragLocked = false
-                    verticalDragItemID = nil
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        dragOffset = .zero
-                        stagingDeleteScale = 1
-                    }
-                    return
-                }
-                if let startedSelection, selection != startedSelection {
+                if isVerticalDragLocked, let startedSelection, selection != startedSelection {
                     selection = startedSelection
                 }
-
-                let downFarEnough = value.translation.height > 80
-                    || value.predictedEndTranslation.height > 240
-                let upFarEnough = value.translation.height < -180
-                    || value.predictedEndTranslation.height < -460
-
-                if upFarEnough {
-                    Task { await stageCurrentForDeletion() }
-                    return
-                }
-                if downFarEnough {
+                switch PreviewInteractionPolicy.endAction(
+                    translation: value.translation, predicted: value.predictedEndTranslation,
+                    verticalLocked: isVerticalDragLocked, canDelete: !isDeleteRestricted
+                ) {
+                case .browse:
+                    onSelectionChanged(selection)
+                case .restore:
+                    resetDrag(animated: true)
+                case .stage:
+                    let generation = interactionPolicy.generation
+                    stagingTask = Task { @MainActor in
+                        await stageCurrentForDeletion(generation: generation)
+                    }
+                case .close:
                     if !pendingDeleteIDs.isEmpty {
-                        isVerticalDragLocked = false
-                        verticalDragItemID = nil
+                        resetDrag(animated: true)
                         showPendingDelete = true
                         return
                     }
@@ -360,15 +476,54 @@ struct PhotoPreviewView: View {
                     // Keep the dragged card shown (via verticalDragOverlay) so the
                     // flight layer takes over from its exact on-screen position.
                     onClose(dragOffset, activeScale, selection)
-                    return
                 }
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                    dragOffset = .zero
-                    stagingDeleteScale = 1
-                }
-                isVerticalDragLocked = false
-                verticalDragItemID = nil
             }
+    }
+
+    private func canCompleteInteraction(_ generation: UInt) -> Bool {
+        !Task.isCancelled && interactionPolicy.canComplete(generation, isActive: scenePhase == .active)
+    }
+
+    private func resetDrag(animated: Bool, notifySelection: Bool = true) {
+        if let id = verticalDragItemID, visibleItems.contains(where: { $0.id == id }) {
+            selection = id
+        }
+        dragStartSelection = nil
+        observedHorizontalSwipe = false
+        isVerticalDragLocked = false
+        verticalDragItemID = nil
+        deleteRestrictionWarned = false
+        withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.2) : nil) {
+            dragOffset = .zero
+            stagingDeleteScale = 1
+        }
+        if notifySelection, !isClosing, currentItem != nil {
+            onSelectionChanged(selection)
+        }
+    }
+
+    private func recoverFromInterruption(notifySelection: Bool = true) {
+        interactionPolicy.invalidate()
+        dragSequence = UUID()
+        dragCancellationTask?.cancel()
+        stagingTask?.cancel()
+        undoTask?.cancel()
+        flipTask?.cancel()
+        swipeHapticTask?.cancel()
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            resetDrag(animated: false, notifySelection: notifySelection)
+            pendingSwipeSettleHaptic = false
+            isStagingDelete = false
+            undoItemID = nil
+            undoOffset = .zero
+            undoScale = 1
+            // flipAngle already stores the destination, not the presentation
+            // angle. Settle there rather than leaving a transition lock.
+            isFlipTransitioning = false
+            interactionRecoveryID = UUID()
+        }
     }
 
     private var topBar: some View {
@@ -386,11 +541,13 @@ struct PhotoPreviewView: View {
                     } label: {
                         Label("编辑说明", systemImage: "pencil")
                     }
+                    .disabled(!item.sharedCapabilities.canEditCaption)
                     Button {
                         albumItem = item
                     } label: {
                         Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
                     }
+                    .disabled(!item.sharedCapabilities.canEditAlbums)
                     if MediaFilter.supportsImageClassification(item.asset) {
                         Menu {
                             Picker("图片分类", selection: Binding(
@@ -507,17 +664,72 @@ struct PhotoPreviewView: View {
             .glassEffect(.regular.interactive(), in: .circle)
     }
 
+    /// Transient explanation for a blocked action (e.g. read-only shared photos).
+    private func showToast(_ text: String) {
+        withAnimation(.easeOut(duration: 0.2)) { toastText = text }
+        toastID = UUID()
+    }
+
+    @ViewBuilder
+    private var toastView: some View {
+        if let text = toastText {
+            Text(text)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.top, topSafeAreaInset() + 56)
+                .opacity(sessionOpacity)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: toastID) {
+                    try? await Task.sleep(nanoseconds: 1_600_000_000)
+                    withAnimation(.easeIn(duration: 0.25)) { toastText = nil }
+                }
+        }
+    }
+
+    /// Fades in while the user tries to up-swipe-delete a photo that cannot be
+    /// deleted (e.g. shared by a friend), alongside the rubber-band drag.
+    @ViewBuilder
+    private var deleteRestrictionHint: some View {
+        if deleteRestrictionHintProgress > 0.01 {
+            HStack(spacing: 5) {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 11, weight: .bold))
+                Text(currentItem?.isForeignShared == true
+                     ? "他人共享的照片不能删除"
+                     : "这张照片不能删除")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.black)
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.top, topSafeAreaInset() + 56)
+            .opacity(deleteRestrictionHintProgress * sessionOpacity)
+            .allowsHitTesting(false)
+        }
+    }
+
     @ViewBuilder
     private var bottomActionBar: some View {
         if let item = currentItem {
             HStack {
                 Button {
+                    guard item.sharedCapabilities.canFavorite else {
+                        showToast(item.isForeignShared
+                                  ? "他人共享的照片不能收藏"
+                                  : "这张照片不能收藏")
+                        return
+                    }
                     Task { await model.toggleFavorite(item) }
                 } label: {
                     let fav = model.isFavorite(item)
+                    let canFavorite = item.sharedCapabilities.canFavorite
                     Image(systemName: fav ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(fav ? Theme.accent : .black)
+                        .foregroundStyle(fav ? Theme.accent : .black.opacity(canFavorite ? 1 : 0.35))
                         .frame(width: 40, height: 40)
                         .glassEffect(.regular.interactive(), in: .circle)
                         .contentTransition(.symbolEffect(.replace))
@@ -555,8 +767,20 @@ struct PhotoPreviewView: View {
             AlbumTagBar(
                 albums: tagAlbums,
                 membershipIDs: membershipIDs,
+                isReadOnly: !currentItemCapabilities.canEditAlbums
+                    || !currentItemCapabilities.canHide,
                 onConfigure: { showAlbumConfig = true },
                 onTapAlbum: { album in
+                    guard let item = currentItem else { return }
+                    let allowed = album.id == AlbumInfo.hiddenAlbumID
+                        ? item.sharedCapabilities.canHide
+                        : item.sharedCapabilities.canEditAlbums
+                    guard allowed else {
+                        showToast(item.isForeignShared
+                                  ? "他人共享的照片不能归类或隐藏"
+                                  : "这张照片不能归类或隐藏")
+                        return
+                    }
                     Task { await toggleCurrentPhoto(in: album) }
                 }
             )
@@ -635,8 +859,10 @@ struct PhotoPreviewView: View {
         }
     }
 
-    private func stageCurrentForDeletion() async {
-        guard let item = currentItem, !isStagingDelete else { return }
+    private func stageCurrentForDeletion(generation: UInt) async {
+        guard canCompleteInteraction(generation), isSessionOpen, !isClosing,
+              let item = currentItem, !isStagingDelete,
+              item.sharedCapabilities.canDelete else { return }
         if pendingDeleteIDs.contains(item.id) {
             advanceAfterStaging(from: item.id)
             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragOffset = .zero }
@@ -645,11 +871,19 @@ struct PhotoPreviewView: View {
             return
         }
         isStagingDelete = true
+        defer {
+            if interactionPolicy.generation == generation, isStagingDelete {
+                isStagingDelete = false
+                resetDrag(animated: false)
+            }
+        }
         withAnimation(.easeIn(duration: 0.3)) {
             dragOffset = CGSize(width: dragOffset.width, height: -360)
             stagingDeleteScale = 0.08
         }
-        try? await Task.sleep(nanoseconds: 320_000_000)
+        do { try await Task.sleep(nanoseconds: 320_000_000) }
+        catch { return }
+        guard canCompleteInteraction(generation), selection == item.id else { return }
         let feedback = UIImpactFeedbackGenerator(style: .light)
         feedback.prepare()
         feedback.impactOccurred(intensity: 0.7)
@@ -687,12 +921,17 @@ struct PhotoPreviewView: View {
 
     private func confirmPendingDelete(selectedIDs: Set<String>) async {
         guard !selectedIDs.isEmpty else { return }
-        let targetItems = pendingDeleteItems.filter { selectedIDs.contains($0.id) }
+        // Backstop: never hand a photo the policy refuses to delete to the
+        // library, whatever path staged it.
+        let targetItems = pendingDeleteItems.filter {
+            selectedIDs.contains($0.id) && $0.sharedCapabilities.canDelete
+        }
         guard !targetItems.isEmpty else { return }
+        let deletedIDs = Set(targetItems.map(\.id))
         do {
             try await PhotoActionService.shared.delete(targetItems.map(\.asset))
-            model.removeItems(ids: selectedIDs)
-            pendingDeleteIDs.removeAll { selectedIDs.contains($0) }
+            model.removeItems(ids: deletedIDs)
+            pendingDeleteIDs.removeAll { deletedIDs.contains($0) }
             showPendingDelete = false
             performDismiss()
         } catch {
@@ -728,7 +967,8 @@ struct PhotoPreviewView: View {
                 flipAngle: flipAngle,
                 swipeEffectConfig: swipeEffectConfig,
                 onFlipRequest: { requestFlip(toBack: true) },
-                onFlipBackRequest: { requestFlip(toBack: false) }
+                onFlipBackRequest: { requestFlip(toBack: false) },
+                cornerGeometry: cornerGeometry(item.id)
             )
             .opacity(cardOpacity)
             .ignoresSafeArea()
@@ -755,7 +995,8 @@ struct PhotoPreviewView: View {
                 flipAngle: 0,
                 swipeEffectConfig: swipeEffectConfig,
                 onFlipRequest: {},
-                onFlipBackRequest: {}
+                onFlipBackRequest: {},
+                cornerGeometry: cornerGeometry(item.id)
             )
             .opacity(cardOpacity)
             .ignoresSafeArea()
@@ -764,7 +1005,8 @@ struct PhotoPreviewView: View {
     }
 
     private func undoLastStaged() {
-        guard undoItemID == nil, !isStagingDelete,
+        guard scenePhase == .active, isSessionOpen, !isClosing,
+              undoItemID == nil, !isStagingDelete,
               let lastID = pendingDeleteIDs.last,
               allItems.contains(where: { $0.id == lastID }) else { return }
         undoItemID = lastID
@@ -774,8 +1016,12 @@ struct PhotoPreviewView: View {
             undoOffset = .zero
             undoScale = 1
         }
-        Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
+        undoTask?.cancel()
+        let generation = interactionPolicy.generation
+        undoTask = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 400_000_000) }
+            catch { return }
+            guard canCompleteInteraction(generation) else { return }
             let feedback = UIImpactFeedbackGenerator(style: .light)
             feedback.prepare()
             feedback.impactOccurred(intensity: 0.7)
@@ -786,7 +1032,8 @@ struct PhotoPreviewView: View {
     }
 
     private func requestFlip(toBack: Bool) {
-        guard !isStagingDelete else { return }
+        guard scenePhase == .active, isSessionOpen, !isClosing,
+              !isStagingDelete, undoItemID == nil else { return }
         if toBack {
             guard !isFlippedToBack, !isFlipTransitioning, !isZoomed else { return }
         } else {
@@ -796,8 +1043,13 @@ struct PhotoPreviewView: View {
         withAnimation(.easeInOut(duration: 0.6)) {
             flipAngle = toBack ? 180 : 0
         }
-        Task {
-            try? await Task.sleep(nanoseconds: 650_000_000)
+        flipTask?.cancel()
+        let generation = interactionPolicy.generation
+        let itemID = selection
+        flipTask = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 650_000_000) }
+            catch { return }
+            guard canCompleteInteraction(generation), selection == itemID else { return }
             isFlipTransitioning = false
         }
     }

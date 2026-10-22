@@ -24,10 +24,10 @@ extension PhotoItem {
 }
 
 extension PhotoItem {
-    /// Builds a `PhotoItem` from a `PHAsset` with the shared-library flag
+    /// Builds a `PhotoItem` from a `PHAsset` with the shared provenance
     /// resolved at construction time. All call sites must use this factory
-    /// instead of any raw `(asset:)` initializer so the flag is never silently
-    /// left as `false`.
+    /// instead of any raw `(asset:)` initializer so the source is never
+    /// silently left empty.
     ///
     /// `sharedIDs` is the set of asset `localIdentifier`s that live in any
     /// iCloud Shared Album (all members, regardless of contributor). A photo is
@@ -48,9 +48,14 @@ extension PhotoItem {
     ) -> PhotoItem {
         let inSharedAlbum = sharedIDs.contains(asset.localIdentifier)
         let inSharedLibrary = isSharedLibraryOrigin(asset)
+        // Album membership comes from the actual shared collections, so it is
+        // definitive; the source-type heuristic only classifies the rest.
+        let source: PhotoItem.SharedSource? = inSharedAlbum
+            ? .album
+            : (inSharedLibrary ? .library : nil)
         return PhotoItem(
             asset: asset,
-            isFromSharedLibrary: inSharedAlbum || inSharedLibrary,
+            sharedSource: source,
             isOwnSharedContribution: ownContributionIDs.contains(asset.localIdentifier)
         )
     }
@@ -65,5 +70,17 @@ extension PhotoItem {
         assets.map {
             build(from: $0, sharedIDs: sharedIDs, ownContributionIDs: ownContributionIDs)
         }
+    }
+}
+
+extension PhotoItem {
+    /// Which mutating operations the app allows on this item. Items someone
+    /// else shared are read-only; everything else follows the system's own
+    /// capability report (`PHAsset.canPerform`).
+    var sharedCapabilities: SharedAssetPolicy {
+        SharedAssetPolicy.resolve(.init(
+            isForeignShared: isForeignShared,
+            systemAllowsDelete: asset.canPerform(.delete),
+            systemAllowsEditProperties: asset.canPerform(.properties)))
     }
 }

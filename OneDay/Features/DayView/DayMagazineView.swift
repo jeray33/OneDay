@@ -554,7 +554,7 @@ struct DayMagazineView: View {
             cornerRadius: model.photoCornerRadius.value,
             onEditCaption: { editingItem = $0 }
         )
-        .heroCell(id: item.id, hiddenID: heroHiddenID, border: border)
+        .heroCell(id: item.id, hiddenID: heroHiddenID)
         .onTapGesture { heroRequest = item }
         .contextMenu {
             Button {
@@ -563,16 +563,19 @@ struct DayMagazineView: View {
                 Label(model.isFavorite(item) ? "取消收藏" : "收藏",
                       systemImage: model.isFavorite(item) ? "heart.slash" : "heart")
             }
+            .disabled(!item.sharedCapabilities.canFavorite)
             Button {
                 Task { await model.perform(.pickAlbum, on: item) }
             } label: {
                 Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
             }
+            .disabled(!item.sharedCapabilities.canEditAlbums)
             Button(role: .destructive) {
                 Task { await model.perform(.delete, on: item) }
             } label: {
                 Label("删除", systemImage: "trash")
             }
+            .disabled(!item.sharedCapabilities.canDelete)
         }
         .scrollTransition(.animated(scrollAnimation)) { content, phase in
             let y: CGFloat = phase == .bottomTrailing ? scrollMovement :

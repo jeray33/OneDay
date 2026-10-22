@@ -193,7 +193,7 @@ struct MagazineBlockView: View {
 
     private func tappable<Content: View>(_ item: PhotoItem, border: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .heroCell(id: item.id, hiddenID: hiddenItemID, border: border)
+            .heroCell(id: item.id, hiddenID: hiddenItemID)
             .onTapGesture { onSelect(item) }
             .contextMenu {
                 Button {
@@ -202,16 +202,19 @@ struct MagazineBlockView: View {
                     Label(isFavorite(item) ? "取消收藏" : "收藏",
                           systemImage: isFavorite(item) ? "heart.slash" : "heart")
                 }
+                .disabled(!item.sharedCapabilities.canFavorite)
                 Button {
                     onAction(.pickAlbum, item)
                 } label: {
                     Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
                 }
+                .disabled(!item.sharedCapabilities.canEditAlbums)
                 Button(role: .destructive) {
                     onAction(.delete, item)
                 } label: {
                     Label("删除", systemImage: "trash")
                 }
+                .disabled(!item.sharedCapabilities.canDelete)
             }
     }
 }
