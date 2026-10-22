@@ -1,83 +1,111 @@
+import LinkPresentation
 import Photos
 import SwiftUI
 import UIKit
 
 struct PhotoShareSheet: View {
-    let asset: PHAsset
+    let content: PreparedPhotoShare
     @Environment(\.dismiss) private var dismiss
-    @State private var files: PhotoShareFiles?
-    @State private var errorMessage: String?
-    @State private var preparationID = UUID()
     @State private var presentationDetent: PresentationDetent = .medium
 
     var body: some View {
-        ZStack {
-            if let files {
-                SystemShareView(urls: files.urls) { dismiss() }
-                    .ignoresSafeArea()
-            } else {
-                NavigationStack {
-                    Group {
-                        if let errorMessage {
-                            ContentUnavailableView {
-                                Label("无法共享", systemImage: "exclamationmark.triangle")
-                            } description: {
-                                Text(errorMessage)
-                            } actions: {
-                                Button("重试") { preparationID = UUID() }
-                            }
-                        } else {
-                            ProgressView("正在准备共享…")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("取消") { dismiss() }
-                        }
-                    }
-                }
-            }
+        let dismiss = dismiss
+        SystemShareView(controller: content.controller) { dismiss() }
+            .ignoresSafeArea()
+            .presentationDetents([.medium, .large], selection: $presentationDetent)
+            .presentationDragIndicator(.visible)
+    }
+}
+
+@MainActor
+final class PreparedPhotoShare: Identifiable {
+    let id = UUID()
+    let controller: UIActivityViewController
+    private let directory: URL
+
+    private init(files: PhotoShareFiles, thumbnail: UIImage?) {
+        directory = files.directory
+        let sources = files.urls.map { PhotoShareItemSource(url: $0, thumbnail: thumbnail) }
+        controller = UIActivityViewController(activityItems: sources, applicationActivities: nil)
+        controller.loadViewIfNeeded()
+    }
+
+    static func prepare(asset: PHAsset) async throws -> PreparedPhotoShare {
+        let files = try await PhotoShareFiles.prepare(asset: asset)
+        do {
+            let thumbnail = await ImageLoader.shared.thumbnail(
+                asset: files.asset, size: CGSize(width: 320, height: 320),
+                highQuality: true, contentMode: .aspectFit
+            )
+            try Task.checkCancellation()
+            return PreparedPhotoShare(files: files, thumbnail: thumbnail)
+        } catch {
+            files.remove()
+            throw error
         }
-        .presentationDetents([.medium, .large], selection: $presentationDetent)
-        .presentationDragIndicator(.visible)
-        .task(id: preparationID) {
-            errorMessage = nil
-            do {
-                let prepared = try await PhotoShareFiles.prepare(asset: asset)
-                guard !Task.isCancelled else {
-                    prepared.remove()
-                    return
-                }
-                files = prepared
-            } catch is CancellationError {
-                // Dismissing while iCloud downloads must not present an error.
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-        .onDisappear {
-            files?.remove()
-        }
+    }
+
+    deinit {
+        // Retain files for the entire share session, including activity extensions.
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
 private struct SystemShareView: UIViewControllerRepresentable {
-    let urls: [URL]
+    let controller: UIActivityViewController
     let onFinish: () -> Void
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
-        controller.completionWithItemsHandler = { _, _, _, _ in onFinish() }
+        let finish = onFinish
+        controller.completionWithItemsHandler = { _, _, _, _ in finish() }
         return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
+private final class PhotoShareItemSource: NSObject, UIActivityItemSource {
+    private let url: URL
+    private let thumbnail: UIImage?
+    private let metadata: LPLinkMetadata
+
+    init(url: URL, thumbnail: UIImage?) {
+        self.url = url
+        self.thumbnail = thumbnail
+        metadata = LPLinkMetadata()
+        metadata.title = url.lastPathComponent
+        if let thumbnail {
+            let provider = NSItemProvider(object: thumbnail)
+            metadata.imageProvider = provider
+            metadata.iconProvider = provider
+        }
+        super.init()
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        url
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        url
+    }
+
+    func activityViewControllerLinkMetadata(_ activityViewController: UIActivityViewController) -> LPLinkMetadata? {
+        metadata
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                thumbnailImageForActivityType activityType: UIActivity.ActivityType?,
+                                suggestedSize size: CGSize) -> UIImage? {
+        thumbnail
+    }
+}
+
 private struct PhotoShareFiles {
     let directory: URL
     let urls: [URL]
+    let asset: PHAsset
 
     static func prepare(asset: PHAsset) async throws -> Self {
         try Task.checkCancellation()
@@ -131,7 +159,7 @@ private struct PhotoShareFiles {
                 urls.append(url)
             }
             try Task.checkCancellation()
-            return Self(directory: directory, urls: urls)
+            return Self(directory: directory, urls: urls, asset: current)
         } catch {
             try? FileManager.default.removeItem(at: directory)
             throw error

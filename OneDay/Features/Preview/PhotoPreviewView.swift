@@ -35,7 +35,9 @@ struct PhotoPreviewView: View {
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
     @State private var editingItem: PhotoItem?
-    @State private var sharingItem: PhotoItem?
+    @State private var sharingContent: PreparedPhotoShare?
+    @State private var sharePreparationID: UUID?
+    @State private var sharePreparationTask: Task<Void, Never>?
     @State private var dynamicBg: Color?
     @State private var showAlbumConfig = false
     @State private var tagAlbums: [AlbumInfo] = []
@@ -77,12 +79,13 @@ struct PhotoPreviewView: View {
     @State private var isPreviewVisible = false
 
     private var isRotationTransitioning: Bool { rotationTransitionIDs.contains(selection) }
+    private var isSharing: Bool { sharingContent != nil || sharePreparationID != nil }
     private var showsRotationControls: Bool {
         scenePhase == .active && isSessionOpen && !isClosing
             && sessionOpacity > 0.99 && cardOpacity > 0.99
             && !isZoomed && !isFlipActive && dragStartSelection == nil
             && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-            && albumItem == nil && editingItem == nil && sharingItem == nil && !showAlbumConfig && !showPendingDelete
+            && albumItem == nil && editingItem == nil && !isSharing && !showAlbumConfig && !showPendingDelete
             && !isMutatingHidden && !isMutatingAlbum
     }
     private var allowsRotationControls: Bool { showsRotationControls && !isZoomed }
@@ -169,7 +172,7 @@ struct PhotoPreviewView: View {
         isSessionOpen && scenePhase == .active && !isClosing
             && !isZoomed && !isFlipActive && dragStartSelection == nil
             && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-            && albumItem == nil && editingItem == nil && sharingItem == nil && !showAlbumConfig && !showPendingDelete
+            && albumItem == nil && editingItem == nil && !isSharing && !showAlbumConfig && !showPendingDelete
             && !isMutatingHidden
     }
 
@@ -249,8 +252,8 @@ struct PhotoPreviewView: View {
                 Task { await model.updateCaption(caption, for: item) }
             }
         }
-        .sheet(item: $sharingItem) { item in
-            PhotoShareSheet(asset: item.asset)
+        .sheet(item: $sharingContent) { content in
+            PhotoShareSheet(content: content)
         }
         .sheet(isPresented: $showAlbumConfig) {
             AlbumConfigSheet(model: model) {
@@ -306,13 +309,18 @@ struct PhotoPreviewView: View {
         }
         .onChange(of: scenePhase) { _, _ in
             recoverFromInterruption()
+            if scenePhase != .active { cancelSharePreparation() }
             if scenePhase == .active {
                 PhotoRotationService.shared.reconcilePendingEdits { model.refreshEditedAsset($0) }
             }
         }
         .onDisappear {
             isPreviewVisible = false
+            cancelSharePreparation()
             recoverFromInterruption(notifySelection: false)
+        }
+        .onChange(of: currentItem?.contentVersion) { _, _ in
+            cancelSharePreparation()
         }
         .onChange(of: selection) {
             // A vertical dismiss drag pins `selection` back to its start every
@@ -361,6 +369,44 @@ struct PhotoPreviewView: View {
                 imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
             }
         }
+    }
+
+    private func requestShare(_ item: PhotoItem) {
+        guard !isSharing, scenePhase == .active, isSessionOpen, !isClosing,
+              item.id == selection, !PhotoRotationService.shared.isSaving(item.id),
+              !isRotationTransitioning else { return }
+        let requestID = UUID()
+        sharePreparationID = requestID
+        toastText = nil
+        sharePreparationTask = Task { @MainActor in
+            defer {
+                if sharePreparationID == requestID {
+                    sharePreparationID = nil
+                    sharePreparationTask = nil
+                }
+            }
+            do {
+                let content = try await PreparedPhotoShare.prepare(asset: item.asset)
+                guard !Task.isCancelled, sharePreparationID == requestID,
+                      isPreviewVisible, scenePhase == .active, isSessionOpen, !isClosing,
+                      currentItem?.contentVersion == item.contentVersion,
+                      !isZoomed, !isFlipActive, dragStartSelection == nil,
+                      !isVerticalDragLocked, !isStagingDelete, undoItemID == nil,
+                      albumItem == nil, editingItem == nil, !showAlbumConfig, !showPendingDelete else { return }
+                sharingContent = content
+            } catch {
+                guard !Task.isCancelled, sharePreparationID == requestID,
+                      isPreviewVisible, scenePhase == .active, !isClosing,
+                      selection == item.id else { return }
+                showToast(error.localizedDescription)
+            }
+        }
+    }
+
+    private func cancelSharePreparation() {
+        sharePreparationID = nil
+        sharePreparationTask?.cancel()
+        sharePreparationTask = nil
     }
 
     private func requestRotation(_ item: PhotoItem) {
@@ -616,11 +662,11 @@ struct PhotoPreviewView: View {
             if let item = currentItem {
                 Menu {
                     Button {
-                        sharingItem = item
+                        requestShare(item)
                     } label: {
                         Label("共享", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(PhotoRotationService.shared.isSaving(item.id) || rotationTransitionIDs.contains(item.id))
+                    .disabled(isSharing || PhotoRotationService.shared.isSaving(item.id) || rotationTransitionIDs.contains(item.id))
                     Divider()
                     Button {
                         editingItem = item

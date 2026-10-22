@@ -138,6 +138,11 @@ final class DayViewModel {
     private static let coverDateFontKey  = CoverDateFont.storageKey
     private static let sectionTintKey    = "OneDay.sectionTint"
     private static let locationBarKey    = "OneDay.locationBar"
+    private static let bottomToolbarKey  = "OneDay.bottomToolbar"
+    private static let scrubberMarksKey  = "OneDay.scrubberSectionMarks"
+    private static let scrubberTickHapticsKey = "OneDay.scrubberTickHaptics"
+    private static let dayScrollIndicatorKey = "OneDay.dayScrollIndicator"
+    private static let textDayNavKey     = "OneDay.textDayNavigation"
     private static let coverModeKey      = "OneDay.coverMode"
     private static let coverBackgroundModeKey = "OneDay.coverBackgroundMode"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
@@ -281,6 +286,26 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     /// Whether the location toolbar at the top of the photo page is shown.
     var showLocationBar: Bool {
         didSet { UserDefaults.standard.set(showLocationBar, forKey: Self.locationBarKey) }
+    }
+    /// Whether the bottom quick-scroll toolbar is shown on the photo page.
+    var showBottomToolbar: Bool {
+        didSet { UserDefaults.standard.set(showBottomToolbar, forKey: Self.bottomToolbarKey) }
+    }
+    /// Whether the scrubber draws (and buzzes on) section-start marks.
+    var showScrubberSectionMarks: Bool {
+        didSet { UserDefaults.standard.set(showScrubberSectionMarks, forKey: Self.scrubberMarksKey) }
+    }
+    /// Whether scrubbing across ordinary ticks gives a light haptic tick.
+    var scrubberTickHaptics: Bool {
+        didSet { UserDefaults.standard.set(scrubberTickHaptics, forKey: Self.scrubberTickHapticsKey) }
+    }
+    /// Whether the photo page shows the system scroll indicator.
+    var showDayScrollIndicator: Bool {
+        didSet { UserDefaults.standard.set(showDayScrollIndicator, forKey: Self.dayScrollIndicatorKey) }
+    }
+    /// Whether the text previous/next links appear at the end of the photo page.
+    var showTextDayNavigation: Bool {
+        didSet { UserDefaults.standard.set(showTextDayNavigation, forKey: Self.textDayNavKey) }
     }
     /// Whether the trajectory map banner appears at the top of the photo page.
     var showPhotoMap: Bool {
@@ -509,6 +534,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.sectionTintEnabled = UserDefaults.standard.object(forKey: Self.sectionTintKey) as? Bool ?? false
         self.showLocationBar = UserDefaults.standard.object(forKey: Self.locationBarKey) as? Bool ?? true
+        self.showBottomToolbar = UserDefaults.standard.object(forKey: Self.bottomToolbarKey) as? Bool ?? true
+        self.showScrubberSectionMarks = UserDefaults.standard.object(forKey: Self.scrubberMarksKey) as? Bool ?? true
+        self.scrubberTickHaptics = UserDefaults.standard.object(forKey: Self.scrubberTickHapticsKey) as? Bool ?? true
+        self.showDayScrollIndicator = UserDefaults.standard.object(forKey: Self.dayScrollIndicatorKey) as? Bool ?? true
+        self.showTextDayNavigation = UserDefaults.standard.object(forKey: Self.textDayNavKey) as? Bool ?? false
         self.showPhotoMap = UserDefaults.standard.object(forKey: Self.photoMapKey) as? Bool ?? true
         self.coverMode = CoverMode(rawValue: UserDefaults.standard.string(forKey: Self.coverModeKey) ?? "") ?? .collage
         self.coverBackgroundMode = CoverBackgroundMode(

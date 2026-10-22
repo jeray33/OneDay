@@ -331,6 +331,28 @@ struct DaySettingsMenu: View {
                 get: { model.showLocationBar },
                 set: { model.showLocationBar = $0 }
             ))
+            Menu("按钮选项") {
+                Toggle("底部工具栏", isOn: Binding(
+                    get: { model.showBottomToolbar },
+                    set: { model.showBottomToolbar = $0 }
+                ))
+                Toggle("段落刻度", isOn: Binding(
+                    get: { model.showScrubberSectionMarks },
+                    set: { model.showScrubberSectionMarks = $0 }
+                ))
+                Toggle("细线震动", isOn: Binding(
+                    get: { model.scrubberTickHaptics },
+                    set: { model.scrubberTickHaptics = $0 }
+                ))
+                Toggle("系统滚动条", isOn: Binding(
+                    get: { model.showDayScrollIndicator },
+                    set: { model.showDayScrollIndicator = $0 }
+                ))
+                Toggle("文字导航", isOn: Binding(
+                    get: { model.showTextDayNavigation },
+                    set: { model.showTextDayNavigation = $0 }
+                ))
+            }
             if model.hasAnyLocation {
                 Toggle("轨迹地图", isOn: Binding(
                     get: { model.showPhotoMap },

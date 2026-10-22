@@ -39,6 +39,11 @@ struct DayMagazineView: View {
     /// then reused so that `.statusBarHidden()` during the hero session cannot
     /// change the fixed header's height and shift the grid.
     @State private var stableTopInset: CGFloat = 0
+    // Bottom quick-scroll toolbar. `scrubber` is a reference type so
+    // per-frame scroll updates never re-evaluate this grid body.
+    @State private var scrubber = DayScrubberState()
+    @State private var scrollPosition = ScrollPosition()
+    @State private var bottomBarHeight: CGFloat = 0
 
     private var shouldRevealContent: Bool {
         contentRevealed && revealContent
@@ -56,7 +61,16 @@ struct DayMagazineView: View {
               ZStack {
                 ScrollView {
                     VStack(spacing: 0) {
-                        Color.clear.frame(height: 0).id("scroll_top")
+                        Color.clear.frame(height: 0)
+                            .id("scroll_top")
+                            .background(
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: ContentTopKey.self,
+                                        value: geo.frame(in: .named("dayScroll")).minY
+                                    )
+                                }
+                            )
 
                         if model.showsMediaTabs {
                             mediaTabs
@@ -90,11 +104,16 @@ struct DayMagazineView: View {
                         }
 
                         VStack(spacing: 0) {
-                            dayNavigationFooter
+                            if model.showTextDayNavigation {
+                                dayNavigationFooter
+                            }
+                            backCoverHint
+                                .padding(.top, model.showTextDayNavigation ? 0 : 96)
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
                     }
-                    .padding(.bottom, 24)
+                    .coordinateSpace(name: "dayContent")
+                    .padding(.bottom, 56)
                     .background {
                         GeometryReader { contentGeometry in
                             Color.clear.preference(
@@ -107,6 +126,13 @@ struct DayMagazineView: View {
                     .highPriorityGesture(columnPinchGesture)
                 }
                 .scrollDisabled(activeDragBlock != nil || scrollDisabled || pinchScale != 1.0)
+                .scrollIndicators(model.showDayScrollIndicator ? .automatic : .hidden)
+                .scrollPosition($scrollPosition)
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, offset in
+                    scrubber.updateRawOffset(offset)
+                }
                 .background(model.pageBackgroundColor.ignoresSafeArea())
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
@@ -120,6 +146,30 @@ struct DayMagazineView: View {
                         }
                 }
                 .scrollEdgeEffectStyle(.soft, for: .top)
+                .safeAreaBar(edge: .bottom, spacing: 0) {
+                    if model.showBottomToolbar {
+                        DayBottomToolbar(
+                            state: scrubber,
+                            prevDate: prevDate,
+                            nextDate: nextDate,
+                            navLoading: navLoading,
+                            enabled: bottomToolbarEnabled,
+                            showsSectionMarks: model.showScrubberSectionMarks,
+                            tickHapticsEnabled: model.scrubberTickHaptics,
+                            onPrevDay: { onPrevDay?() },
+                            onNextDay: { onNextDay?() },
+                            onScrub: { progress, animated in
+                                scrub(to: progress, animated: animated)
+                            }
+                        )
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            bottomBarHeight = $0
+                        }
+                        .onDisappear { bottomBarHeight = 0 }
+                        .revealFade(shouldRevealContent, delay: 0.5)
+                    }
+                }
+                .scrollEdgeEffectStyle(.soft, for: .bottom)
                 .coordinateSpace(name: "dayScroll")
                 .onChange(of: model.instanceID) {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
@@ -133,15 +183,25 @@ struct DayMagazineView: View {
                     }
                 }
                 .onPreferenceChange(ContentScrollBoundsKey.self) { bounds in
-                    guard let bounds else { return }
-                    updateScrollEdges(ContentScrollEdges(
-                        contentBounds: bounds,
-                        viewportBounds: CGRect(
-                            x: 0, y: fixedHeaderHeight,
-                            width: geo.size.width,
-                            height: max(0, geo.size.height - fixedHeaderHeight)
-                        )
-                    ))
+                    scrubber.contentBounds = bounds
+                    recomputeScrollEdges(contentBounds: bounds, viewportSize: geo.size)
+                }
+                .onPreferenceChange(ContentTopKey.self) { minY in
+                    guard let minY else { return }
+                    scrubber.updateContentTop(
+                        minY,
+                        viewportTop: fixedHeaderHeight,
+                        viewportHeight: geo.size.height - fixedHeaderHeight - bottomBarHeight
+                    )
+                }
+                .onPreferenceChange(SectionTopKey.self) { tops in
+                    scrubber.updateSectionTops(tops.values.sorted())
+                }
+                .onChange(of: fixedHeaderHeight) { _, _ in
+                    recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
+                }
+                .onChange(of: bottomBarHeight) { _, _ in
+                    recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
                 }
                 .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
                 .onChange(of: model.previewCurrentID) { _, id in
@@ -235,6 +295,15 @@ struct DayMagazineView: View {
         .padding(.bottom, 36)
         .frame(maxWidth: .infinity)
         .revealFade(shouldRevealContent, delay: 0.5)
+    }
+
+    /// Same style as the tunnel page's bottom hint.
+    private var backCoverHint: some View {
+        Text("上滑查看历史上的这天")
+            .font(Theme.serif(12))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .revealFade(shouldRevealContent, delay: 0.5)
     }
 
     private static func navDateText(_ date: Date) -> String {
@@ -655,6 +724,41 @@ struct DayMagazineView: View {
         }
     }
 
+    /// Recomputes flip edges for the latest content bounds. The viewport
+    /// excludes both chrome bars; the bottom bar height must be subtracted
+    /// here or content resting under the toolbar would look "at bottom".
+    private func recomputeScrollEdges(contentBounds: CGRect?, viewportSize: CGSize) {
+        guard let bounds = contentBounds else { return }
+        updateScrollEdges(ContentScrollEdges(
+            contentBounds: bounds,
+            viewportBounds: CGRect(
+                x: 0, y: fixedHeaderHeight,
+                width: viewportSize.width,
+                height: max(0, viewportSize.height - fixedHeaderHeight - bottomBarHeight)
+            )
+        ))
+    }
+
+    /// Whether the bottom toolbar accepts interaction right now.
+    private var bottomToolbarEnabled: Bool {
+        !scrollDisabled && activeDragBlock == nil && pinchScale == 1 && model.selected == nil
+    }
+
+    /// Jumps the content to a scrubber progress. Targets are derived purely
+    /// from offset differences, so they stay correct regardless of the
+    /// scroll view's offset convention.
+    private func scrub(to progress: CGFloat, animated: Bool) {
+        guard bottomToolbarEnabled, scrubber.metrics.isScrollable else { return }
+        let target = scrubber.metrics.targetOffset(forProgress: progress)
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) {
+                scrollPosition.scrollTo(y: target)
+            }
+        } else {
+            scrollPosition.scrollTo(y: target)
+        }
+    }
+
     private func canvasGesture(for block: MagazineBlock) -> some Gesture {
         LongPressGesture(minimumDuration: 0.22)
             .sequenced(before: DragGesture())
@@ -702,6 +806,14 @@ struct DayMagazineView: View {
             .background(tint ? model.sectionBackgroundColor(section) : Color.clear)
             .environment(\.colorScheme, tint ? model.sectionColorScheme(section) : model.pageColorScheme)
             .reveal(shouldRevealContent, delay: 0.42 + Double(index) * 0.14)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: SectionTopKey.self,
+                        value: [section.id.uuidString: geo.frame(in: .named("dayContent")).minY]
+                    )
+                }
+            )
         }
     }
 
@@ -893,6 +1005,22 @@ private struct ContentScrollBoundsKey: PreferenceKey {
 }
 
 private struct BlockPositionKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// Content-top position in the scroll coordinate space, per scroll frame.
+private struct ContentTopKey: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// Section-top positions in content space (stable while scrolling).
+private struct SectionTopKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
         value.merge(nextValue()) { _, new in new }
