@@ -14,6 +14,8 @@ let package = Package(
                 "MagazineLayoutEngine.swift",
                 "PersonStickerExtractor.swift",
                 "PhotoActionService.swift",
+                "PhotoRotationService.swift",
+                "PhotoContentVersion.swift",
                 "PhotoCaptionManager.swift",
                 "PhotoLibraryService.swift",
                 "PhotoMetadataService.swift",
@@ -23,7 +25,7 @@ let package = Package(
                 "SharedAlbumCache.swift",
                 "VisionSimilarity.swift"
             ],
-            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift", "LivePhotoPlaybackPolicy.swift", "PreviewInteractionPolicy.swift", "PhotoCornerGeometry.swift", "PhotoFrameGeometry.swift", "PlaceNaming.swift", "OfflinePlaceIndex.swift", "TimeZoneIndex.swift", "CaptureClock.swift", "SharedAssetPolicy.swift"],
+            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift", "LivePhotoPlaybackPolicy.swift", "PreviewInteractionPolicy.swift", "PhotoCornerGeometry.swift", "PhotoFrameGeometry.swift", "PhotoRotationPolicy.swift", "PhotoRotationRenderer.swift", "PhotoRotationAdjustment.swift", "PlaceNaming.swift", "OfflinePlaceIndex.swift", "TimeZoneIndex.swift", "CaptureClock.swift", "SharedAssetPolicy.swift"],
             linkerSettings: [.linkedFramework("Photos"), .linkedFramework("ImageIO")]
         ),
         .testTarget(

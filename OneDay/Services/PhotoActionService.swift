@@ -38,6 +38,9 @@ final class PhotoActionService {
     }
 
     func delete(_ assets: [PHAsset]) async throws {
+        guard !assets.contains(where: { PhotoRotationService.shared.isSaving($0.localIdentifier) }) else {
+            throw PhotoRotationError.busy
+        }
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest.deleteAssets(assets as NSArray)
         }

@@ -358,7 +358,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                             allowsNetworkAccess: Bool) -> String {
         let width = Int(targetSize.width.rounded())
         let height = Int(targetSize.height.rounded())
-        return "\(asset.localIdentifier)|\(width)x\(height)|\(contentMode.rawValue)|\(quality.rawValue)|\(allowsNetworkAccess)"
+        return "\(asset.contentVersion)|\(width)x\(height)|\(contentMode.rawValue)|\(quality.rawValue)|\(allowsNetworkAccess)"
     }
 
     private func pixelSize(for size: CGSize) -> CGSize {

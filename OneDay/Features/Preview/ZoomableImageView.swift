@@ -31,6 +31,7 @@ struct ZoomableImageView: UIViewRepresentable {
     var livePhotoVisitID: UUID? = nil
     var allowsLivePlayback = false
     var interactionRecoveryID: UUID?
+    var onRestingScaleChanged: (Bool) -> Void = { _ in }
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let scrollView = ZoomScrollView()
@@ -89,6 +90,7 @@ struct ZoomableImageView: UIViewRepresentable {
             target: context.coordinator,
             action: #selector(Coordinator.handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
+        doubleTap.delegate = context.coordinator
         scrollView.addGestureRecognizer(doubleTap)
 
         context.coordinator.apply(self)
@@ -112,7 +114,7 @@ struct ZoomableImageView: UIViewRepresentable {
         coordinator.livePlayer?.reset()
     }
 
-    final class Coordinator: NSObject, UIScrollViewDelegate {
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         let card = UIView()
         let imageView = UIImageView()
         let captionLabel = UILabel()
@@ -130,6 +132,9 @@ struct ZoomableImageView: UIViewRepresentable {
         private var isSelected = false
         private var isRecoveringInteraction = false
         var lastRecoveryID: UUID?
+        private var onRestingScaleChanged: (Bool) -> Void = { _ in }
+        private var isZoomTransitioning = false
+        private var wasRestingAtDefaultScale = true
 
         func recoverInteraction(_ scrollView: UIScrollView, id: UUID?, selected: Bool) {
             guard id != lastRecoveryID else { return }
@@ -137,6 +142,7 @@ struct ZoomableImageView: UIViewRepresentable {
             // Cancel native pan/pinch/deceleration without discarding the user's
             // actual zoom level. Only the selected page may update parent state.
             isRecoveringInteraction = true
+            isZoomTransitioning = false
             scrollView.setContentOffset(scrollView.contentOffset, animated: false)
             for gesture in [scrollView.panGestureRecognizer, scrollView.pinchGestureRecognizer].compactMap({ $0 }) {
                 let enabled = gesture.isEnabled
@@ -152,6 +158,7 @@ struct ZoomableImageView: UIViewRepresentable {
                 let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
                 self.wasZoomed = zoomed
                 self.livePlayer?.setZoomed(zoomed)
+                self.publishRestingScale(scrollView)
                 self.onZoomChanged(zoomed)
             }
         }
@@ -179,6 +186,7 @@ struct ZoomableImageView: UIViewRepresentable {
             captionLabel.text = view.caption
             captionLabel.textColor = UIColor(view.captionColor)
             captionLabel.isHidden = view.caption?.isEmpty ?? true
+            onRestingScaleChanged = view.onRestingScaleChanged
             if view.livePhotoAsset != nil, livePlayer == nil {
                 let player = LivePhotoPlayerController()
                 card.insertSubview(player.liveView, aboveSubview: imageView)
@@ -220,9 +228,10 @@ struct ZoomableImageView: UIViewRepresentable {
                     livePlayer.liveView.frame = imageView.frame
                     let badgeSize = livePlayer.badge.sizeThatFits(imageView.bounds.size)
                     livePlayer.badge.frame = CGRect(
-                        x: imageView.frame.minX + 8, y: imageView.frame.minY + 8,
+                        x: imageView.frame.minX + PreviewMediaBadgeStyle.imageInset,
+                        y: imageView.frame.minY + PreviewMediaBadgeStyle.imageInset,
                         width: min(badgeSize.width, max(0, imageView.bounds.width - 16)),
-                        height: badgeSize.height
+                        height: PreviewMediaBadgeStyle.height
                     )
                 }
 
@@ -252,6 +261,7 @@ struct ZoomableImageView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             centerContent(scrollView)
             guard !isRecoveringInteraction else { return }
+            publishRestingScale(scrollView)
             let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
             livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
@@ -262,7 +272,13 @@ struct ZoomableImageView: UIViewRepresentable {
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
             centerContent(scrollView)
+            isZoomTransitioning = false
             guard !isRecoveringInteraction else { return }
+            // UIKit clears isZooming/isZoomBouncing after this delegate call.
+            DispatchQueue.main.async { [weak self, weak scrollView] in
+                guard let self, let scrollView else { return }
+                self.publishRestingScale(scrollView)
+            }
             let zoomed = scale > scrollView.minimumZoomScale + 0.01
             livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
@@ -275,8 +291,36 @@ struct ZoomableImageView: UIViewRepresentable {
             onEditCaption?()
         }
 
+        func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+            isZoomTransitioning = true
+            guard !isRecoveringInteraction else { return }
+            publishRestingScale(scrollView)
+        }
+
+        private func publishRestingScale(_ scrollView: UIScrollView) {
+            guard isSelected else { return }
+            let resting = PhotoRotationPolicy.isRestingAtDefaultScale(
+                zoomScale: scrollView.zoomScale, minimumZoomScale: scrollView.minimumZoomScale,
+                isZooming: scrollView.isZooming, isZoomBouncing: scrollView.isZoomBouncing,
+                isTransitioning: isZoomTransitioning)
+            guard resting != wasRestingAtDefaultScale else { return }
+            wasRestingAtDefaultScale = resting
+            onRestingScaleChanged(resting)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var target = touch.view
+            while let view = target {
+                if view is UIControl { return false }
+                target = view.superview
+            }
+            return true
+        }
+
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView = gesture.view as? UIScrollView else { return }
+            isZoomTransitioning = true
+            publishRestingScale(scrollView)
             if scrollView.zoomScale > scrollView.minimumZoomScale + 0.01 {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
             } else {

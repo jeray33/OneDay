@@ -71,6 +71,35 @@ final class DayViewModel {
     /// The photo currently being viewed inside the preview. Drives the hero
     /// fly-back so closing returns to the photo on screen now (requirement B).
     var previewCurrentID: String?
+    private(set) var clockwiseRotationVersions: [String: String] = [:]
+
+    /// A content edit cannot wait for preview dismissal: both the card and its
+    /// landing cell need the new aspect before a close flight can start.
+    func refreshEditedAsset(_ asset: PHAsset, clockwiseRotation: Bool = false) {
+        let id = asset.localIdentifier
+        guard let previous = allItemsUnfiltered.first(where: { $0.id == id }) else { return }
+        var replacement = PhotoItem(asset: asset, sharedSource: previous.sharedSource,
+                                    isOwnSharedContribution: previous.isOwnSharedContribution)
+        replacement.caption = previous.caption
+        replacement.captureTimeZone = previous.captureTimeZone
+        guard replacement.contentVersion != previous.contentVersion else { return }
+        if clockwiseRotation { clockwiseRotationVersions[id] = replacement.contentVersion }
+        func replacing(_ items: [PhotoItem]) -> [PhotoItem] {
+            items.map { $0.id == id ? replacement : $0 }
+        }
+        allItemsUnfiltered = replacing(allItemsUnfiltered)
+        allItems = replacing(allItems)
+        if let pendingSourceItems { self.pendingSourceItems = replacing(pendingSourceItems) }
+        if selected?.id == id { selected = replacement }
+        coverPhotos = replacing(coverPhotos)
+        scatteredCoverPhotos = scatteredCoverPhotos.map {
+            ScatteredCoverPhoto(id: $0.id, item: $0.item.id == id ? replacement : $0.item,
+                                angle: $0.angle, radius: $0.radius, baseSize: $0.baseSize)
+        }
+        if tunnelCoverPhoto?.id == id { tunnelCoverPhoto = replacement }
+        sourceRevision = UUID()
+        rebuildSections(animated: false)
+    }
 
     private var favoriteIDs: Set<String>
     private var hiddenIDs: Set<String>

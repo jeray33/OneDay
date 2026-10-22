@@ -30,7 +30,7 @@ actor PhotoMetadataService {
     private var cache: [String: PhotoMetadataSnapshot] = [:]
 
     func metadata(for asset: PHAsset) async -> PhotoMetadataSnapshot {
-        if let cached = cache[asset.localIdentifier] {
+        if let cached = cache[asset.contentVersion] {
             return cached
         }
 
@@ -57,7 +57,9 @@ actor PhotoMetadataService {
         }
 
         let snapshot = PhotoMetadataSnapshot(sections: sections)
-        cache[asset.localIdentifier] = snapshot
+        // Keep only the current version of this asset's snapshot.
+        cache = cache.filter { !$0.key.hasPrefix("\(asset.localIdentifier)|") }
+        cache[asset.contentVersion] = snapshot
         return snapshot
     }
 

@@ -35,6 +35,7 @@ struct PhotoPreviewView: View {
     @State private var isZoomed = false
     @State private var albumItem: PhotoItem?
     @State private var editingItem: PhotoItem?
+    @State private var sharingItem: PhotoItem?
     @State private var dynamicBg: Color?
     @State private var showAlbumConfig = false
     @State private var tagAlbums: [AlbumInfo] = []
@@ -69,6 +70,22 @@ struct PhotoPreviewView: View {
     @State private var undoTask: Task<Void, Never>?
     @State private var flipTask: Task<Void, Never>?
     @State private var swipeHapticTask: Task<Void, Never>?
+    @AppStorage("OneDay.didExplainPhotoRotation") private var didExplainPhotoRotation = false
+    @State private var rotationConfirmationItem: PhotoItem?
+    @State private var showRotationConfirmation = false
+    @State private var rotationTransitionIDs: Set<String> = []
+    @State private var isPreviewVisible = false
+
+    private var isRotationTransitioning: Bool { rotationTransitionIDs.contains(selection) }
+    private var showsRotationControls: Bool {
+        scenePhase == .active && isSessionOpen && !isClosing
+            && sessionOpacity > 0.99 && cardOpacity > 0.99
+            && !isZoomed && !isFlipActive && dragStartSelection == nil
+            && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
+            && albumItem == nil && editingItem == nil && sharingItem == nil && !showAlbumConfig && !showPendingDelete
+            && !isMutatingHidden && !isMutatingAlbum
+    }
+    private var allowsRotationControls: Bool { showsRotationControls && !isZoomed }
 
     init(model: DayViewModel, current: PhotoItem, namespace: Namespace.ID,
          sessionOpacity: Double = 1, cardOpacity: Double = 1, isSessionOpen: Bool = true,
@@ -107,7 +124,7 @@ struct PhotoPreviewView: View {
     /// True while the previewed photo may not be deleted (e.g. shared by a
     /// friend): the up-swipe becomes a rubber band instead of staging.
     private var isDeleteRestricted: Bool {
-        !currentItemCapabilities.canDelete
+        !currentItemCapabilities.canDelete || PhotoRotationService.shared.isSaving(selection)
     }
     /// 0…1 opacity for the "cannot delete" hint, driven by the damped drag.
     private var deleteRestrictionHintProgress: Double {
@@ -152,7 +169,7 @@ struct PhotoPreviewView: View {
         isSessionOpen && scenePhase == .active && !isClosing
             && !isZoomed && !isFlipActive && dragStartSelection == nil
             && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-            && albumItem == nil && editingItem == nil && !showAlbumConfig && !showPendingDelete
+            && albumItem == nil && editingItem == nil && sharingItem == nil && !showAlbumConfig && !showPendingDelete
             && !isMutatingHidden
     }
 
@@ -192,7 +209,14 @@ struct PhotoPreviewView: View {
                             previewPlaces[id] = title
                         },
                         interactionRecoveryID: interactionRecoveryID,
-                        cornerGeometry: cornerGeometry(item.id)
+                        cornerGeometry: cornerGeometry(item.id),
+                        allowsRotationControls: allowsRotationControls && selection == item.id,
+                        showsRotationControls: showsRotationControls && selection == item.id,
+                        onRotate: { requestRotation(item) },
+                        onRotationTransitionChanged: { id, active in
+                            if active { rotationTransitionIDs.insert(id) }
+                            else { rotationTransitionIDs.remove(id) }
+                        }
                     )
                     .tag(item.id)
                 }
@@ -225,6 +249,9 @@ struct PhotoPreviewView: View {
                 Task { await model.updateCaption(caption, for: item) }
             }
         }
+        .sheet(item: $sharingItem) { item in
+            PhotoShareSheet(asset: item.asset)
+        }
         .sheet(isPresented: $showAlbumConfig) {
             AlbumConfigSheet(model: model) {
                 refreshTagAlbums()
@@ -243,11 +270,26 @@ struct PhotoPreviewView: View {
                 }
             )
         }
+        .alert("将旋转保存到照片图库？", isPresented: $showRotationConfirmation) {
+            Button("取消", role: .cancel) { rotationConfirmationItem = nil }
+            Button("旋转并保存") {
+                didExplainPhotoRotation = true
+                if let item = rotationConfirmationItem, item.id == selection {
+                    startRotation(item)
+                }
+                rotationConfirmationItem = nil
+            }
+        } message: {
+            Text("每次顺时针旋转 90°，直接更新原照片，不生成副本。更改会随 iCloud 照片同步；原始内容仍可在系统“照片”中恢复。")
+        }
         .onAppear {
+            isPreviewVisible = true
             onSelectionChanged(selection)
             refreshTagAlbums()
             refreshMembership()
             ensureValidSelectionAfterFiltering()
+            PhotoRotationService.shared.reconcilePendingEdits { model.refreshEditedAsset($0) }
+            showPendingRotationFailure()
         }
         .onChange(of: dragGestureActive) { _, active in
             guard !active, dragStartSelection != nil else { return }
@@ -264,8 +306,12 @@ struct PhotoPreviewView: View {
         }
         .onChange(of: scenePhase) { _, _ in
             recoverFromInterruption()
+            if scenePhase == .active {
+                PhotoRotationService.shared.reconcilePendingEdits { model.refreshEditedAsset($0) }
+            }
         }
         .onDisappear {
+            isPreviewVisible = false
             recoverFromInterruption(notifySelection: false)
         }
         .onChange(of: selection) {
@@ -292,6 +338,7 @@ struct PhotoPreviewView: View {
                 feedback.impactOccurred(intensity: 0.55)
             }
             refreshMembership()
+            showPendingRotationFailure()
         }
         .onChange(of: pendingDeleteIDs) {
             ensureValidSelectionAfterFiltering()
@@ -302,7 +349,7 @@ struct PhotoPreviewView: View {
                 requestFlip(toBack: false)
             }
         }
-        .task(id: selection) {
+        .task(id: currentItem?.contentVersion) {
             if let item = currentItem {
                 imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
                 Task { await OtherImageClassificationService.shared.classify([item.asset]) }
@@ -313,6 +360,37 @@ struct PhotoPreviewView: View {
             if let item = currentItem {
                 imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
             }
+        }
+    }
+
+    private func requestRotation(_ item: PhotoItem) {
+        guard allowsRotationControls, !isRotationTransitioning,
+              item.id == selection, !pendingDeleteIDs.contains(item.id),
+              PhotoRotationService.shared.canRotate(item),
+              !PhotoRotationService.shared.isSaving(item.id) else { return }
+        if didExplainPhotoRotation {
+            startRotation(item)
+        } else {
+            rotationConfirmationItem = item
+            showRotationConfirmation = true
+        }
+    }
+
+    private func startRotation(_ item: PhotoItem) {
+        guard allowsRotationControls, item.id == selection, !isRotationTransitioning else { return }
+        PhotoRotationService.shared.start(item) { asset in
+            // Always refresh the edited asset, even after browsing / closing.
+            model.refreshEditedAsset(asset, clockwiseRotation: true)
+        } onFailure: { error in
+            if selection == item.id, !isClosing, isPreviewVisible {
+                showToast(PhotoRotationService.shared.takeFailure(for: item.id) ?? error.localizedDescription)
+            }
+        }
+    }
+
+    private func showPendingRotationFailure() {
+        if let message = PhotoRotationService.shared.takeFailure(for: selection) {
+            showToast(message)
         }
     }
 
@@ -355,6 +433,7 @@ struct PhotoPreviewView: View {
     private func updateDynamicBackground() async {
         guard let item = currentItem else { return }
         let color = await model.photoDerivedBackground(for: item)
+        guard !Task.isCancelled, currentItem?.contentVersion == item.contentVersion else { return }
         withAnimation(.easeInOut(duration: 0.45)) { dynamicBg = color }
     }
 
@@ -369,7 +448,7 @@ struct PhotoPreviewView: View {
     /// Close from a button / programmatic path: hand back to the host with a
     /// resting card (no drag), letting it fly the photo home.
     private func performDismiss() {
-        guard scenePhase == .active, isSessionOpen, !isClosing else { return }
+        guard scenePhase == .active, isSessionOpen, !isClosing, !isRotationTransitioning else { return }
         isClosing = true
         onClose(.zero, 1, selection)
     }
@@ -379,7 +458,7 @@ struct PhotoPreviewView: View {
             .updating($dragGestureActive) { _, active, _ in active = true }
             .onChanged { value in
                 guard scenePhase == .active, isSessionOpen, !isClosing,
-                      !isZoomed, !isStagingDelete, !isFlipActive, undoItemID == nil,
+                      !isZoomed, !isStagingDelete, !isFlipActive, !isRotationTransitioning, undoItemID == nil,
                       PreviewInteractionPolicy.allowsStart(
                         y: value.startLocation.y, height: size.height,
                         topInset: topSafeAreaInset(), bottomInset: bottomSafeAreaInset()
@@ -536,6 +615,13 @@ struct PhotoPreviewView: View {
             Spacer(minLength: 4)
             if let item = currentItem {
                 Menu {
+                    Button {
+                        sharingItem = item
+                    } label: {
+                        Label("共享", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(PhotoRotationService.shared.isSaving(item.id) || rotationTransitionIDs.contains(item.id))
+                    Divider()
                     Button {
                         editingItem = item
                     } label: {
@@ -695,11 +781,11 @@ struct PhotoPreviewView: View {
     private var deleteRestrictionHint: some View {
         if deleteRestrictionHintProgress > 0.01 {
             HStack(spacing: 5) {
-                Image(systemName: "person.2.fill")
+                Image(systemName: PhotoRotationService.shared.isSaving(selection) ? "arrow.trianglehead.2.clockwise" : "person.2.fill")
                     .font(.system(size: 11, weight: .bold))
-                Text(currentItem?.isForeignShared == true
-                     ? "他人共享的照片不能删除"
-                     : "这张照片不能删除")
+                Text(PhotoRotationService.shared.isSaving(selection)
+                     ? "旋转保存中，请稍后再删除"
+                     : (currentItem?.isForeignShared == true ? "他人共享的照片不能删除" : "这张照片不能删除"))
                     .font(.system(size: 13, weight: .semibold))
             }
             .foregroundStyle(.black)
@@ -862,7 +948,7 @@ struct PhotoPreviewView: View {
     private func stageCurrentForDeletion(generation: UInt) async {
         guard canCompleteInteraction(generation), isSessionOpen, !isClosing,
               let item = currentItem, !isStagingDelete,
-              item.sharedCapabilities.canDelete else { return }
+              item.sharedCapabilities.canDelete, !PhotoRotationService.shared.isSaving(item.id) else { return }
         if pendingDeleteIDs.contains(item.id) {
             advanceAfterStaging(from: item.id)
             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragOffset = .zero }
@@ -925,6 +1011,7 @@ struct PhotoPreviewView: View {
         // library, whatever path staged it.
         let targetItems = pendingDeleteItems.filter {
             selectedIDs.contains($0.id) && $0.sharedCapabilities.canDelete
+                && !PhotoRotationService.shared.isSaving($0.id)
         }
         guard !targetItems.isEmpty else { return }
         let deletedIDs = Set(targetItems.map(\.id))
@@ -1033,7 +1120,7 @@ struct PhotoPreviewView: View {
 
     private func requestFlip(toBack: Bool) {
         guard scenePhase == .active, isSessionOpen, !isClosing,
-              !isStagingDelete, undoItemID == nil else { return }
+              !isStagingDelete, !isRotationTransitioning, undoItemID == nil else { return }
         if toBack {
             guard !isFlippedToBack, !isFlipTransitioning, !isZoomed else { return }
         } else {

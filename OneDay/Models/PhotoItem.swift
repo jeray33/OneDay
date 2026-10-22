@@ -49,6 +49,7 @@ struct PhotoItem: Identifiable, Hashable {
     }
 
     var id: String { asset.localIdentifier }
+    var contentVersion: String { asset.contentVersion }
     var isVideo: Bool { asset.mediaType == .video }
     var isLivePhoto: Bool { asset.mediaType == .image && asset.mediaSubtypes.contains(.photoLive) }
     var duration: TimeInterval { asset.duration }

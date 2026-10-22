@@ -93,7 +93,8 @@ struct PhotoFrameView: View {
                                 rect: rect,
                                 border: border * scaleX,
                                 bottomBorder: bottomBorder * scaleY,
-                                cornerRadius: cornerRadius * scaleX
+                                cornerRadius: cornerRadius * scaleX,
+                                contentVersion: item.contentVersion
                             )]
                         )
                     }

@@ -12,15 +12,62 @@ enum PreviewTagBarTransition {
 /// A normal frame animation alone leaves UIViewRepresentable at its final size.
 private struct PreviewCardSizeTransition<Content: View>: View, Animatable {
     var size: CGSize
-    var content: (CGSize) -> Content
+    var rotationProgress: Double
+    var rotationStartSize: CGSize?
+    var rotationEndSize: CGSize
+    var content: (CGSize, Double) -> Content
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(size.width, size.height) }
-        set { size = CGSize(width: newValue.first, height: newValue.second) }
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, Double> {
+        get { AnimatablePair(AnimatablePair(size.width, size.height), rotationProgress) }
+        set {
+            size = CGSize(width: newValue.first.first, height: newValue.first.second)
+            rotationProgress = newValue.second
+        }
     }
 
     var body: some View {
-        content(size)
+        let card = rotationStartSize.map {
+            PhotoRotationPolicy.interpolatedCardSize(from: $0, to: rotationEndSize, progress: rotationProgress)
+        } ?? size
+        content(card, rotationProgress)
+            .transaction {
+                // These are already presentation values. A second implicit
+                // animation in the children makes the frame lag behind pixels.
+                if rotationStartSize != nil { $0.animation = nil }
+            }
+    }
+}
+
+/// Image, borders and rounded clip are one rotating layer. There is no upright
+/// outer container for the image to turn inside.
+private struct RotatingPhotoCard: View {
+    let image: UIImage
+    let viewport: CGSize
+    let sideBorder: CGFloat
+    let bottomBorder: CGFloat
+    let cardColor: Color
+    let cornerRadius: CGFloat
+    var progress: Double
+
+    var body: some View {
+        let layout = PhotoRotationPolicy.rotatingCardLayout(
+            viewport: viewport, imageAspect: image.size.width / max(image.size.height, 1),
+            sideBorder: sideBorder, bottomBorder: bottomBorder, progress: progress)
+        let radius = min(cornerRadius, min(layout.cardSize.width, layout.cardSize.height) / 2)
+        Image(uiImage: image)
+            .resizable()
+            .frame(width: layout.imageSize.width, height: layout.imageSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: max(radius - sideBorder, 0), style: .continuous))
+            .padding(.leading, sideBorder)
+            .padding(.top, sideBorder)
+            .padding(.trailing, layout.trailingBorder)
+            .padding(.bottom, layout.bottomBorder)
+            .background(cardColor)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            // This transform deliberately includes the frame and its clip.
+            .rotationEffect(.degrees(min(1, max(0, progress)) * 90))
+            .frame(width: viewport.width, height: viewport.height)
+            .allowsHitTesting(false)
     }
 }
 
@@ -66,6 +113,10 @@ struct PreviewPageView: View {
     var onPlaceResolved: (String, String) -> Void = { _, _ in }
     var interactionRecoveryID: UUID?
     var cornerGeometry: PhotoCornerGeometry?
+    var allowsRotationControls = false
+    var showsRotationControls = false
+    var onRotate: () -> Void = {}
+    var onRotationTransitionChanged: (String, Bool) -> Void = { _, _ in }
 
     @State private var image: UIImage?
     @State private var player: AVPlayer?
@@ -74,6 +125,15 @@ struct PreviewPageView: View {
     @State private var placeStatus: PlaceLineStatus = .loading
     @State private var metadataSnapshot: PhotoMetadataSnapshot?
     @State private var isMetadataLoading = false
+    @State private var metadataRequestID = UUID()
+    @State private var displayedAspectRatio: CGFloat?
+    @State private var imageVersion: String?
+    @State private var rotationImage: UIImage?
+    @State private var rotationProgress: Double = 0
+    @State private var rotationAnimationFinished = true
+    @State private var rotationVersion: String?
+    @State private var rotationStartAspectRatio: CGFloat?
+    @State private var isAtDefaultScale = true
 
     private var sideBorder: CGFloat {
         let base = (12 * model.borderWidth.scale).rounded()
@@ -101,8 +161,14 @@ struct PreviewPageView: View {
                 // The zoomable card fills the whole page so a pinch / double-tap
                 // can magnify the photo edge-to-edge. At rest (scale 1) the
                 // bordered card is centered inside at its display size.
-                PreviewCardSizeTransition(size: card) { animatedSize in
-                    flippableCard(card: animatedSize, swipeProgress: swipeProgress, pageIsCentered: abs(rawProgress) < 0.005)
+                PreviewCardSizeTransition(
+                    size: card,
+                    rotationProgress: rotationProgress,
+                    rotationStartSize: rotationImage == nil ? nil : rotationStartAspectRatio.map { cardSize(in: geo.size, aspect: $0) },
+                    rotationEndSize: cardSize(in: geo.size, aspect: item.aspectRatio)
+                ) { animatedSize, animatedRotationProgress in
+                    flippableCard(card: animatedSize, swipeProgress: swipeProgress,
+                                  pageIsCentered: abs(rawProgress) < 0.005, rotationProgress: animatedRotationProgress)
                 }
                     .animation(PreviewTagBarTransition.animation(reduceMotion: reduceMotion), value: model.showAlbumTagBar)
                     .scaleEffect(photoScale, anchor: .center)
@@ -113,8 +179,24 @@ struct PreviewPageView: View {
 
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .task(id: item.id) {
+            .task(id: item.contentVersion) {
                 await load(targetSize: geo.size)
+            }
+            .task(id: rotationVersion) {
+                guard let version = rotationVersion else { return }
+                // Commit the zero-angle overlay first. Animating a newly
+                // inserted view directly at 90° would skip the actual turn.
+                await Task.yield()
+                guard !Task.isCancelled, rotationVersion == version else { return }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.36)) {
+                    displayedAspectRatio = item.aspectRatio
+                    rotationProgress = 1
+                } completion: {
+                    guard rotationVersion == version else { return }
+                    rotationAnimationFinished = true
+                    onRotationTransitionChanged(item.id, false)
+                    if imageVersion == version { rotationImage = nil }
+                }
             }
             .task(id: item.id) {
                 // Resolves in parallel with the image load; the place name
@@ -122,24 +204,39 @@ struct PreviewPageView: View {
                 // iCloud) and the frame must not wait for the geocoder.
                 await updatePlace()
             }
-            .onChange(of: item.id) {
+            .onChange(of: item.contentVersion) {
+                metadataRequestID = UUID()
                 metadataSnapshot = nil
+                isMetadataLoading = false
+                beginContentRefresh()
+                if isBackVisible { Task { await loadMetadataIfNeeded() } }
             }
             .onChange(of: isBackVisible) {
                 if isBackVisible {
                     Task { await loadMetadataIfNeeded() }
                 }
             }
-            .onDisappear { player?.pause() }
+            .onChange(of: isSelected) { _, selected in
+                if !selected { settleRotation() }
+            }
+            .onChange(of: interactionRecoveryID) { _, _ in settleRotation() }
+            .onChange(of: reduceMotion) { _, reduced in
+                if reduced { settleRotation() }
+            }
+            .onDisappear {
+                player?.pause()
+                settleRotation()
+            }
             .zIndex(incomingPageZIndex(for: rawProgress))
         }
         .ignoresSafeArea()
     }
 
-    private func flippableCard(card: CGSize, swipeProgress: Double, pageIsCentered: Bool) -> some View {
+    private func flippableCard(card: CGSize, swipeProgress: Double, pageIsCentered: Bool,
+                               rotationProgress: Double) -> some View {
         let cornerRadius = scaledCornerRadius(for: card)
         return ZStack {
-            mediaCard(card: card, pageIsCentered: pageIsCentered)
+            mediaCard(card: card, pageIsCentered: pageIsCentered, rotationProgress: rotationProgress)
                 .rotation3DEffect(
                     .degrees(flipAngle),
                     axis: (x: 0, y: 1, z: 0),
@@ -195,6 +292,9 @@ struct PreviewPageView: View {
         }
         .overlay {
             sharedBadgeOverlay(card: card)
+        }
+        .overlay {
+            rotationButtonOverlay(card: card, pageIsCentered: pageIsCentered)
         }
         .rotation3DEffect(
             .degrees(swipeYawAngle(progress: swipeProgress)),
@@ -332,7 +432,7 @@ struct PreviewPageView: View {
     }
 
     @ViewBuilder
-    private func mediaCard(card: CGSize, pageIsCentered: Bool) -> some View {
+    private func mediaCard(card: CGSize, pageIsCentered: Bool, rotationProgress: Double) -> some View {
         let cornerRadius = scaledCornerRadius(for: card)
         if item.isVideo {
             if let player {
@@ -349,6 +449,10 @@ struct PreviewPageView: View {
             } else {
                 ProgressView().tint(.white)
             }
+        } else if let rotating = rotationImage {
+            RotatingPhotoCard(image: rotating, viewport: card, sideBorder: sideBorder,
+                              bottomBorder: baseBottomBorder, cardColor: cardColor,
+                              cornerRadius: cornerRadius, progress: rotationProgress)
         } else if let image {
             ZoomableImageView(
                 image: image,
@@ -366,12 +470,89 @@ struct PreviewPageView: View {
                 isSelected: isSelected,
                 livePhotoVisitID: livePhotoVisitID,
                 allowsLivePlayback: allowsLivePlayback && pageIsCentered && !isZoomed && abs(flipAngle) < 0.001,
-                interactionRecoveryID: interactionRecoveryID
+                interactionRecoveryID: interactionRecoveryID,
+                onRestingScaleChanged: { isAtDefaultScale = $0 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView().tint(.white)
         }
+    }
+
+    @ViewBuilder
+    private func rotationButtonOverlay(card: CGSize, pageIsCentered: Bool) -> some View {
+        if showsRotationControls, pageIsCentered, isAtDefaultScale, !isZoomed,
+           abs(photoScale - 1) < 0.001, rotationImage == nil,
+           image != nil, PhotoRotationService.shared.canRotate(item) {
+            let imageSize = PhotoFrameGeometry.imageSize(card: card, border: sideBorder, bottomBorder: baseBottomBorder)
+            let imageRect = CGRect(origin: CGPoint(x: sideBorder, y: topBorder), size: imageSize)
+            let badge = PhotoRotationPolicy.rotationBadgeLayout(
+                in: imageRect, badgeSide: PreviewMediaBadgeStyle.height, inset: PreviewMediaBadgeStyle.imageInset)
+            let saving = PhotoRotationService.shared.isSaving(item.id)
+            Button(action: onRotate) {
+                Group {
+                    if saving {
+                        ProgressView().controlSize(.mini).tint(.white)
+                    } else {
+                        Image(systemName: "rotate.right")
+                            .font(.system(size: PreviewMediaBadgeStyle.symbolSize, weight: .regular))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: PreviewMediaBadgeStyle.height, height: PreviewMediaBadgeStyle.height)
+                .background(Color(uiColor: PreviewMediaBadgeStyle.backgroundColor), in: Capsule())
+                .scaleEffect(badge.scale)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(saving || !allowsRotationControls || imageVersion != item.contentVersion)
+            .accessibilityLabel(saving ? "正在保存旋转" : "顺时针旋转 90 度")
+            .accessibilityHint("保存到照片图库，不生成副本")
+            .offset(x: badge.center.x - card.width / 2, y: badge.center.y - card.height / 2)
+        }
+    }
+
+    private func beginContentRefresh() {
+        if imageVersion == item.contentVersion {
+            settleRotation()
+            return
+        }
+        // Replacing the UIKit card resets its native zoom. Keep the parent
+        // gesture/chrome state in sync if the user zoomed while a save ran.
+        isAtDefaultScale = true
+        if isSelected { onZoomChanged(false) }
+        guard model.clockwiseRotationVersions[item.id] == item.contentVersion,
+              allowsRotationControls, !reduceMotion, let image,
+              imageVersion != item.contentVersion else {
+            displayedAspectRatio = item.aspectRatio
+            self.image = nil
+            imageVersion = nil
+            rotationImage = nil
+            rotationVersion = nil
+            rotationAnimationFinished = true
+            onRotationTransitionChanged(item.id, false)
+            return
+        }
+        rotationImage = image
+        rotationStartAspectRatio = displayedAspectRatio ?? image.size.width / max(image.size.height, 1)
+        rotationVersion = item.contentVersion
+        rotationProgress = 0
+        rotationAnimationFinished = false
+        onRotationTransitionChanged(item.id, true)
+    }
+
+    private func settleRotation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            rotationProgress = 1
+            rotationVersion = nil
+            rotationAnimationFinished = true
+            displayedAspectRatio = item.aspectRatio
+            if imageVersion == item.contentVersion { rotationImage = nil }
+        }
+        onRotationTransitionChanged(item.id, false)
     }
 
     /// Glass capsule at the card's top-trailing corner marking shared origin —
@@ -401,7 +582,7 @@ struct PreviewPageView: View {
         .allowsHitTesting(false)
     }
 
-    private func cardSize(in size: CGSize) -> CGSize {
+    private func cardSize(in size: CGSize, aspect: CGFloat? = nil) -> CGSize {
         let sideMargin: CGFloat = 20
         let maxImageWidth = max(1, size.width - sideMargin * 2 - sideBorder * 2)
         let topControlsHeight = topSafeAreaInset()
@@ -417,7 +598,7 @@ struct PreviewPageView: View {
         let verticalInset = max(topControlsHeight, bottomControlsHeight) + Self.controlClearance
         let maxCardHeight = max(1, size.height - verticalInset * 2)
         let maxImageHeight = max(1, maxCardHeight - topBorder - baseBottomBorder)
-        let aspect = PhotoFrameGeometry.validAspectRatio(item.aspectRatio)
+        let aspect = PhotoFrameGeometry.validAspectRatio(aspect ?? displayedAspectRatio ?? item.aspectRatio)
         var width = maxImageWidth
         var height = width / aspect
         if height > maxImageHeight {
@@ -436,6 +617,7 @@ struct PreviewPageView: View {
     }
 
     private func load(targetSize: CGSize) async {
+        if displayedAspectRatio == nil { displayedAspectRatio = item.aspectRatio }
         if item.isVideo {
             if let playerItem = await ImageLoader.shared.playerItem(for: item.asset) {
                 player = AVPlayer(playerItem: playerItem)
@@ -450,7 +632,10 @@ struct PreviewPageView: View {
                 contentMode: .aspectFit,
                 highQuality: true
             ) {
+                guard !Task.isCancelled else { return }
                 image = frame
+                imageVersion = item.contentVersion
+                if rotationAnimationFinished { rotationImage = nil }
             }
         }
     }
@@ -458,7 +643,9 @@ struct PreviewPageView: View {
     private func loadMetadataIfNeeded() async {
         guard metadataSnapshot == nil, !isMetadataLoading else { return }
         isMetadataLoading = true
+        let request = metadataRequestID
         let snapshot = await PhotoMetadataService.shared.metadata(for: item.asset)
+        guard !Task.isCancelled, metadataRequestID == request else { return }
         metadataSnapshot = snapshot
         isMetadataLoading = false
     }

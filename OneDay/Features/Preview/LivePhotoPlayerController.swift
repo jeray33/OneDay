@@ -27,13 +27,14 @@ final class LivePhotoPlayerController: NSObject, PHLivePhotoViewDelegate {
         liveView.isMuted = true
         liveView.playbackGestureRecognizer.addTarget(self, action: #selector(playbackGesture(_:)))
         var config = UIButton.Configuration.filled()
-        config.baseBackgroundColor = UIColor.black.withAlphaComponent(0.55)
+        config.baseBackgroundColor = PreviewMediaBadgeStyle.backgroundColor
+        config.background.backgroundColor = PreviewMediaBadgeStyle.backgroundColor
         config.baseForegroundColor = .white
         config.cornerStyle = .capsule
         config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 6)
         config.imagePadding = 2
         config.image = UIImage(systemName: "livephoto")
-        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 10, weight: .regular)
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: PreviewMediaBadgeStyle.symbolSize, weight: .regular)
         config.title = "实况"
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes

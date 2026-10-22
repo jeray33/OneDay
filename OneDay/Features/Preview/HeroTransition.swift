@@ -20,6 +20,7 @@ struct HeroCellInfo: Equatable {
     var border: CGFloat
     var bottomBorder: CGFloat
     var cornerRadius: CGFloat
+    var contentVersion: String
 
     var cornerGeometry: PhotoCornerGeometry {
         PhotoCornerGeometry(referenceWidth: rect.width, cornerRadius: cornerRadius)
@@ -141,6 +142,7 @@ struct HeroOverlayView: View {
     @State private var heroOpenID: String?
     @State private var heroFlightRect: CGRect = .zero
     @State private var heroImage: UIImage?
+    @State private var loadedHeroVersion: String?
     @State private var heroBorderColor: Color = .white
     @State private var heroFlightBorder: CGFloat = 4
     @State private var heroFlightBottomBorder: CGFloat = 4
@@ -194,7 +196,7 @@ struct HeroOverlayView: View {
                           let card = frames[openID] else { return }
                     startOpenFlight(to: card)
                 }
-                .task(id: model.previewCurrentID) {
+                .task(id: model.allItems.first(where: { $0.id == model.previewCurrentID })?.contentVersion) {
                     guard let id = model.previewCurrentID,
                           let item = model.allItems.first(where: { $0.id == id }) else { return }
                     heroBorderColor = model.frameColor(for: item)
@@ -203,7 +205,9 @@ struct HeroOverlayView: View {
                         size: CGSize(width: 1000, height: 1000),
                         highQuality: true,
                         contentMode: .aspectFit) {
+                        guard !Task.isCancelled, model.previewCurrentID == id else { return }
                         heroImage = img
+                        loadedHeroVersion = item.contentVersion
                     }
                 }
             }
@@ -218,8 +222,9 @@ struct HeroOverlayView: View {
 
     private func open(_ item: PhotoItem) {
         guard heroPhase == .idle else { return }
-        let source = frameStore.cells[item.id]
+        let source = frameStore.cells[item.id].flatMap { $0.contentVersion == item.contentVersion ? $0 : nil }
         heroImage = nil
+        loadedHeroVersion = nil
         Task {
             let img = await ImageLoader.shared.thumbnail(
                 asset: item.asset,
@@ -229,6 +234,7 @@ struct HeroOverlayView: View {
             await MainActor.run {
                 heroOpenID = item.id
                 heroImage = img
+                loadedHeroVersion = img == nil ? nil : item.contentVersion
                 heroBorderColor = model.frameColor(for: item)
                 if let source {
                     heroFlightBorder = source.border
@@ -277,12 +283,23 @@ struct HeroOverlayView: View {
 
     private func closeHero(dragOffset: CGSize, scale: CGFloat, id: String) {
         guard heroPhase == .open else { return }
+        // A content update may still be loading a new flight bitmap. Fading is
+        // safer than flying an old orientation back into a newly sized cell.
+        if let item = model.allItems.first(where: { $0.id == id }),
+           loadedHeroVersion != item.contentVersion {
+            withAnimation(.easeOut(duration: 0.25)) {
+                sessionOpacity = 0
+                cardOpacity = 0
+            } completion: { finishClose() }
+            return
+        }
         let rest = cardFrames[id]
-        let dest = frameStore.cells[id]
+        let version = model.allItems.first(where: { $0.id == id })?.contentVersion
+        let dest = frameStore.cells[id].flatMap { $0.contentVersion == version ? $0 : nil }
 
         // Plain fade when we have no card geometry or no landing cell (e.g. the
         // photo was just deleted): degrade gracefully to A.
-        guard let rest else {
+        guard let rest, let dest else {
             withAnimation(.easeOut(duration: 0.25)) {
                 sessionOpacity = 0
                 cardOpacity = 0
@@ -302,12 +319,10 @@ struct HeroOverlayView: View {
         cardOpacity = 0
         withAnimation(.easeOut(duration: 0.4)) { sessionOpacity = 0 }
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-            heroFlightRect = dest?.rect ?? visual
-            if let dest {
-                heroFlightBorder = dest.border
-                heroFlightBottomBorder = dest.bottomBorder
-                heroFlightRadius = dest.cornerRadius
-            }
+            heroFlightRect = dest.rect
+            heroFlightBorder = dest.border
+            heroFlightBottomBorder = dest.bottomBorder
+            heroFlightRadius = dest.cornerRadius
         } completion: {
             finishClose()
         }
@@ -318,6 +333,7 @@ struct HeroOverlayView: View {
         model.previewCurrentID = nil
         heroOpenID = nil
         heroImage = nil
+        loadedHeroVersion = nil
         heroPhase = .idle
         heroDidLandOpen = false
         openedCornerGeometry = nil
