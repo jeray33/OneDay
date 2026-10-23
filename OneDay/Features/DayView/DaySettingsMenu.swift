@@ -34,6 +34,9 @@ struct DaySettingsMenu: View {
                     NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
                 }
             ))
+            optionPicker("封面",
+                       binding: Binding(get: { model.coverStyle }, set: { model.coverStyle = $0 }),
+                       labelOf: { $0.label })
             Menu("背景") {
                 Picker("", selection: Binding(
                     get: { model.background },
@@ -210,9 +213,6 @@ struct DaySettingsMenu: View {
                 }
             }
             Menu("标题") {
-                optionPicker("封面",
-                           binding: Binding(get: { model.coverStyle }, set: { model.coverStyle = $0 }),
-                           labelOf: { $0.label })
                 optionPicker("字体",
                            binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                            labelOf: { $0.label })
@@ -244,6 +244,17 @@ struct DaySettingsMenu: View {
                                     Text(form.label).tag(form)
                                 }
                             }
+                        }
+                        if model.placeSegmentationForm == .card {
+                            optionPicker("比例",
+                                       binding: Binding(
+                                        get: { model.placeCardRatio },
+                                        set: { ratio in
+                                            var transaction = Transaction()
+                                            transaction.disablesAnimations = true
+                                            withTransaction(transaction) { model.placeCardRatio = ratio }
+                                        }),
+                                       labelOf: { $0.label })
                         }
                     }
                     if model.showsPlaceCardFlowOption {

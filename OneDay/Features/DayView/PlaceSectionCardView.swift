@@ -3,13 +3,14 @@ import SwiftUI
 struct PlaceSectionCardView: View {
     let card: PlaceSectionCard
     let width: CGFloat
+    let ratio: PlaceCardRatio
     let font: CoverDateFont
     let titleSize: CGFloat
     let cornerRadius: CGFloat
     let shadowLevel: PhotoShadowLevel
 
     var body: some View {
-        let sizing = PlaceSectionCard.Sizing(width: width)
+        let sizing = PlaceSectionCard.Sizing(width: width, ratio: ratio)
         let color = card.color
         VStack(alignment: .leading, spacing: sizing.spacing) {
             Text(card.title)

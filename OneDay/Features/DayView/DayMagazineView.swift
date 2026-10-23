@@ -127,8 +127,6 @@ struct DayMagazineView: View {
                             DayRouteMapBanner(locations: model.routeLocations,
                                               stopCoordinates: model.routeStopCoordinates,
                                               stopNames: model.routeStopDisplayNames,
-                                              date: model.date,
-                                              dateFont: model.coverDateFont.font(SectionTitleSize.small.size),
                                               blendMode: model.mapBlendMode,
                                               backgroundColor: model.pageBackgroundColor,
                                               isDarkPage: model.pageColorScheme == .dark,
@@ -669,7 +667,7 @@ struct DayMagazineView: View {
             }
         case .placeCard(let card):
             PlaceSectionCardView(
-                card: card, width: width, font: model.coverDateFont,
+                card: card, width: width, ratio: model.placeCardRatio, font: model.coverDateFont,
                 titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
                 shadowLevel: model.photoShadow
             )

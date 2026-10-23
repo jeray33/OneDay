@@ -93,6 +93,28 @@ final class PlaceSectionCardTests: XCTestCase {
         XCTAssertEqual(wide.inset, 20)
     }
 
+    func testSquareCardsHaveEqualWidthAndHeightAtEveryColumnCount() {
+        for columns in 1...6 {
+            let grid = DayPhotoGridSizing(
+                viewportWidth: 393, columnCount: columns,
+                horizontalSpacing: nil, sideSpacing: .max
+            )
+            let sizing = PlaceSectionCard.Sizing(width: grid.cellWidth, ratio: .square)
+            XCTAssertEqual(sizing.width, grid.cellWidth)
+            XCTAssertEqual(sizing.height, sizing.width)
+        }
+    }
+
+    func testRatioRestoresSavedSelectionAndPreservesPortraitDefault() {
+        XCTAssertEqual(PlaceCardRatio(savedValue: nil), .portrait)
+        XCTAssertEqual(PlaceCardRatio(savedValue: "unknown"), .portrait)
+        for ratio in PlaceCardRatio.allCases {
+            XCTAssertEqual(PlaceCardRatio(savedValue: ratio.rawValue), ratio)
+        }
+        XCTAssertEqual(PlaceCardRatio.portrait.label, "3:4")
+        XCTAssertEqual(PlaceCardRatio.square.label, "1:1")
+    }
+
     func testInvalidGeometryCannotCreateNaNLayout() {
         for width in [CGFloat.nan, .infinity, -.infinity, -10, 0] {
             let sizing = PlaceSectionCard.Sizing(width: width)

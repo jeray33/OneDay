@@ -120,6 +120,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             UserDefaults.standard.set(photoSideSpacing.rawValue, forKey: DayPhotoSideSpacing.storageKey)
         }
     }
+    var placeCardRatio: PlaceCardRatio {
+        didSet {
+            UserDefaults.standard.set(placeCardRatio.rawValue, forKey: PlaceCardRatio.storageKey)
+        }
+    }
     var placeCardFlow: PlaceCardFlow {
         didSet {
             UserDefaults.standard.set(placeCardFlow.rawValue, forKey: PlaceCardFlow.storageKey)
@@ -385,6 +390,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         )
         self.photoSideSpacing = DayPhotoSideSpacing(
             savedValue: UserDefaults.standard.string(forKey: DayPhotoSideSpacing.storageKey)
+        )
+        self.placeCardRatio = PlaceCardRatio(
+            savedValue: UserDefaults.standard.string(forKey: PlaceCardRatio.storageKey)
         )
         self.placeCardFlow = PlaceCardFlow(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardFlow.storageKey)

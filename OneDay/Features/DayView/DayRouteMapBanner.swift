@@ -7,7 +7,7 @@ import CoreLocation
 /// using the user's chosen `MapBlendMode`, with the day's trajectory drawn on a
 /// Canvas in the brand blues. The bottom 40% fades to transparent via a linear
 /// mask so the map dissolves into the page. Below the map, a location track text
-/// shows the sequence of stop names and a large date title; when there are
+/// shows the sequence of stop names; when there are
 /// multiple stops, each dot is enlarged and drawn with its sequence number.
 struct DayRouteMapBanner: View {
     let locations: [CLLocation]
@@ -16,9 +16,6 @@ struct DayRouteMapBanner: View {
     /// Display names for each stop (resolved titles, or "定位中…" / "地点 N"
     /// placeholders), used to render the location track text below the map.
     let stopNames: [String]
-    /// The day's date rendered as a big title below the track text.
-    let date: Date
-    let dateFont: Font
     /// Whether to keep original colors or blend into the page background.
     let blendMode: MapBlendMode
     /// The page background color used to pre-blend the map snapshot.
@@ -54,7 +51,6 @@ struct DayRouteMapBanner: View {
                 .frame(height: Self.mapHeight)
 
                 trackText
-                dateTitle
             }
         }
     }
@@ -136,16 +132,6 @@ struct DayRouteMapBanner: View {
             .multilineTextAlignment(.leading)
             .padding(.top, 10)
             .padding(.bottom, 10)
-            .padding(.horizontal, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var dateTitle: some View {
-        Text(DateText.dottedDate(date))
-            .font(dateFont)
-            .foregroundStyle(Theme.ink)
-            .padding(.top, 0)
-            .padding(.bottom, 8)
             .padding(.horizontal, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

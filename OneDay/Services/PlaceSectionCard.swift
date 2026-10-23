@@ -1,6 +1,19 @@
 import Foundation
 import CoreGraphics
 
+nonisolated enum PlaceCardRatio: String, CaseIterable, Identifiable {
+    case portrait, square
+
+    static let storageKey = "OneDay.placeCardRatio"
+    var id: Self { self }
+    var label: String { self == .portrait ? "3:4" : "1:1" }
+    var widthToHeight: CGFloat { self == .portrait ? 3.0 / 4 : 1 }
+
+    init(savedValue: String?) {
+        self = savedValue.flatMap(Self.init(rawValue:)) ?? .portrait
+    }
+}
+
 nonisolated enum PlaceCardFlow: String, CaseIterable, Identifiable {
     case separated, continuous
 
@@ -67,15 +80,17 @@ nonisolated struct PlaceSectionCard: Identifiable, Equatable {
 
     struct Sizing {
         let width: CGFloat
-        var height: CGFloat { width * 4 / 3 }
+        let ratio: PlaceCardRatio
+        var height: CGFloat { width / ratio.widthToHeight }
         var inset: CGFloat { min(20, max(5, width * 0.09)) }
         var spacing: CGFloat { min(8, max(3, width * 0.04)) }
         var timeFontSize: CGFloat { min(13, max(8, width * 0.065)) }
         var titleLineLimit: Int { width < 100 ? 2 : 3 }
         var wrapsTime: Bool { width < 100 }
 
-        init(width: CGFloat) {
+        init(width: CGFloat, ratio: PlaceCardRatio = .portrait) {
             self.width = width.isFinite ? max(1, width) : 1
+            self.ratio = ratio
         }
 
         func titleFontSize(preferred: CGFloat) -> CGFloat {
