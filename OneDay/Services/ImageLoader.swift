@@ -108,7 +108,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         }
     }
 
-    /// Single-shot thumbnail, suitable for preloading the rewind flash pool.
+    /// Single-shot thumbnail for photo-derived colors and preview images.
     /// Pass `highQuality: true` when the image is scaled up on screen (e.g. the
     /// tunnel rewind), so it stays sharp instead of pixelating.
     func thumbnail(asset: PHAsset, size: CGSize, highQuality: Bool = false,
@@ -216,13 +216,39 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         }
     }
 
-    func playerItem(for asset: PHAsset) async -> AVPlayerItem? {
-        await withCheckedContinuation { continuation in
+    enum VideoEvent: @unchecked Sendable {
+        case progress(Double)
+        case ready(AVPlayerItem)
+    }
+
+    enum VideoLoadError: LocalizedError {
+        case unavailable
+
+        var errorDescription: String? { "无法加载此视频，请检查网络后重试。" }
+    }
+
+    /// Terminating the stream cancels PhotoKit's request, including iCloud downloads.
+    func videoStream(for asset: PHAsset) -> AsyncThrowingStream<VideoEvent, Error> {
+        AsyncThrowingStream { continuation in
             let options = PHVideoRequestOptions()
             options.isNetworkAccessAllowed = true
-            options.deliveryMode = .automatic
-            manager.requestPlayerItem(forVideo: asset, options: options) { item, _ in
-                continuation.resume(returning: item)
+            options.version = .current
+            options.deliveryMode = .highQualityFormat
+            options.progressHandler = { progress, _, _, _ in
+                continuation.yield(.progress(progress))
+            }
+            let requestID = manager.requestPlayerItem(forVideo: asset, options: options) { item, info in
+                if (info?[PHImageCancelledKey] as? Bool) == true {
+                    continuation.finish(throwing: CancellationError())
+                } else if let item {
+                    continuation.yield(.ready(item))
+                    continuation.finish()
+                } else {
+                    continuation.finish(throwing: VideoLoadError.unavailable)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                self.manager.cancelImageRequest(requestID)
             }
         }
     }

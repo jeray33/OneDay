@@ -33,13 +33,13 @@ struct DayBackCoverView: View {
                             Text(DateText.dottedMonthDay(model.date))
                                 .font(model.coverDateFont.font(18))
                                 .foregroundStyle(Theme.ink.opacity(0.7))
-                            Text("历史今日")
+                            Text("往年今日")
                                 .font(model.coverDateFont.font(46))
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.55)
                         }
-                        .padding(.bottom, 88)
+                        .padding(.bottom, 64)
 
                         historyContent(availableWidth: geometry.size.width - horizontalPadding * 2)
 

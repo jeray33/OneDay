@@ -18,7 +18,8 @@ struct PhotoFrameView: View {
     var shadowLevel: PhotoShadowLevel = .max
     var showCaption: Bool = false
     var cornerRadius: CGFloat = 0
-    var onEditCaption: ((PhotoItem) -> Void)? = nil
+    /// Keep the full cell geometry when an off-screen waterfall image unloads.
+    var loadsImage: Bool = true
 
     private let captionFontSize: CGFloat = 12
 
@@ -35,32 +36,27 @@ struct PhotoFrameView: View {
         VStack(spacing: 6) {
             framedImage
             if showCaption, let caption = item.caption, !caption.isEmpty {
-                HStack(spacing: 4) {
-                    Text(caption)
-                        .font(Theme.serif(captionFontSize, weight: .regular))
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                    if let onEditCaption, item.sharedCapabilities.canEditCaption {
-                        Button {
-                            onEditCaption(item)
-                        } label: {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Theme.ink.opacity(0.6))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 4)
-                .frame(maxWidth: .infinity)
+                Text(caption)
+                    .font(Theme.serif(captionFontSize, weight: .regular))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity)
             }
         }
         .frame(width: width)
     }
 
     private var framedImage: some View {
-        PHImageView(asset: item.asset, displaySize: imageSize, fill: true)
+        Group {
+            if loadsImage {
+                PHImageView(asset: item.asset, displaySize: imageSize, fill: true)
+            } else {
+                Color(white: 0.92)
+                    .frame(width: imageSize.width, height: imageSize.height)
+            }
+        }
             .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius - border, 0), style: .continuous))
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }

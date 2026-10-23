@@ -33,8 +33,6 @@ struct PhotoPreviewView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var dragOffset: CGSize = .zero
     @State private var isZoomed = false
-    @State private var albumItem: PhotoItem?
-    @State private var editingItem: PhotoItem?
     @State private var sharingContent: PreparedPhotoShare?
     @State private var sharePreparationID: UUID?
     @State private var sharePreparationTask: Task<Void, Never>?
@@ -77,6 +75,9 @@ struct PhotoPreviewView: View {
     @State private var showRotationConfirmation = false
     @State private var rotationTransitionIDs: Set<String> = []
     @State private var isPreviewVisible = false
+    @State private var videoPlayback = PreviewVideoPlayer()
+    @State private var centeredVideoID: String?
+    @State private var videoRetryID = UUID()
 
     private var isRotationTransitioning: Bool { rotationTransitionIDs.contains(selection) }
     private var isSharing: Bool { sharingContent != nil || sharePreparationID != nil }
@@ -85,7 +86,7 @@ struct PhotoPreviewView: View {
             && sessionOpacity > 0.99 && cardOpacity > 0.99
             && !isZoomed && !isFlipActive && dragStartSelection == nil
             && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-            && albumItem == nil && editingItem == nil && !isSharing && !showAlbumConfig && !showPendingDelete
+            && !isSharing && !showAlbumConfig && !showPendingDelete
             && !isMutatingHidden && !isMutatingAlbum
     }
     private var allowsRotationControls: Bool { showsRotationControls && !isZoomed }
@@ -172,8 +173,26 @@ struct PhotoPreviewView: View {
         isSessionOpen && scenePhase == .active && !isClosing
             && !isZoomed && !isFlipActive && dragStartSelection == nil
             && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-            && albumItem == nil && editingItem == nil && !isSharing && !showAlbumConfig && !showPendingDelete
+            && !isSharing && !showAlbumConfig && !showPendingDelete
             && !isMutatingHidden
+    }
+
+    private var showsVideoControls: Bool {
+        currentItem?.isVideo == true && isSessionOpen && scenePhase == .active && !isClosing
+            && sessionOpacity > 0.99 && cardOpacity > 0.99
+            && !isFlipActive && dragStartSelection == nil && !isVerticalDragLocked
+            && !isStagingDelete && undoItemID == nil
+            && !isSharing && !showAlbumConfig && !showPendingDelete
+            && !isMutatingHidden && !isMutatingAlbum
+    }
+
+    private var allowsVideoPlayback: Bool {
+        showsVideoControls && centeredVideoID == selection
+            && videoPlayback.contentVersion == currentItem?.contentVersion
+    }
+
+    private var videoRequestID: String {
+        "\(currentItem?.contentVersion ?? "")|\(scenePhase == .active && isSessionOpen && !isClosing)|\(videoRetryID)"
     }
 
     var body: some View {
@@ -195,7 +214,6 @@ struct PhotoPreviewView: View {
                         item: item,
                         model: model,
                         onZoomChanged: { isZoomed = $0 },
-                        onEditCaption: { editingItem = $0 },
                         photoOffsetX: 0,
                         photoOffsetY: 0,
                         photoScale: 1,
@@ -219,7 +237,21 @@ struct PhotoPreviewView: View {
                         onRotationTransitionChanged: { id, active in
                             if active { rotationTransitionIDs.insert(id) }
                             else { rotationTransitionIDs.remove(id) }
-                        }
+                        },
+                        videoPlayer: selection == item.id && videoPlayback.contentVersion == item.contentVersion
+                            ? videoPlayback.player : nil,
+                        onVideoVisibilityChanged: { id, centered in
+                            if centered { centeredVideoID = id }
+                            else if centeredVideoID == id { centeredVideoID = nil }
+                        },
+                        onVideoTap: {
+                            guard selection == item.id, allowsVideoPlayback else { return }
+                            videoPlayback.togglePlayback()
+                        },
+                        videoPlaybackActionLabel: videoPlayback.isPlaying ? "暂停视频" : "播放视频",
+                        isVideoPlaying: videoPlayback.isPlaying,
+                        showsVideoPlaybackIcon: allowsVideoPlayback && videoPlayback.canPlay
+                            && !videoPlayback.isScrubbing
                     )
                     .tag(item.id)
                 }
@@ -243,15 +275,10 @@ struct PhotoPreviewView: View {
         .overlay(alignment: .top) { deleteRestrictionHint }
         .overlay(alignment: .top) { toastView }
         .overlay(alignment: .bottom) { bottomControls }
+        // A sibling of TabView and of its dismiss recognizer: a slider drag
+        // cannot become paging, dismissal, deletion, or card zoom.
+        .overlay(alignment: .bottom) { videoControls }
         .statusBarHidden()
-        .sheet(item: $albumItem) { item in
-            AlbumPickerSheet(item: item, model: model, onFinish: {})
-        }
-        .sheet(item: $editingItem) { item in
-            CaptionEditorSheet(item: item) { caption in
-                Task { await model.updateCaption(caption, for: item) }
-            }
-        }
         .sheet(item: $sharingContent) { content in
             PhotoShareSheet(content: content)
         }
@@ -308,6 +335,7 @@ struct PhotoPreviewView: View {
             }
         }
         .onChange(of: scenePhase) { _, _ in
+            if scenePhase != .active { videoPlayback.pause() }
             recoverFromInterruption()
             if scenePhase != .active { cancelSharePreparation() }
             if scenePhase == .active {
@@ -315,11 +343,13 @@ struct PhotoPreviewView: View {
             }
         }
         .onDisappear {
+            videoPlayback.close()
             isPreviewVisible = false
             cancelSharePreparation()
             recoverFromInterruption(notifySelection: false)
         }
         .onChange(of: currentItem?.contentVersion) { _, _ in
+            videoPlayback.pause()
             cancelSharePreparation()
         }
         .onChange(of: selection) {
@@ -364,6 +394,17 @@ struct PhotoPreviewView: View {
             }
             await updateDynamicBackground()
         }
+        .task(id: videoRequestID) {
+            guard scenePhase == .active, isSessionOpen, !isClosing else { return }
+            let item = currentItem
+            await videoPlayback.load(
+                asset: item?.isVideo == true ? item?.asset : nil,
+                version: item?.isVideo == true ? item?.contentVersion : nil
+            )
+        }
+        .onChange(of: allowsVideoPlayback, initial: true) { _, permitted in
+            videoPlayback.permit(permitted)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .imageClassificationChanged).receive(on: RunLoop.main)) { _ in
             if let item = currentItem {
                 imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
@@ -392,7 +433,7 @@ struct PhotoPreviewView: View {
                       currentItem?.contentVersion == item.contentVersion,
                       !isZoomed, !isFlipActive, dragStartSelection == nil,
                       !isVerticalDragLocked, !isStagingDelete, undoItemID == nil,
-                      albumItem == nil, editingItem == nil, !showAlbumConfig, !showPendingDelete else { return }
+                      !showAlbumConfig, !showPendingDelete else { return }
                 sharingContent = content
             } catch {
                 guard !Task.isCancelled, sharePreparationID == requestID,
@@ -474,6 +515,20 @@ struct PhotoPreviewView: View {
         .animation(PreviewTagBarTransition.animation(reduceMotion: reduceMotion), value: model.showAlbumTagBar)
         .allowsHitTesting(!(isZoomed || isFlipActive) && max(dragProgress, deleteProgress) < 0.15
                           && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete)
+    }
+
+    @ViewBuilder
+    private var videoControls: some View {
+        if currentItem?.isVideo == true {
+            let actionHeight: CGFloat = isZoomed ? 0 : 40 + (model.showAlbumTagBar ? 36 : 0) + 12
+            PreviewVideoControls(playback: videoPlayback) {
+                videoRetryID = UUID()
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, bottomSafeAreaInset() + 10 + actionHeight)
+            .opacity(showsVideoControls ? 1 : 0)
+            .allowsHitTesting(showsVideoControls)
+        }
     }
 
     private func updateDynamicBackground() async {
@@ -667,19 +722,6 @@ struct PhotoPreviewView: View {
                         Label("共享", systemImage: "square.and.arrow.up")
                     }
                     .disabled(isSharing || PhotoRotationService.shared.isSaving(item.id) || rotationTransitionIDs.contains(item.id))
-                    Divider()
-                    Button {
-                        editingItem = item
-                    } label: {
-                        Label("编辑说明", systemImage: "pencil")
-                    }
-                    .disabled(!item.sharedCapabilities.canEditCaption)
-                    Button {
-                        albumItem = item
-                    } label: {
-                        Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
-                    }
-                    .disabled(!item.sharedCapabilities.canEditAlbums)
                     if MediaFilter.supportsImageClassification(item.asset) {
                         Menu {
                             Picker("图片分类", selection: Binding(
@@ -702,12 +744,6 @@ struct PhotoPreviewView: View {
                         }
                     }
                     Divider()
-                    Toggle(isOn: Binding(
-                        get: { model.showAlbumTagBar },
-                        set: { model.showAlbumTagBar = $0 }
-                    )) {
-                        Label("相簿标签栏", systemImage: "rectangle.stack")
-                    }
                     Menu("横滑视觉效果") {
                         Toggle(isOn: $swipeYawEnabled) {
                             Label("Y轴转角", systemImage: "rotate.3d")
@@ -1091,7 +1127,6 @@ struct PhotoPreviewView: View {
                 item: item,
                 model: model,
                 onZoomChanged: { isZoomed = $0 },
-                onEditCaption: { editingItem = $0 },
                 photoOffsetX: dragOffset.width,
                 photoOffsetY: dragOffset.height,
                 photoScale: activeScale,
@@ -1119,7 +1154,6 @@ struct PhotoPreviewView: View {
                 item: item,
                 model: model,
                 onZoomChanged: { _ in },
-                onEditCaption: { _ in },
                 photoOffsetX: undoOffset.width,
                 photoOffsetY: undoOffset.height,
                 photoScale: undoScale,

@@ -32,7 +32,18 @@ final class PageBackgroundTests: XCTestCase {
             "OneDay.photoLayoutMode": "magazine",
             "OneDay.enabledTemplates": "collage,stack",
             "OneDay.borderStyle": "polaroid",
-            "OneDay.scrollStagger": "bold"
+            "OneDay.scrollStagger": "bold",
+            "OneDay.scrollScale": "extreme",
+            "OneDay.scrollMovement": "huge",
+            "OneDay.scrollRotation": "bold",
+            "OneDay.scrollFade": "hidden",
+            "OneDay.scrollSpring": "bouncy",
+            "OneDay.scrollBlur": "heavy",
+            "OneDay.scrollParallax": "strong",
+            "OneDay.scrollTiltX": "bold",
+            "OneDay.scrollTiltY": "bold",
+            "OneDay.scrollTiltDecay": "edge",
+            "OneDay.rewindMode": "flash"
         ]
         for (key, value) in obsolete { defaults.set(value, forKey: key) }
         defaults.set(false, forKey: "OneDay.sharedContributorMatch")
@@ -49,5 +60,20 @@ final class PageBackgroundTests: XCTestCase {
         DayAppearancePreferences.migrateLegacySettings(in: defaults)
         DayAppearancePreferences.migrateLegacySettings(in: defaults)
         XCTAssertEqual(defaults.string(forKey: "OneDay.pageBackground"), "bright2")
+    }
+
+    func testLegacyRewindModeIsDiscardedWithoutChangingTunnelSettings() {
+        let suite = "PageBackgroundTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("random", forKey: "OneDay.rewindSortOrder")
+        defaults.set("photo", forKey: "OneDay.tunnelTapMode")
+        for mode in ["flash", "rewind", "invalid"] {
+            defaults.set(mode, forKey: "OneDay.rewindMode")
+            DayAppearancePreferences.migrateLegacySettings(in: defaults)
+            XCTAssertNil(defaults.object(forKey: "OneDay.rewindMode"))
+            XCTAssertEqual(defaults.string(forKey: "OneDay.rewindSortOrder"), "random")
+            XCTAssertEqual(defaults.string(forKey: "OneDay.tunnelTapMode"), "photo")
+        }
     }
 }

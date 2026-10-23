@@ -5,6 +5,10 @@ import XCTest
 @testable import MediaFilter
 
 final class MediaFilterTests: XCTestCase {
+    func testTunnelCategoryIconsFollowMenuOrder() {
+        XCTAssertEqual(MediaCategory.allCases.map(\.icon), ["camera", "apps.iphone", "photo"])
+    }
+
     func testScreenshotWinsOverLongImageClassification() {
         XCTAssertEqual(
             MediaFilter.category(

@@ -68,6 +68,7 @@ struct MagazineSection: Identifiable {
     var placeHeadingPending = false
     var showsTimeHeading = true
     var timeHeadingIsNested = false
+    var placeCard: PlaceSectionCard? = nil
 
     var title: String { band.title }
 

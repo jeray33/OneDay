@@ -66,6 +66,7 @@ struct DayPagedStackView: View {
                 fixedTopBar(h: h)
             }
             .frame(width: geo.size.width, height: h)
+            .environment(\.dayPhotoViewportWidth, geo.size.width)
             .clipped()
             .simultaneousGesture(flipGesture(h: h),
                                  including: model.selected == nil ? .all : .subviews)

@@ -12,14 +12,24 @@ enum DaySectionComposer {
         let groups = policy.groups(items: sorted, places: places) {
             TimeBand.band(for: $0.creationDate, in: $0.captureTimeZone).rawValue
         }
+        var previousPaletteIndex: Int?
         return groups.map { planned in
             let group = planned.items
+            let timeText = timeRange(group)
+            var card: PlaceSectionCard?
+            if planned.showsPlaceCard, let stopID = planned.placeID, let first = group.first {
+                card = PlaceSectionCard(
+                    stopID: stopID, firstPhotoID: first.id, placeName: planned.placeName,
+                    timeText: timeText, avoiding: previousPaletteIndex
+                )
+                previousPaletteIndex = card?.paletteIndex
+            }
             let band = planned.timeBand.flatMap(TimeBand.init(rawValue:))
                 ?? TimeBand.band(for: group.first?.creationDate,
                                  in: group.first?.captureTimeZone ?? .current)
             return MagazineSection(
                 band: band,
-                timeText: timeRange(group),
+                timeText: timeText,
                 placeName: planned.placeName,
                 placeStopID: planned.placeID,
                 anchorLocation: group.first(where: { $0.location != nil })?.location,
@@ -27,7 +37,8 @@ enum DaySectionComposer {
                 placeHeading: planned.showsPlaceHeading ? planned.placeName : nil,
                 placeHeadingPending: planned.showsPlaceHeading && planned.placeName == nil,
                 showsTimeHeading: planned.timeBand != nil,
-                timeHeadingIsNested: planned.placeID != nil && planned.timeBand != nil
+                timeHeadingIsNested: planned.placeID != nil && planned.timeBand != nil,
+                placeCard: card
             )
         }
     }

@@ -14,8 +14,8 @@ nonisolated enum PageBackground: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .paper: return "白色"
-        case .pureWhite: return "纯白色"
+        case .paper: return "浅灰"
+        case .pureWhite: return "白色"
         case .bright: return "明快"
         }
     }
@@ -38,7 +38,12 @@ nonisolated enum DayAppearancePreferences {
             "OneDay.coverBackgroundMode", "OneDay.coverMode",
             "OneDay.photoLayoutMode", "OneDay.enabledTemplates",
             "OneDay.borderStyle", "OneDay.sharedContributorMatch",
-            "OneDay.scrollStagger"
+            "OneDay.scrollStagger", "OneDay.scrollScale",
+            "OneDay.scrollMovement", "OneDay.scrollRotation",
+            "OneDay.scrollFade", "OneDay.scrollSpring",
+            "OneDay.scrollBlur", "OneDay.scrollParallax",
+            "OneDay.scrollTiltX", "OneDay.scrollTiltY",
+            "OneDay.scrollTiltDecay", "OneDay.rewindMode"
         ] {
             defaults.removeObject(forKey: obsoleteKey)
         }

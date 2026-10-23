@@ -17,7 +17,6 @@ final class SharedAssetPolicyTests: XCTestCase {
         XCTAssertFalse(policy.canHide)
         XCTAssertFalse(policy.canEditAlbums)
         XCTAssertFalse(policy.canFavorite)
-        XCTAssertFalse(policy.canEditCaption)
         XCTAssertTrue(policy.canClassify)
     }
 
@@ -27,7 +26,6 @@ final class SharedAssetPolicyTests: XCTestCase {
         XCTAssertTrue(policy.canHide)
         XCTAssertTrue(policy.canEditAlbums)
         XCTAssertTrue(policy.canFavorite)
-        XCTAssertTrue(policy.canEditCaption)
         XCTAssertTrue(policy.canClassify)
     }
 
@@ -37,7 +35,6 @@ final class SharedAssetPolicyTests: XCTestCase {
         XCTAssertFalse(policy.canHide)
         XCTAssertFalse(policy.canEditAlbums)
         XCTAssertFalse(policy.canFavorite)
-        XCTAssertFalse(policy.canEditCaption)
         XCTAssertTrue(policy.canClassify)
     }
 
@@ -47,7 +44,6 @@ final class SharedAssetPolicyTests: XCTestCase {
         XCTAssertTrue(policy.canHide)
         XCTAssertTrue(policy.canEditAlbums)
         XCTAssertTrue(policy.canFavorite)
-        XCTAssertTrue(policy.canEditCaption)
         XCTAssertTrue(policy.canClassify)
     }
 

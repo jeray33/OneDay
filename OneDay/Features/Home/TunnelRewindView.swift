@@ -94,7 +94,6 @@ struct TunnelRewindView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     // MARK: Live-editable settings persisted via @AppStorage
-    @AppStorage("OneDay.rewindMode") private var rewindModeRaw = RewindMode.flash.rawValue
     @AppStorage("OneDay.rewindSortOrder") private var rewindSortOrderRaw = RewindSortOrder.reverse.rawValue
     @AppStorage("OneDay.tunnelTapMode") private var tapModeRaw = TunnelTapMode.anywhere.rawValue
     @AppStorage("OneDay.tunnelLandingMotion") private var landingMotionRaw = TunnelLandingMotion.none.rawValue
@@ -298,7 +297,7 @@ struct TunnelRewindView: View {
                 .allowsHitTesting(false)
                 VStack {
                     HStack {
-                        modeMenu
+                        mediaMenu
                         Spacer()
                         settingsMenu
                     }
@@ -532,17 +531,8 @@ struct TunnelRewindView: View {
 
     // MARK: Overlays
 
-    private var modeMenu: some View {
+    private var mediaMenu: some View {
         Menu {
-            Picker("穿梭模式", selection: Binding(
-                get: { RewindMode(rawValue: rewindModeRaw) ?? .flash },
-                set: { rewindModeRaw = $0.rawValue }
-            )) {
-                ForEach(RewindMode.allCases) { m in
-                    Label(m.label, systemImage: m.icon).tag(m)
-                }
-            }
-            Divider()
             MediaCategoryMenuSection(
                 selection: $mediaSelection,
                 primaryAlwaysOn: true

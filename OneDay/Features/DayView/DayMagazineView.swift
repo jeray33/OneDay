@@ -32,7 +32,6 @@ struct DayMagazineView: View {
     @State private var revealContent = false
     @State private var pinchScale: CGFloat = 1.0
     @State private var pinchBaseline: CGFloat = 1.0
-    @State private var editingItem: PhotoItem?
 
     // Hero transition (self-drawn flight layer). All per-frame flight state now
     // lives in HeroOverlayView, so dragging/flying the preview never
@@ -40,6 +39,7 @@ struct DayMagazineView: View {
     // that mutates in place without invalidating the body) and the one-shot
     // open request are shared with the overlay.
     @State private var frameStore = HeroFrameStore()
+    @State private var gridAnchorTracker = DayGridAnchorTracker()
     @State private var heroRequest: PhotoItem?
     @State private var fixedHeaderHeight: CGFloat = 0
     @State private var headerTitleVisible = false
@@ -64,7 +64,7 @@ struct DayMagazineView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let contentWidth = geo.size.width - 40
+            let gridRevision = gridLayoutRevision(viewportWidth: geo.size.width)
             ScrollViewReader { proxy in
               ZStack {
                 ScrollView {
@@ -106,9 +106,18 @@ struct DayMagazineView: View {
                                 .frame(width: geo.size.width)
                         }
 
-                        ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
-                            sectionView(section, index: sIdx, contentWidth: contentWidth)
-                                .padding(.top, sectionTopSpacing(for: sIdx))
+                        if usesContinuousPlaceCards {
+                            grid(
+                                model.sections.flatMap { gridEntries($0.blocks, placeCard: $0.placeCard) },
+                                viewportSize: geo.size, marksPlaceCards: true
+                            )
+                            .padding(.top, sectionTopSpacing(for: 0))
+                            .reveal(shouldRevealContent, delay: 0.42)
+                        } else {
+                            ForEach(Array(model.sections.enumerated()), id: \.element.id) { sIdx, section in
+                                sectionView(section, index: sIdx, viewportSize: geo.size)
+                                    .padding(.top, sectionTopSpacing(for: sIdx))
+                            }
                         }
 
                         VStack(spacing: 0) {
@@ -217,10 +226,8 @@ struct DayMagazineView: View {
                 .onChange(of: model.previewCurrentID) { _, id in
                     guard model.selected != nil, let id,
                           let blockID = model.blockID(forItemID: id) else { return }
-                    // Requirement B: only scroll when the target cell is off
-                    // screen. Scrolling a visible cell would kick the cells'
-                    // animated `scrollTransition` and make the grid wobble when
-                    // it is revealed on close.
+                    // Only scroll when the target cell is off screen, so
+                    // closing the preview preserves a visible cell's position.
                     if let rect = frameStore.cells[id]?.rect,
                        rect.midY >= fixedHeaderHeight, rect.midY <= geo.size.height {
                         return
@@ -239,6 +246,58 @@ struct DayMagazineView: View {
               }
               .coordinateSpace(name: heroCoordinateSpace)
               .onPreferenceChange(HeroCellFrameKey.self) { frameStore.cells = $0 }
+              .backgroundPreferenceValue(HeroCellFrameKey.self) { cells in
+                  Color.clear.preference(
+                      key: DayGridSnapshotKey.self,
+                      value: DayGridSnapshot(revision: gridRevision, frames: cells.mapValues(\.rect))
+                  )
+              }
+              .backgroundPreferenceValue(PlaceCardFrameKey.self) { frames in
+                  Color.clear.preference(
+                      key: DayGridSnapshotKey.self,
+                      value: DayGridSnapshot(revision: gridRevision, frames: frames)
+                  )
+              }
+              .onPreferenceChange(DayGridSnapshotKey.self) { snapshot in
+                  guard let snapshot else { return }
+                  let viewport = CGRect(
+                      x: 0, y: fixedHeaderHeight, width: geo.size.width,
+                      height: max(0, geo.size.height - fixedHeaderHeight - bottomBarHeight)
+                  )
+                  let adjustment = gridAnchorTracker.update(
+                      frames: snapshot.frames, revision: snapshot.revision,
+                      viewport: viewport, offset: scrubber.metrics.offset,
+                      enabled: shouldRevealContent && !scrollDisabled && !scrollFrozen
+                          && model.selected == nil
+                  )
+                  var transaction = Transaction()
+                  transaction.disablesAnimations = true
+                  withTransaction(transaction) {
+                      // Rotation, deletion or late caption loading can repack
+                      // the hidden waterfall while a preview is open. Keep its
+                      // current photo reachable without competing with the
+                      // ordinary visible-card anchor restoration.
+                      if model.gridArrangement == .waterfall, model.selected != nil,
+                         let id = model.previewCurrentID,
+                         let rect = snapshot.frames[id],
+                         !viewport.contains(CGPoint(x: rect.midX, y: rect.midY)),
+                         let blockID = model.blockID(forItemID: id) {
+                          proxy.scrollTo(blockID, anchor: .center)
+                      }
+                      switch adjustment {
+                      case .offset(let offset):
+                          scrollPosition.scrollTo(y: offset)
+                      case .reveal(let id):
+                          if let blockID = model.blockID(forItemID: id) {
+                              proxy.scrollTo(blockID, anchor: .top)
+                          } else if model.sections.contains(where: { $0.placeCard?.id == id }) {
+                              proxy.scrollTo(id, anchor: .top)
+                          }
+                      case nil:
+                          break
+                      }
+                  }
+              }
             }
         }
         .task(id: model.instanceID) {
@@ -256,23 +315,6 @@ struct DayMagazineView: View {
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
-        .sheet(item: $editingItem) { item in
-            CaptionEditorSheet(item: item) { caption in
-                Task { await model.updateCaption(caption, for: item) }
-            }
-        }
-        .alert("保存说明失败", isPresented: captionErrorBinding) {
-            Button("好") { model.captionErrorMessage = nil }
-        } message: {
-            Text(model.captionErrorMessage ?? "")
-        }
-    }
-
-    private var captionErrorBinding: Binding<Bool> {
-        Binding(
-            get: { model.captionErrorMessage != nil },
-            set: { if !$0 { model.captionErrorMessage = nil } }
-        )
     }
 
     // MARK: Day navigation
@@ -337,7 +379,7 @@ struct DayMagazineView: View {
                     let newCount = min(6, model.gridColumnCount + 1)
                     if newCount != model.gridColumnCount {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        withAnimation(.easeInOut(duration: 0.3)) {
+                        withDayGridLayoutChange(model.gridArrangement) {
                             model.gridColumnCount = newCount
                         }
                         pinchBaseline = scale
@@ -346,7 +388,7 @@ struct DayMagazineView: View {
                     let newCount = max(1, model.gridColumnCount - 1)
                     if newCount != model.gridColumnCount {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        withAnimation(.easeInOut(duration: 0.3)) {
+                        withDayGridLayoutChange(model.gridArrangement) {
                             model.gridColumnCount = newCount
                         }
                         pinchBaseline = scale
@@ -415,41 +457,89 @@ struct DayMagazineView: View {
         .revealFade(shouldRevealContent, delay: 0.32)
     }
 
-    // MARK: Aligned grid
+    // MARK: Photo layouts
 
-    @ViewBuilder
-    private func alignedGridRow(_ blocks: [MagazineBlock], contentWidth: CGFloat) -> some View {
-        let count = min(max(model.gridColumnCount, 1), 6)
-        let horizontalInset: CGFloat = contentWidth >= 560 ? 20 : 8
-        let horizontalSpacing = model.gridHorizontalSpacing
-            ?? alignedGridHorizontalSpacing(for: count)
-        let availableWidth = max(contentWidth - horizontalInset * 2, 1)
-        let cellWidth = max(
-            (availableWidth - horizontalSpacing * CGFloat(count - 1)) / CGFloat(count),
-            1
+    private var usesContinuousPlaceCards: Bool {
+        model.showsPlaceCardFlowOption && model.placeCardFlow == .continuous
+            && model.sections.count >= 2 && model.sections.allSatisfy { $0.placeCard != nil }
+    }
+
+    private func gridLayoutRevision(viewportWidth: CGFloat) -> DayGridLayoutRevision {
+        DayGridLayoutRevision(
+            instanceID: model.instanceID,
+            category: model.selectedMediaCategory?.rawValue,
+            arrangement: model.gridArrangement,
+            columns: model.gridColumnCount,
+            width: viewportWidth,
+            sideSpacing: model.photoSideSpacing,
+            horizontalSpacing: model.gridHorizontalSpacing,
+            verticalSpacing: model.gridVerticalSpacing,
+            border: model.borderWidth.rawValue,
+            showsCaptions: model.showPhotoCaptions,
+            captions: model.showPhotoCaptions ? model.allItems.map(\.caption) : [],
+            itemIDs: model.allItems.map(\.id),
+            sections: model.sections.map(\.id),
+            placeCardIDs: model.sections.compactMap { $0.placeCard?.id },
+            cardPhotoFallbacks: Dictionary(uniqueKeysWithValues: model.sections.compactMap { section in
+                section.placeCard.map { ($0.id, $0.firstPhotoID) }
+            }),
+            segmentationForm: model.placeSegmentationForm.rawValue,
+            placeCardFlow: model.placeCardFlow
         )
-        // 一列时收窄，避免照片过宽
-        let finalCellWidth = count == 1 ? cellWidth * 0.78 : cellWidth
-        let frameAlignment: Alignment = count == 1 ? .center : .leading
-        let entries = blocks.flatMap { block in
+    }
+
+    private func gridEntries(_ blocks: [MagazineBlock], placeCard: PlaceSectionCard?) -> [DayGridEntry] {
+        let photos = blocks.flatMap { block in
             block.items.enumerated().map { index, item in
-                AlignedGridEntry(item: item, blockID: block.id, startsBlock: index == 0)
+                DayGridEntry.photo(PhotoGridEntry(item: item, blockID: block.id, startsBlock: index == 0))
             }
         }
+        return (placeCard.map { [DayGridEntry.placeCard($0)] } ?? []) + photos
+    }
 
-        if model.gridLazyEnabled {
+    private func photoGrid(
+        _ blocks: [MagazineBlock], placeCard: PlaceSectionCard? = nil, viewportSize: CGSize
+    ) -> some View {
+        grid(gridEntries(blocks, placeCard: placeCard), viewportSize: viewportSize)
+    }
+
+    @ViewBuilder
+    private func grid(
+        _ entries: [DayGridEntry], viewportSize: CGSize, marksPlaceCards: Bool = false
+    ) -> some View {
+        let sizing = DayPhotoGridSizing(
+            viewportWidth: viewportSize.width, columnCount: model.gridColumnCount,
+            horizontalSpacing: model.gridHorizontalSpacing, sideSpacing: model.photoSideSpacing
+        )
+        let count = sizing.columnCount
+        let horizontalInset = sizing.sideInset
+        let horizontalSpacing = sizing.horizontalSpacing
+        let finalCellWidth = sizing.cellWidth
+        let frameAlignment: Alignment = count == 1 ? .center : .leading
+        if model.gridArrangement == .waterfall {
+            WaterfallLayout(
+                columnCount: count, columnWidth: finalCellWidth,
+                horizontalSpacing: horizontalSpacing,
+                verticalSpacing: model.gridVerticalSpacing
+            ) {
+                ForEach(entries) { entry in
+                    gridEntryCell(entry, width: finalCellWidth, viewportSize: viewportSize,
+                                  usesViewportLoading: true, marksPlaceCards: marksPlaceCards)
+                }
+            }
+            .padding(.horizontal, horizontalInset)
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+            // Repacking is immediate; don't animate hundreds of cards through
+            // each other when a column, caption or filter changes.
+            .transaction { $0.animation = nil }
+        } else if model.gridLazyEnabled {
             let columns = Array(
                 repeating: GridItem(.fixed(finalCellWidth), spacing: horizontalSpacing, alignment: .top),
                 count: count
             )
             LazyVGrid(columns: columns, alignment: .leading, spacing: model.gridVerticalSpacing) {
                 ForEach(entries) { entry in
-                    if entry.startsBlock {
-                        alignedGridCell(entry.item, width: finalCellWidth)
-                            .id(entry.blockID)
-                    } else {
-                        alignedGridCell(entry.item, width: finalCellWidth)
-                    }
+                    gridEntryCell(entry, width: finalCellWidth, viewportSize: viewportSize)
                 }
             }
             .frame(maxWidth: count == 1 ? finalCellWidth : nil)
@@ -463,12 +553,7 @@ struct DayMagazineView: View {
                     let end = min(start + count, entries.count)
                     HStack(alignment: .top, spacing: horizontalSpacing) {
                         ForEach(entries[start..<end]) { entry in
-                            if entry.startsBlock {
-                                alignedGridCell(entry.item, width: finalCellWidth)
-                                    .id(entry.blockID)
-                            } else {
-                                alignedGridCell(entry.item, width: finalCellWidth)
-                            }
+                            gridEntryCell(entry, width: finalCellWidth, viewportSize: viewportSize)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: frameAlignment)
@@ -479,25 +564,59 @@ struct DayMagazineView: View {
         }
     }
 
-    private func alignedGridCell(_ item: PhotoItem, width: CGFloat) -> some View {
+    @ViewBuilder
+    private func gridEntryCell(
+        _ entry: DayGridEntry, width: CGFloat, viewportSize: CGSize,
+        usesViewportLoading: Bool = false, marksPlaceCards: Bool = false
+    ) -> some View {
+        switch entry {
+        case .photo(let photo):
+            if usesViewportLoading {
+                ViewportPhotoCell(
+                    viewportSize: viewportSize,
+                    lazyEnabled: model.gridLazyEnabled,
+                    forceLoad: heroHiddenID == photo.id || heroRequest?.id == photo.id
+                ) { loadsImage in
+                    photoGridCell(photo.item, width: width, loadsImage: loadsImage)
+                }
+                .id(photo.blockID)
+            } else if photo.startsBlock {
+                photoGridCell(photo.item, width: width)
+                    .id(photo.blockID)
+            } else {
+                photoGridCell(photo.item, width: width)
+            }
+        case .placeCard(let card):
+            PlaceSectionCardView(
+                card: card, width: width, font: model.coverDateFont,
+                titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
+                shadowLevel: model.photoShadow
+            )
+            .id(card.id)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: PlaceCardFrameKey.self,
+                        value: [card.id: geometry.frame(in: .named(heroCoordinateSpace))]
+                    )
+                    .preference(
+                        key: SectionTopKey.self,
+                        value: marksPlaceCards ? [card.id: geometry.frame(in: .named("dayContent")).minY] : [:]
+                    )
+                }
+            }
+        }
+    }
+
+    private func photoGridCell(
+        _ item: PhotoItem, width: CGFloat, loadsImage: Bool = true
+    ) -> some View {
         let count = min(max(model.gridColumnCount, 1), 6)
         let border = max(
             (alignedGridBorderBase(for: count) * model.borderWidth.scale).rounded(),
             0
         )
         let ratioRange = (CGFloat(9) / 20)...(CGFloat(16) / 9)
-        // While a preview is open, apply scroll transitions instantly (no
-        // spring) so revealing the grid on close cannot make cells wobble.
-        let scrollAnimation = model.selected != nil ? .linear(duration: 0) : model.scrollSpring.animation
-        let scrollScale = model.scrollScale.value
-        let scrollMovement = model.scrollMovement.value
-        let scrollRotation = model.scrollRotation.value
-        let scrollOpacity = model.scrollFade.offScreenOpacity
-        let scrollBlur = CGFloat(model.scrollBlur.radius)
-        let scrollParallax = model.scrollParallax.factor
-        let scrollTiltX = CGFloat(model.scrollTiltX.degrees)
-        let scrollTiltY = CGFloat(model.scrollTiltY.degrees)
-        let scrollTiltDecay = model.scrollTiltDecay.power
 
         return PhotoFrameView(
             item: item,
@@ -509,7 +628,7 @@ struct DayMagazineView: View {
             shadowLevel: model.photoShadow,
             showCaption: model.showPhotoCaptions,
             cornerRadius: model.photoCornerRadius.value,
-            onEditCaption: { editingItem = $0 }
+            loadsImage: loadsImage
         )
         .heroCell(id: item.id, hiddenID: heroHiddenID)
         .onTapGesture { heroRequest = item }
@@ -533,43 +652,6 @@ struct DayMagazineView: View {
                 Label("删除", systemImage: "trash")
             }
             .disabled(!item.sharedCapabilities.canDelete)
-        }
-        .scrollTransition(.animated(scrollAnimation)) { content, phase in
-            let y: CGFloat = phase == .bottomTrailing ? scrollMovement :
-                             phase == .topLeading ? -scrollMovement * 0.64 : 0
-            return content
-                .opacity(phase.isIdentity ? 1 : scrollOpacity)
-                .scaleEffect(
-                    phase == .topLeading ? (1.0 - scrollScale) :
-                    phase == .bottomTrailing ? (1.0 + scrollScale) : 1.0
-                )
-                .rotationEffect(.degrees(
-                    phase == .topLeading ? scrollRotation :
-                    phase == .bottomTrailing ? -scrollRotation : 0
-                ))
-                .offset(y: y)
-                .blur(radius: phase == .bottomTrailing ? scrollBlur * CGFloat(phase.value) : 0)
-        }
-        .scrollTransition(.interactive) { content, phase in
-            let parallaxY = CGFloat(-min(0.0, phase.value)) * scrollParallax
-            let value = phase.value
-            let easedValue = CGFloat(
-                (value >= 0 ? 1.0 : -1.0) * pow(abs(value), scrollTiltDecay)
-            )
-            return content
-                .rotation3DEffect(.degrees(easedValue * scrollTiltX),
-                                  axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-                .rotation3DEffect(.degrees(easedValue * scrollTiltY),
-                                  axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-                .offset(y: parallaxY)
-        }
-    }
-
-    private func alignedGridHorizontalSpacing(for count: Int) -> CGFloat {
-        switch count {
-        case 1...3: return 16
-        case 4:     return 14
-        default:    return 12
         }
     }
 
@@ -628,20 +710,26 @@ struct DayMagazineView: View {
     // MARK: Sections
 
     @ViewBuilder
-    private func sectionView(_ section: MagazineSection, index: Int, contentWidth: CGFloat) -> some View {
+    private func sectionView(
+        _ section: MagazineSection, index: Int, viewportSize: CGSize
+    ) -> some View {
         let rows = sectionRows(section)
         if !rows.isEmpty {
             let hasHeading = section.placeHeading != nil
                 || section.placeHeadingPending
                 || section.showsTimeHeading
             VStack(alignment: .leading, spacing: 0) {
-                sectionHeader(section)
-                ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
-                    rowView(row, contentWidth: contentWidth)
-                        .padding(.top, rowTopSpacing(index: idx, rows: rows) * (idx == 0 && !hasHeading ? 0.5 : 1))
+                if let card = section.placeCard {
+                    photoGrid(section.blocks, placeCard: card, viewportSize: viewportSize)
+                } else {
+                    sectionHeader(section)
+                        .padding(.horizontal, 20)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                        rowView(row, viewportSize: viewportSize)
+                            .padding(.top, rowTopSpacing(index: idx, rows: rows) * (idx == 0 && !hasHeading ? 0.5 : 1))
+                    }
                 }
             }
-            .padding(.horizontal, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .reveal(shouldRevealContent, delay: 0.42 + Double(index) * 0.14)
             .background(
@@ -695,14 +783,15 @@ struct DayMagazineView: View {
     }
 
     @ViewBuilder
-    private func rowView(_ row: SectionRow, contentWidth: CGFloat) -> some View {
+    private func rowView(_ row: SectionRow, viewportSize: CGSize) -> some View {
         switch row {
         case .label(let text):
             Text(text)
                 .font(Theme.serif(13))
                 .foregroundStyle(Theme.ink.opacity(0.7))
+                .padding(.horizontal, 20)
         case .grid(let blocks):
-            alignedGridRow(blocks, contentWidth: contentWidth)
+            photoGrid(blocks, viewportSize: viewportSize)
         }
     }
 
@@ -810,18 +899,58 @@ struct DayMagazineView: View {
 
 // MARK: - Section rows
 
-/// A rendered row inside a section: a time label or aligned photo grid.
+/// A rendered row inside a section: a time label or photo layout.
 private enum SectionRow {
     case label(String)
     case grid([MagazineBlock])
 }
 
-private struct AlignedGridEntry: Identifiable {
+private struct PhotoGridEntry: Identifiable {
     let item: PhotoItem
     let blockID: UUID
     let startsBlock: Bool
 
     var id: String { item.id }
+}
+
+private enum DayGridEntry: Identifiable {
+    case photo(PhotoGridEntry)
+    case placeCard(PlaceSectionCard)
+
+    var id: String {
+        switch self {
+        case .photo(let photo): return photo.id
+        case .placeCard(let card): return card.id
+        }
+    }
+}
+
+/// Separate from hero geometry so decorations cannot become preview sources.
+private struct PlaceCardFrameKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+private struct DayGridSnapshot: Equatable {
+    let revision: DayGridLayoutRevision
+    let frames: [String: CGRect]
+}
+
+private struct DayGridSnapshotKey: PreferenceKey {
+    static var defaultValue: DayGridSnapshot? = nil
+    static func reduce(value: inout DayGridSnapshot?, nextValue: () -> DayGridSnapshot?) {
+        guard let next = nextValue() else { return }
+        if let previous = value, previous.revision == next.revision {
+            value = DayGridSnapshot(
+                revision: next.revision,
+                frames: previous.frames.merging(next.frames) { _, new in new }
+            )
+        } else {
+            value = next
+        }
+    }
 }
 
 // MARK: - Scroll tracking

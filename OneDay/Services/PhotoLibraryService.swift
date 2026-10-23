@@ -183,51 +183,6 @@ final class PhotoLibraryService {
         }.value
     }
 
-    /// Random eligible photos from across the whole library, for the rewind flash pool.
-    func randomAssets(count: Int) async -> [PHAsset] {
-        await Task.detached(priority: .userInitiated) {
-            let options = PHFetchOptions()
-            options.predicate = NSPredicate(
-                format: "mediaType == %d AND NOT ((mediaSubtype & %d) != 0)",
-                PHAssetMediaType.image.rawValue,
-                PHAssetMediaSubtype.photoScreenshot.rawValue
-            )
-            let result = PHAsset.fetchAssets(with: options)
-            guard result.count > 0 else { return [] }
-
-            var located: [PHAsset] = []
-            var other: [PHAsset] = []
-            var seen = Set<Int>()
-            var attempts = 0
-            let limit = count * 10
-            while located.count < count && attempts < limit {
-                attempts += 1
-                let index = Int.random(in: 0..<result.count)
-                if seen.contains(index) { continue }
-                seen.insert(index)
-                let asset = result.object(at: index)
-                guard MediaFilter.isEligible(asset) else { continue }
-                if asset.location != nil { located.append(asset) } else { other.append(asset) }
-            }
-            // Prefer located photos (so place names show), then fill with the rest.
-            return Array((located + other).prefix(count))
-        }.value
-    }
-
-    /// Nearest eligible day strictly earlier than `date`.
-    /// Derived from `eligibleDays()` (the same proven source used to pick days),
-    /// so the result is always a real, navigable day.
-    func nearestEligibleDay(before date: Date) async -> Date? {
-        let days = await eligibleDays() // sorted descending (newest first)
-        return DayMediaScope.previousDay(before: date, in: days)
-    }
-
-    /// Nearest eligible day strictly later than `date` (today is already excluded).
-    func nearestEligibleDay(after date: Date) async -> Date? {
-        let days = await eligibleDays() // sorted descending (newest first)
-        return DayMediaScope.nextDay(after: date, in: days)
-    }
-
     /// Same-month/day entries from all supported media. Shared-album duplicates
     /// contributed by the owner are excluded, regardless of body display settings.
     func todayInHistory(
@@ -315,37 +270,6 @@ final class PhotoLibraryService {
             ))
         }
         return entries
-    }
-
-    /// The capture-local day key of one asset, judged from the same
-    /// neighbors `items(on:)` uses, so opening that day always contains it.
-    func captureDay(for asset: PHAsset) async -> Date? {
-        guard let date = asset.creationDate else { return nil }
-        let clock = CaptureClock.current()
-        guard clock.isEnabled else { return clock.calendar.startOfDay(for: date) }
-        let shared = await SharedAlbumCache.shared.current()
-        return await Task.detached(priority: .userInitiated) { [shared] () -> Date? in
-            let window = CaptureClock.inferenceWindow
-            let lower = date.addingTimeInterval(-window)
-            let upper = date.addingTimeInterval(window)
-            let options = PHFetchOptions()
-            options.predicate = NSPredicate(
-                format: "creationDate >= %@ AND creationDate <= %@",
-                lower as NSDate, upper as NSDate
-            )
-            var population: [PHAsset] = [asset]
-            PHAsset.fetchAssets(with: options).enumerateObjects { neighbor, _, _ in
-                if MediaFilter.isEligible(neighbor), neighbor.localIdentifier != asset.localIdentifier {
-                    population.append(neighbor)
-                }
-            }
-            population += shared.sharedAssets.filter { neighbor in
-                guard let time = neighbor.creationDate, time >= lower, time <= upper,
-                      neighbor.localIdentifier != asset.localIdentifier else { return false }
-                return MediaFilter.isEligible(neighbor)
-            }
-            return clock.days(for: population).first?.day
-        }.value
     }
 
     func items(on day: Date) async -> [PhotoItem] {

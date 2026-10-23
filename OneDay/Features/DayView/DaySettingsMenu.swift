@@ -1,11 +1,23 @@
 import SwiftUI
 
+private struct DayPhotoViewportWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    var dayPhotoViewportWidth: CGFloat? {
+        get { self[DayPhotoViewportWidthKey.self] }
+        set { self[DayPhotoViewportWidthKey.self] = newValue }
+    }
+}
+
 /// Shared settings menu used by the cover, photo page, and back cover.
 /// Provides a consistent ellipsis button that opens the full settings menu.
 struct DaySettingsMenu: View {
     let model: DayViewModel
     var tint: Color = Theme.ink
     @AppStorage(CaptureClock.enabledKey) private var localCaptureTime = true
+    @Environment(\.dayPhotoViewportWidth) private var photoViewportWidth
 
     var body: some View {
         Menu {
@@ -28,14 +40,30 @@ struct DaySettingsMenu: View {
                     set: { model.background = $0 }
                 )) {
                     ForEach(PageBackground.allCases) { option in
-                        Label(option.label, systemImage: option.icon).tag(option)
+                        Text(option.label).tag(option)
                     }
                 }
             }
             Menu("布局") {
+                Menu("排列") {
+                    Picker("排列", selection: Binding(
+                        get: { model.gridArrangement },
+                        set: { arrangement in
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                model.gridArrangement = arrangement
+                            }
+                        }
+                    )) {
+                        ForEach(DayGridArrangement.allCases) { arrangement in
+                            Text(arrangement.label).tag(arrangement)
+                        }
+                    }
+                }
                 Menu("列数") {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.3)) {
+                        withDayGridLayoutChange(model.gridArrangement) {
                             model.gridColumnMode = .automatic
                         }
                     } label: {
@@ -47,14 +75,14 @@ struct DaySettingsMenu: View {
                     }
                     Menu {
                         Button("使用上次列数（\(Self.chineseColumnLabel(model.manualGridColumnCount))）") {
-                            withAnimation(.easeInOut(duration: 0.3)) {
+                            withDayGridLayoutChange(model.gridArrangement) {
                                 model.gridColumnMode = .manual
                             }
                         }
                         Divider()
                         ForEach(1...6, id: \.self) { count in
                             Button {
-                                withAnimation(.easeInOut(duration: 0.3)) {
+                                withDayGridLayoutChange(model.gridArrangement) {
                                     model.gridColumnCount = count
                                 }
                             } label: {
@@ -74,9 +102,25 @@ struct DaySettingsMenu: View {
                         }
                     }
                 }
+                Menu("左右留白") {
+                    Picker("左右留白", selection: Binding(
+                        get: { model.photoSideSpacing },
+                        set: { spacing in
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                model.photoSideSpacing = spacing
+                            }
+                        }
+                    )) {
+                        ForEach(DayPhotoSideSpacing.allCases) { spacing in
+                            Text(sideSpacingLabel(spacing)).tag(spacing)
+                        }
+                    }
+                }
                 Menu("横向间距") {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.3)) {
+                        withDayGridLayoutChange(model.gridArrangement) {
                             model.gridHorizontalSpacing = nil
                         }
                     } label: {
@@ -89,7 +133,7 @@ struct DaySettingsMenu: View {
                     Divider()
                     ForEach(Self.gridHorizontalSpacingOptions, id: \.self) { spacing in
                         Button {
-                            withAnimation(.easeInOut(duration: 0.3)) {
+                            withDayGridLayoutChange(model.gridArrangement) {
                                 model.gridHorizontalSpacing = spacing
                             }
                         } label: {
@@ -105,7 +149,7 @@ struct DaySettingsMenu: View {
                 Menu("纵向间距") {
                     ForEach(Self.gridVerticalSpacingOptions, id: \.self) { spacing in
                         Button {
-                            withAnimation(.easeInOut(duration: 0.3)) {
+                            withDayGridLayoutChange(model.gridArrangement) {
                                 model.gridVerticalSpacing = spacing
                             }
                         } label: {
@@ -123,7 +167,7 @@ struct DaySettingsMenu: View {
                     set: { model.gridLazyEnabled = $0 }
                 ))
             }
-            Menu("照片图片") {
+            Menu("照片") {
                 Menu("白边") {
                     Picker("宽度", selection: Binding(
                         get: { model.borderWidth },
@@ -165,51 +209,11 @@ struct DaySettingsMenu: View {
                     }
                 }
             }
-            Menu("动效") {
-                Section("入场") {
-                    animPicker("缩放幅度", icon: "arrow.up.left.and.arrow.down.right",
-                               binding: Binding(get: { model.scrollScale },    set: { model.scrollScale = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("运动距离", icon: "arrow.up.and.down",
-                               binding: Binding(get: { model.scrollMovement }, set: { model.scrollMovement = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("旋转角度", icon: "rotate.right",
-                               binding: Binding(get: { model.scrollRotation }, set: { model.scrollRotation = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("模糊半径", icon: "camera.filters",
-                               binding: Binding(get: { model.scrollBlur },     set: { model.scrollBlur = $0 }),
-                               labelOf: { $0.label })
-                }
-                Section("节奏") {
-                    animPicker("弹簧曲线", icon: "waveform",
-                               binding: Binding(get: { model.scrollSpring },   set: { model.scrollSpring = $0 }),
-                               labelOf: { $0.label })
-                }
-                Section("消失") {
-                    animPicker("淡出透明", icon: "eye.slash",
-                               binding: Binding(get: { model.scrollFade },     set: { model.scrollFade = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("速度差",  icon: "arrow.up.arrow.down",
-                               binding: Binding(get: { model.scrollParallax }, set: { model.scrollParallax = $0 }),
-                               labelOf: { $0.label })
-                }
-                Section("立体") {
-                    animPicker("X轴倒住", icon: "square.3.layers.3d.top.filled",
-                               binding: Binding(get: { model.scrollTiltX },    set: { model.scrollTiltX = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("Y轴倒住", icon: "square.3.layers.3d.middle.filled",
-                               binding: Binding(get: { model.scrollTiltY },    set: { model.scrollTiltY = $0 }),
-                               labelOf: { $0.label })
-                    animPicker("角度递减", icon: "arrow.down.right.and.arrow.up.left",
-                               binding: Binding(get: { model.scrollTiltDecay }, set: { model.scrollTiltDecay = $0 }),
-                               labelOf: { $0.label })
-                }
-            }
             Menu("标题") {
-                animPicker("标题字体",
+                optionPicker("字体",
                            binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                            labelOf: { $0.label })
-                Menu("标题大小") {
+                Menu("大小") {
                     ForEach(SectionTitleSize.allCases) { size in
                         Button {
                             model.sectionTitleSize = size
@@ -222,12 +226,40 @@ struct DaySettingsMenu: View {
                         }
                     }
                 }
-                Menu("标题分段") {
+                Menu("分段") {
                     Toggle("地点分段", isOn: Binding(
                         get: { model.titlePlaceSegmentation },
                         set: { model.titlePlaceSegmentation = $0 }
                     ))
                     if model.titlePlaceSegmentation {
+                        Menu("分段形式") {
+                            Picker("分段形式", selection: Binding(
+                                get: { model.placeSegmentationForm },
+                                set: { model.placeSegmentationForm = $0 }
+                            )) {
+                                ForEach(TitleSegmentationPolicy.Form.allCases) { form in
+                                    Text(form.label).tag(form)
+                                }
+                            }
+                        }
+                    }
+                    if model.showsPlaceCardFlowOption {
+                        Menu("卡片衔接") {
+                            Picker("卡片衔接", selection: Binding(
+                                get: { model.placeCardFlow },
+                                set: { flow in
+                                    var transaction = Transaction()
+                                    transaction.disablesAnimations = true
+                                    withTransaction(transaction) { model.placeCardFlow = flow }
+                                }
+                            )) {
+                                ForEach(PlaceCardFlow.allCases) { flow in
+                                    Text(flow.label).tag(flow)
+                                }
+                            }
+                        }
+                    }
+                    if model.showsNestedTimeSegmentationOption {
                         Toggle("地点下时间分段", isOn: Binding(
                             get: { model.titleNestedTimeSegmentation },
                             set: { model.titleNestedTimeSegmentation = $0 }
@@ -282,7 +314,7 @@ struct DaySettingsMenu: View {
                     }
                 }
             }
-            Toggle("说明文字", isOn: Binding(
+            Toggle("说明", isOn: Binding(
                 get: { model.showPhotoCaptions },
                 set: { model.showPhotoCaptions = $0 }
             ))
@@ -303,13 +335,24 @@ struct DaySettingsMenu: View {
 
     // MARK: - Helpers
 
+    private func sideSpacingLabel(_ spacing: DayPhotoSideSpacing) -> String {
+        guard let width = photoViewportWidth else {
+            // Standalone hosts without a page width can only show the ratio.
+            return "\(Int(spacing.fraction * 100))%"
+        }
+        return DayPhotoGridSizing(
+            viewportWidth: width, columnCount: model.gridColumnCount,
+            horizontalSpacing: model.gridHorizontalSpacing, sideSpacing: spacing
+        ).sideInsetLabel
+    }
+
     @ViewBuilder
-    private func animPicker<T: CaseIterable & Identifiable & Equatable>(
-        _ title: String, icon: String? = nil,
+    private func optionPicker<T: CaseIterable & Identifiable & Equatable>(
+        _ title: String,
         binding: Binding<T>,
         labelOf: @escaping (T) -> String
     ) -> some View where T.AllCases: RandomAccessCollection {
-        Menu {
+        Menu(title) {
             ForEach(Array(T.allCases)) { opt in
                 Button { binding.wrappedValue = opt } label: {
                     if binding.wrappedValue == opt {
@@ -318,12 +361,6 @@ struct DaySettingsMenu: View {
                         Text(labelOf(opt))
                     }
                 }
-            }
-        } label: {
-            if let icon {
-                Label(title, systemImage: icon)
-            } else {
-                Text(title)
             }
         }
     }

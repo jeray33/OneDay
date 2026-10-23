@@ -1,5 +1,5 @@
 import SwiftUI
-import AVKit
+import AVFoundation
 import Photos
 
 enum PreviewTagBarTransition {
@@ -97,7 +97,6 @@ struct PreviewPageView: View {
     let item: PhotoItem
     let model: DayViewModel
     var onZoomChanged: (Bool) -> Void = { _ in }
-    var onEditCaption: ((PhotoItem) -> Void)? = nil
     var photoOffsetX: CGFloat = 0
     var photoOffsetY: CGFloat = 0
     var photoScale: CGFloat = 1
@@ -117,9 +116,14 @@ struct PreviewPageView: View {
     var showsRotationControls = false
     var onRotate: () -> Void = {}
     var onRotationTransitionChanged: (String, Bool) -> Void = { _, _ in }
+    var videoPlayer: AVPlayer?
+    var onVideoVisibilityChanged: (String, Bool) -> Void = { _, _ in }
+    var onVideoTap: () -> Void = {}
+    var videoPlaybackActionLabel = "播放视频"
+    var isVideoPlaying = false
+    var showsVideoPlaybackIcon = false
 
     @State private var image: UIImage?
-    @State private var player: AVPlayer?
     @State private var place: String?
     @State private var placeAdminLine: String?
     @State private var placeStatus: PlaceLineStatus = .loading
@@ -218,12 +222,15 @@ struct PreviewPageView: View {
             .onChange(of: isSelected) { _, selected in
                 if !selected { settleRotation() }
             }
+            .onChange(of: isSelected && abs(rawProgress) < 0.005, initial: true) { _, centered in
+                if item.isVideo { onVideoVisibilityChanged(item.id, centered) }
+            }
             .onChange(of: interactionRecoveryID) { _, _ in settleRotation() }
             .onChange(of: reduceMotion) { _, reduced in
                 if reduced { settleRotation() }
             }
             .onDisappear {
-                player?.pause()
+                if item.isVideo { onVideoVisibilityChanged(item.id, false) }
                 settleRotation()
             }
             .zIndex(incomingPageZIndex(for: rawProgress))
@@ -434,19 +441,28 @@ struct PreviewPageView: View {
     private func mediaCard(card: CGSize, pageIsCentered: Bool, rotationProgress: Double) -> some View {
         let cornerRadius = scaledCornerRadius(for: card)
         if item.isVideo {
-            if let player {
-                VideoPlayer(player: player)
-                    .frame(width: card.width - sideBorder * 2,
-                           height: card.height - topBorder - baseBottomBorder)
-                    .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius - sideBorder, 0), style: .continuous))
-                    .padding(.horizontal, sideBorder)
-                    .padding(.top, topBorder)
-                    .padding(.bottom, baseBottomBorder)
-                    .frame(width: card.width, height: card.height)
-                    .background(cardColor)
-                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            } else {
-                ProgressView().tint(.white)
+            ZoomableImageView(
+                image: image ?? UIImage(),
+                displaySize: card,
+                sideBorder: sideBorder,
+                topBorder: topBorder,
+                captionHeight: baseBottomBorder,
+                cardColor: cardColor,
+                cornerRadius: cornerRadius,
+                onZoomChanged: onZoomChanged,
+                isSelected: isSelected,
+                interactionRecoveryID: interactionRecoveryID,
+                onRestingScaleChanged: { isAtDefaultScale = $0 },
+                videoPlayer: videoPlayer,
+                isVideo: true,
+                onVideoTap: onVideoTap,
+                videoPlaybackActionLabel: videoPlaybackActionLabel
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if showsVideoPlaybackIcon, isSelected, pageIsCentered, abs(flipAngle) < 0.001 {
+                    PreviewVideoPlaybackIcon(isPlaying: isVideoPlaying)
+                }
             }
         } else if let rotating = rotationImage {
             RotatingPhotoCard(image: rotating, viewport: card, sideBorder: sideBorder,
@@ -464,7 +480,6 @@ struct PreviewPageView: View {
                 onZoomChanged: onZoomChanged,
                 caption: nil,
                 captionColor: captionColor,
-                onEditCaption: nil,
                 livePhotoAsset: item.isLivePhoto ? item.asset : nil,
                 isSelected: isSelected,
                 livePhotoVisitID: livePhotoVisitID,
@@ -594,6 +609,7 @@ struct PreviewPageView: View {
             + Self.bottomControlsBottomPadding
             + Self.bottomActionBarHeight
             + tagBarHeight
+            + (item.isVideo ? PreviewVideoControls.height + 12 : 0)
         let verticalInset = max(topControlsHeight, bottomControlsHeight) + Self.controlClearance
         let maxCardHeight = max(1, size.height - verticalInset * 2)
         let maxImageHeight = max(1, maxCardHeight - topBorder - baseBottomBorder)
@@ -617,25 +633,18 @@ struct PreviewPageView: View {
 
     private func load(targetSize: CGSize) async {
         if displayedAspectRatio == nil { displayedAspectRatio = item.aspectRatio }
-        if item.isVideo {
-            if let playerItem = await ImageLoader.shared.playerItem(for: item.asset) {
-                player = AVPlayer(playerItem: playerItem)
-                player?.play()
-            }
-        } else {
-            let scale = UIScreen.main.scale
-            let pixelSize = CGSize(width: targetSize.width * scale, height: targetSize.height * scale)
-            for await frame in ImageLoader.shared.stream(
-                asset: item.asset,
-                targetSize: pixelSize,
-                contentMode: .aspectFit,
-                highQuality: true
-            ) {
-                guard !Task.isCancelled else { return }
-                image = frame
-                imageVersion = item.contentVersion
-                if rotationAnimationFinished { rotationImage = nil }
-            }
+        let scale = UIScreen.main.scale
+        let pixelSize = CGSize(width: targetSize.width * scale, height: targetSize.height * scale)
+        for await frame in ImageLoader.shared.stream(
+            asset: item.asset,
+            targetSize: pixelSize,
+            contentMode: .aspectFit,
+            highQuality: true
+        ) {
+            guard !Task.isCancelled else { return }
+            image = frame
+            imageVersion = item.contentVersion
+            if rotationAnimationFinished { rotationImage = nil }
         }
     }
 

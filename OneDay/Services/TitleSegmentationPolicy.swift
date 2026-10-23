@@ -2,24 +2,36 @@ import Foundation
 
 /// Place grouping takes priority; the two time switches control separate paths.
 nonisolated struct TitleSegmentationPolicy {
+    enum Form: String, CaseIterable, Identifiable {
+        case title, card
+
+        var id: Self { self }
+        var label: String { self == .title ? "标题" : "卡片" }
+    }
+
     static let placeKey = "OneDay.titlePlaceSegmentation"
     static let nestedTimeKey = "OneDay.titleNestedTimeSegmentation"
     static let timeKey = "OneDay.titleTimeSegmentation"
+    static let formKey = "OneDay.placeSegmentationForm"
 
     var placeEnabled: Bool
     var nestedTimeEnabled: Bool
     var timeEnabled: Bool
+    var form: Form
+    var showsNestedTimeOption: Bool { placeEnabled && form == .title }
 
     init(defaults: UserDefaults = .standard) {
         placeEnabled = defaults.object(forKey: Self.placeKey) as? Bool ?? true
         nestedTimeEnabled = defaults.object(forKey: Self.nestedTimeKey) as? Bool ?? false
         timeEnabled = defaults.object(forKey: Self.timeKey) as? Bool ?? true
+        form = defaults.string(forKey: Self.formKey).flatMap(Form.init(rawValue:)) ?? .title
     }
 
     func save(to defaults: UserDefaults = .standard) {
         defaults.set(placeEnabled, forKey: Self.placeKey)
         defaults.set(nestedTimeEnabled, forKey: Self.nestedTimeKey)
         defaults.set(timeEnabled, forKey: Self.timeKey)
+        defaults.set(form.rawValue, forKey: Self.formKey)
     }
 
     struct Group<Item> {
@@ -30,6 +42,7 @@ nonisolated struct TitleSegmentationPolicy {
         let placeName: String?
         let showsPlaceHeading: Bool
         let timeBand: Int?
+        var showsPlaceCard = false
     }
 
     /// Inputs are chronological. Only time grouping changes boundaries, not
@@ -46,6 +59,10 @@ nonisolated struct TitleSegmentationPolicy {
         if placeEnabled, nonemptyPlaces.count >= 2 {
             return nonemptyPlaces.flatMap { place -> [Group<Item>] in
                 let name = place.name.flatMap { $0.isEmpty ? nil : $0 }
+                if form == .card {
+                    return [Group(items: place.items, placeID: place.id, placeName: name,
+                                  showsPlaceHeading: false, timeBand: nil, showsPlaceCard: true)]
+                }
                 if nestedTimeEnabled {
                     return splitByTime(place.items, timeBand: timeBand).enumerated().map { offset, group in
                         Group(items: group.items, placeID: place.id, placeName: name,

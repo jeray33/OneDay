@@ -133,7 +133,7 @@ final class CaptureClockTests: XCTestCase {
 
     /// Mirrors the three ways the app assigns days: the whole library
     /// (`eligibleDays`), a day's widened fetch window (`items(on:)`), and one
-    /// capture with its ±6 h neighbors (`captureDay(for:)`). A capture must
+    /// capture with its ±6 h inference neighbors. A capture must
     /// get the same day from all three, or a listed day could open empty.
     func testWholeLibraryWindowedDayAndSingleCaptureAgree() {
         let tokyo = TimeZone(identifier: "Asia/Tokyo")!

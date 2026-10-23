@@ -7,7 +7,7 @@ struct MediaCategoryMenuSection: View {
     @State private var isIndexing = ImageClassificationStore.shared.isIndexing
 
     var body: some View {
-        Section("显示内容") {
+        Section() {
             ForEach(MediaCategory.allCases) { category in
                 if category == .photoVideo && primaryAlwaysOn {
                     Toggle(isOn: .constant(true)) {
@@ -27,7 +27,7 @@ struct MediaCategoryMenuSection: View {
             }
             if selection.needsImageClassification {
                 Text(isIndexing ? "正在识别其它图片…" : "自动近似分类，无法判断的暂按照片显示")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }

@@ -65,7 +65,6 @@ final class DayViewModel {
     private var favoriteIDs: Set<String>
     private var hiddenIDs: Set<String>
     var albumPickerItem: PhotoItem?
-    var captionErrorMessage: String?
 
     // MARK: Page appearance
     private static let backgroundKey   = "OneDay.pageBackground"
@@ -75,17 +74,6 @@ final class DayViewModel {
     private static let gridHorizontalSpacingKey = "OneDay.gridHorizontalSpacing"
     private static let gridVerticalSpacingKey = "OneDay.gridVerticalSpacing"
     private static let gridLazyEnabledKey = "OneDay.gridLazyEnabled"
-    // MARK: Scroll animation
-    private static let scrollScaleKey    = "OneDay.scrollScale"
-    private static let scrollMovementKey = "OneDay.scrollMovement"
-    private static let scrollRotationKey = "OneDay.scrollRotation"
-    private static let scrollFadeKey     = "OneDay.scrollFade"
-    private static let scrollSpringKey   = "OneDay.scrollSpring"
-    private static let scrollBlurKey     = "OneDay.scrollBlur"
-    private static let scrollParallaxKey = "OneDay.scrollParallax"
-    private static let scrollTiltXKey    = "OneDay.scrollTiltX"
-    private static let scrollTiltYKey    = "OneDay.scrollTiltY"
-    private static let scrollTiltDecayKey = "OneDay.scrollTiltDecay"
     private static let coverDateFontKey  = CoverDateFont.storageKey
     private static let bottomToolbarKey  = "OneDay.bottomToolbar"
     private static let scrubberMarksKey  = "OneDay.scrubberSectionMarks"
@@ -122,6 +110,27 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private var gridColumnPolicy: GridColumnPolicy {
         didSet { gridColumnPolicy.save() }
     }
+    var gridArrangement: DayGridArrangement {
+        didSet {
+            UserDefaults.standard.set(gridArrangement.rawValue, forKey: DayGridArrangement.storageKey)
+        }
+    }
+    var photoSideSpacing: DayPhotoSideSpacing {
+        didSet {
+            UserDefaults.standard.set(photoSideSpacing.rawValue, forKey: DayPhotoSideSpacing.storageKey)
+        }
+    }
+    var placeCardFlow: PlaceCardFlow {
+        didSet {
+            UserDefaults.standard.set(placeCardFlow.rawValue, forKey: PlaceCardFlow.storageKey)
+        }
+    }
+    var showsPlaceCardFlowOption: Bool {
+        PlaceCardFlow.isApplicable(
+            arrangement: gridArrangement, placeEnabled: titlePlaceSegmentation,
+            form: placeSegmentationForm
+        )
+    }
     var gridColumnMode: GridColumnPolicy.Mode {
         get { gridColumnPolicy.mode }
         set { gridColumnPolicy.mode = newValue }
@@ -148,42 +157,12 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
                                       forKey: Self.gridVerticalSpacingKey)
         }
     }
-    /// When true, the aligned grid uses LazyVGrid (original behavior).
-    /// When false, uses a non-lazy VStack+HStack grid (fixes scroll jumping).
+    /// Uses LazyVGrid in aligned mode, viewport-based image loading in waterfall
+    /// mode. Turning this off keeps every photo view loaded in either layout.
     var gridLazyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(gridLazyEnabled, forKey: Self.gridLazyEnabledKey)
         }
-    }
-    var scrollScale: ScrollScaleMagnitude {
-        didSet { UserDefaults.standard.set(scrollScale.rawValue,    forKey: Self.scrollScaleKey) }
-    }
-    var scrollMovement: ScrollMovement {
-        didSet { UserDefaults.standard.set(scrollMovement.rawValue, forKey: Self.scrollMovementKey) }
-    }
-    var scrollRotation: ScrollRotation {
-        didSet { UserDefaults.standard.set(scrollRotation.rawValue, forKey: Self.scrollRotationKey) }
-    }
-    var scrollFade: ScrollFade {
-        didSet { UserDefaults.standard.set(scrollFade.rawValue,     forKey: Self.scrollFadeKey) }
-    }
-    var scrollSpring: ScrollSpring {
-        didSet { UserDefaults.standard.set(scrollSpring.rawValue,   forKey: Self.scrollSpringKey) }
-    }
-    var scrollBlur: ScrollBlur {
-        didSet { UserDefaults.standard.set(scrollBlur.rawValue,     forKey: Self.scrollBlurKey) }
-    }
-    var scrollParallax: ScrollParallax {
-        didSet { UserDefaults.standard.set(scrollParallax.rawValue, forKey: Self.scrollParallaxKey) }
-    }
-    var scrollTiltX: ScrollTiltX {
-        didSet { UserDefaults.standard.set(scrollTiltX.rawValue,    forKey: Self.scrollTiltXKey) }
-    }
-    var scrollTiltY: ScrollTiltY {
-        didSet { UserDefaults.standard.set(scrollTiltY.rawValue,    forKey: Self.scrollTiltYKey) }
-    }
-    var scrollTiltDecay: ScrollTiltDecay {
-        didSet { UserDefaults.standard.set(scrollTiltDecay.rawValue, forKey: Self.scrollTiltDecayKey) }
     }
     var coverDateFont: CoverDateFont {
         didSet { UserDefaults.standard.set(coverDateFont.rawValue, forKey: Self.coverDateFontKey) }
@@ -218,9 +197,14 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private var titleSegmentation: TitleSegmentationPolicy {
         didSet {
             titleSegmentation.save()
-            rebuildSections()
+            rebuildSections(animated: oldValue.form == .title && titleSegmentation.form == .title)
         }
     }
+    var placeSegmentationForm: TitleSegmentationPolicy.Form {
+        get { titleSegmentation.form }
+        set { titleSegmentation.form = newValue }
+    }
+    var showsNestedTimeSegmentationOption: Bool { titleSegmentation.showsNestedTimeOption }
     var titlePlaceSegmentation: Bool {
         get { titleSegmentation.placeEnabled }
         set { titleSegmentation.placeEnabled = newValue }
@@ -364,16 +348,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.photoShadow = PhotoShadowLevel(rawValue: savedShadow ?? "") ?? .max
         let savedCornerRadius = UserDefaults.standard.string(forKey: Self.photoCornerRadiusKey)
         self.photoCornerRadius = PhotoCornerRadius(rawValue: savedCornerRadius ?? "") ?? .none
-        self.scrollScale    = ScrollScaleMagnitude(rawValue: UserDefaults.standard.string(forKey: Self.scrollScaleKey)    ?? "") ?? .strong
-        self.scrollMovement = ScrollMovement(rawValue:       UserDefaults.standard.string(forKey: Self.scrollMovementKey) ?? "") ?? .large
-        self.scrollRotation = ScrollRotation(rawValue:       UserDefaults.standard.string(forKey: Self.scrollRotationKey) ?? "") ?? .medium
-        self.scrollFade     = ScrollFade(rawValue:           UserDefaults.standard.string(forKey: Self.scrollFadeKey)     ?? "") ?? .hidden
-        self.scrollSpring   = ScrollSpring(rawValue:         UserDefaults.standard.string(forKey: Self.scrollSpringKey)   ?? "") ?? .standard
-        self.scrollBlur     = ScrollBlur(rawValue:           UserDefaults.standard.string(forKey: Self.scrollBlurKey)     ?? "") ?? .none
-        self.scrollParallax = ScrollParallax(rawValue:       UserDefaults.standard.string(forKey: Self.scrollParallaxKey) ?? "") ?? .none
-        self.scrollTiltX    = ScrollTiltX(rawValue:          UserDefaults.standard.string(forKey: Self.scrollTiltXKey)    ?? "") ?? .none
-        self.scrollTiltY    = ScrollTiltY(rawValue:          UserDefaults.standard.string(forKey: Self.scrollTiltYKey)    ?? "") ?? .none
-        self.scrollTiltDecay = ScrollTiltDecay(rawValue:     UserDefaults.standard.string(forKey: Self.scrollTiltDecayKey) ?? "") ?? .linear
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
         self.showBottomToolbar = UserDefaults.standard.object(forKey: Self.bottomToolbarKey) as? Bool ?? true
         self.showScrubberSectionMarks = UserDefaults.standard.object(forKey: Self.scrubberMarksKey) as? Bool ?? true
@@ -389,6 +363,15 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.disabledAlbumIDs = Set(savedDisabled)
         self.albumTagOrder = UserDefaults.standard.stringArray(forKey: Self.albumTagOrderKey) ?? []
         self.gridColumnPolicy = GridColumnPolicy(itemCount: items.count)
+        self.gridArrangement = DayGridArrangement(
+            savedValue: UserDefaults.standard.string(forKey: DayGridArrangement.storageKey)
+        )
+        self.photoSideSpacing = DayPhotoSideSpacing(
+            savedValue: UserDefaults.standard.string(forKey: DayPhotoSideSpacing.storageKey)
+        )
+        self.placeCardFlow = PlaceCardFlow(
+            savedValue: UserDefaults.standard.string(forKey: PlaceCardFlow.storageKey)
+        )
         if UserDefaults.standard.object(forKey: Self.gridHorizontalSpacingKey) != nil {
             self.gridHorizontalSpacing = CGFloat(
                 UserDefaults.standard.double(forKey: Self.gridHorizontalSpacingKey)
@@ -424,6 +407,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.sections = composedSections
         // Old multi-select choices no longer control the day body.
         UserDefaults.standard.removeObject(forKey: "OneDay.dayMediaCategories")
+        if segmentation.form == .card {
+            // Route boundaries are local; don't wait for colors or geocoding
+            // before reserving the cards' final grid slots.
+            rebuildSections(animated: false)
+        }
     }
 
     var photoCount: Int { allItems.filter { !$0.isVideo }.count }
@@ -459,7 +447,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let newSections = DaySectionComposer.compose(
             allItems,
             policy: titleSegmentation, places: placeGroups())
-        if animated {
+        if gridArrangement == .waterfall || titleSegmentation.form == .card {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { sections = newSections }
+        } else if animated {
             withAnimation(.easeInOut(duration: 0.4)) { sections = newSections }
         } else {
             sections = newSections
@@ -669,34 +661,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         coverPlaces = []
         Task { await prepareEditorial() }
-    }
-
-    /// Updates the caption for a single photo in `allItems` and `sections`.
-    func updateCaption(_ caption: String?, for item: PhotoItem) async {
-        guard item.sharedCapabilities.canEditCaption else { return }
-        do {
-            try await PhotoCaptionManager.shared.setCaption(caption, for: item.asset)
-        } catch {
-            captionErrorMessage = error.localizedDescription
-            return
-        }
-
-        let id = item.id
-        if let index = allItemsUnfiltered.firstIndex(where: { $0.id == id }) {
-            allItemsUnfiltered[index].caption = caption
-        }
-        if let index = allItems.firstIndex(where: { $0.id == id }) {
-            allItems[index].caption = caption
-        }
-        for sIndex in sections.indices {
-            for bIndex in sections[sIndex].blocks.indices {
-                for iIndex in sections[sIndex].blocks[bIndex].items.indices {
-                    if sections[sIndex].blocks[bIndex].items[iIndex].id == id {
-                        sections[sIndex].blocks[bIndex].items[iIndex].caption = caption
-                    }
-                }
-            }
-        }
     }
 
     /// Loads captions for all photos asynchronously and updates `allItems`.
@@ -970,6 +934,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             sections[index].placeName = newSections[index].placeName
             sections[index].placeHeading = newSections[index].placeHeading
             sections[index].placeHeadingPending = newSections[index].placeHeadingPending
+            sections[index].placeCard = newSections[index].placeCard
         }
     }
 

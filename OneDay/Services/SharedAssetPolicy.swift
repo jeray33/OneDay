@@ -4,8 +4,8 @@
 /// Two layers of protection:
 /// - Items someone else shared (an iCloud Shared Album photo a friend posted,
 ///   or another member's Shared Photo Library contribution) are read-only
-///   in-app. They are not the user's to delete, hide, re-file, favorite or
-///   re-caption — even where the system might technically allow it, because
+///   in-app. They are not the user's to delete, hide, re-file or favorite,
+///   even where the system might technically allow it, because
 ///   Shared Photo Library participants can edit each other's photos but
 ///   OneDay refuses on the owner's behalf. Classification stays available:
 ///   it is app-local bookkeeping and the only way to fix, say, a screenshot a
@@ -27,19 +27,18 @@ struct SharedAssetPolicy: Equatable {
     var canHide: Bool
     var canEditAlbums: Bool
     var canFavorite: Bool
-    var canEditCaption: Bool
     var canClassify: Bool
 
     /// Read-only profile for items someone else shared: only classification
     /// (app-local) remains available.
     static let foreignShared = SharedAssetPolicy(
         canDelete: false, canHide: false, canEditAlbums: false,
-        canFavorite: false, canEditCaption: false, canClassify: true)
+        canFavorite: false, canClassify: true)
 
     /// Fully permissive profile, used when there is no concrete item.
     static let unrestricted = SharedAssetPolicy(
         canDelete: true, canHide: true, canEditAlbums: true,
-        canFavorite: true, canEditCaption: true, canClassify: true)
+        canFavorite: true, canClassify: true)
 
     static func resolve(_ input: Input) -> SharedAssetPolicy {
         if input.isForeignShared { return .foreignShared }
@@ -48,7 +47,6 @@ struct SharedAssetPolicy: Equatable {
             canHide: input.systemAllowsEditProperties,
             canEditAlbums: input.systemAllowsEditProperties,
             canFavorite: input.systemAllowsEditProperties,
-            canEditCaption: input.systemAllowsEditProperties,
             canClassify: true)
     }
 }

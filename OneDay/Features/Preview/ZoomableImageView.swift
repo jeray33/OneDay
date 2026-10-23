@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Photos
+import AVFoundation
 
 /// A UIScrollView that reports back when it needs to re-layout its content,
 /// so centering stays correct once the view actually receives its size.
@@ -9,6 +10,14 @@ final class ZoomScrollView: UIScrollView {
     override func layoutSubviews() {
         super.layoutSubviews()
         onLayout?()
+    }
+}
+
+final class ZoomMediaCard: UIView {
+    var onActivate: (() -> Bool)?
+
+    override func accessibilityActivate() -> Bool {
+        onActivate?() ?? super.accessibilityActivate()
     }
 }
 
@@ -25,13 +34,16 @@ struct ZoomableImageView: UIViewRepresentable {
     var onZoomChanged: (Bool) -> Void = { _ in }
     var caption: String? = nil
     var captionColor: Color = .black
-    var onEditCaption: (() -> Void)? = nil
     var livePhotoAsset: PHAsset? = nil
     var isSelected = false
     var livePhotoVisitID: UUID? = nil
     var allowsLivePlayback = false
     var interactionRecoveryID: UUID?
     var onRestingScaleChanged: (Bool) -> Void = { _ in }
+    var videoPlayer: AVPlayer? = nil
+    var isVideo = false
+    var onVideoTap: () -> Void = {}
+    var videoPlaybackActionLabel = "播放视频"
 
     func makeUIView(context: Context) -> ZoomScrollView {
         let scrollView = ZoomScrollView()
@@ -63,6 +75,11 @@ struct ZoomableImageView: UIViewRepresentable {
         imageView.layer.cornerCurve = .continuous
         imageView.layer.masksToBounds = innerRadius > 0
         card.addSubview(imageView)
+        if isVideo {
+            let surface = PreviewVideoSurface()
+            card.addSubview(surface)
+            context.coordinator.videoSurface = surface
+        }
 
         let captionLabel = context.coordinator.captionLabel
         let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body)
@@ -74,11 +91,6 @@ struct ZoomableImageView: UIViewRepresentable {
         captionLabel.numberOfLines = 2
         captionLabel.adjustsFontSizeToFitWidth = true
         captionLabel.minimumScaleFactor = 0.8
-        captionLabel.isUserInteractionEnabled = true
-        let captionTap = UITapGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handleCaptionTap(_:)))
-        captionLabel.addGestureRecognizer(captionTap)
         card.addSubview(captionLabel)
 
         scrollView.onLayout = { [weak scrollView] in
@@ -92,6 +104,16 @@ struct ZoomableImageView: UIViewRepresentable {
         doubleTap.numberOfTapsRequired = 2
         doubleTap.delegate = context.coordinator
         scrollView.addGestureRecognizer(doubleTap)
+        if isVideo {
+            let singleTap = UITapGestureRecognizer(
+                target: context.coordinator,
+                action: #selector(Coordinator.handleVideoTap(_:)))
+            singleTap.delegate = context.coordinator
+            singleTap.require(toFail: doubleTap)
+            scrollView.addGestureRecognizer(singleTap)
+            card.isAccessibilityElement = true
+            card.accessibilityTraits = .button
+        }
 
         context.coordinator.apply(self)
         context.coordinator.lastRecoveryID = interactionRecoveryID
@@ -107,17 +129,19 @@ struct ZoomableImageView: UIViewRepresentable {
         context.coordinator.relayout(uiView)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onZoomChanged: onZoomChanged, onEditCaption: onEditCaption) }
+    func makeCoordinator() -> Coordinator { Coordinator(onZoomChanged: onZoomChanged) }
 
     static func dismantleUIView(_ uiView: ZoomScrollView, coordinator: Coordinator) {
         uiView.onLayout = nil
         coordinator.livePlayer?.reset()
+        coordinator.videoSurface?.display(nil)
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
-        let card = UIView()
+        let card = ZoomMediaCard()
         let imageView = UIImageView()
         let captionLabel = UILabel()
+        var videoSurface: PreviewVideoSurface?
         private(set) var livePlayer: LivePhotoPlayerController?
         var displaySize: CGSize = .zero
         var sideBorder: CGFloat = 8
@@ -127,7 +151,6 @@ struct ZoomableImageView: UIViewRepresentable {
         var caption: String? = nil
         var captionColor: Color = .black
         let onZoomChanged: (Bool) -> Void
-        let onEditCaption: (() -> Void)?
         private var wasZoomed = false
         private var isSelected = false
         private var isRecoveringInteraction = false
@@ -135,6 +158,8 @@ struct ZoomableImageView: UIViewRepresentable {
         private var onRestingScaleChanged: (Bool) -> Void = { _ in }
         private var isZoomTransitioning = false
         private var wasRestingAtDefaultScale = true
+        private var isVideo = false
+        private var onVideoTap: () -> Void = {}
 
         func recoverInteraction(_ scrollView: UIScrollView, id: UUID?, selected: Bool) {
             guard id != lastRecoveryID else { return }
@@ -163,13 +188,27 @@ struct ZoomableImageView: UIViewRepresentable {
             }
         }
 
-        init(onZoomChanged: @escaping (Bool) -> Void, onEditCaption: (() -> Void)?) {
+        init(onZoomChanged: @escaping (Bool) -> Void) {
             self.onZoomChanged = onZoomChanged
-            self.onEditCaption = onEditCaption
         }
 
         func apply(_ view: ZoomableImageView) {
+            let wasSelected = isSelected
             isSelected = view.isSelected
+            isVideo = view.isVideo
+            onVideoTap = view.onVideoTap
+            if isVideo {
+                card.accessibilityLabel = view.videoPlaybackActionLabel
+                card.accessibilityHint = "轻点两下播放或暂停；视频画面支持双击和双指缩放"
+                card.onActivate = { [weak self] in
+                    guard let self, self.isSelected else { return false }
+                    self.onVideoTap()
+                    return true
+                }
+            }
+            if isVideo, wasSelected, !isSelected, let scrollView = card.superview as? UIScrollView {
+                scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
+            }
             displaySize = view.displaySize
             sideBorder = view.sideBorder
             topBorder = view.topBorder
@@ -183,6 +222,10 @@ struct ZoomableImageView: UIViewRepresentable {
             let innerRadius = max(view.cornerRadius - view.sideBorder, 0)
             imageView.layer.cornerRadius = innerRadius
             imageView.layer.masksToBounds = innerRadius > 0
+            videoSurface?.display(view.videoPlayer)
+            videoSurface?.layer.cornerRadius = innerRadius
+            videoSurface?.layer.cornerCurve = .continuous
+            videoSurface?.clipsToBounds = true
             captionLabel.text = view.caption
             captionLabel.textColor = UIColor(view.captionColor)
             captionLabel.isHidden = view.caption?.isEmpty ?? true
@@ -224,6 +267,7 @@ struct ZoomableImageView: UIViewRepresentable {
                 imageView.frame = CGRect(x: sideBorder, y: topBorder,
                                          width: displaySize.width - sideBorder * 2,
                                          height: max(imageH, 0))
+                videoSurface?.frame = imageView.frame
                 if let livePlayer {
                     livePlayer.liveView.frame = imageView.frame
                     let badgeSize = livePlayer.badge.sizeThatFits(imageView.bounds.size)
@@ -263,6 +307,7 @@ struct ZoomableImageView: UIViewRepresentable {
             guard !isRecoveringInteraction else { return }
             publishRestingScale(scrollView)
             let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+                || (isVideo && isZoomTransitioning)
             livePlayer?.setZoomed(zoomed)
             if zoomed != wasZoomed {
                 wasZoomed = zoomed
@@ -287,13 +332,13 @@ struct ZoomableImageView: UIViewRepresentable {
             }
         }
 
-        @objc func handleCaptionTap(_ gesture: UITapGestureRecognizer) {
-            onEditCaption?()
-        }
-
         func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
             isZoomTransitioning = true
             guard !isRecoveringInteraction else { return }
+            if isVideo, isSelected, !wasZoomed {
+                wasZoomed = true
+                onZoomChanged(true)
+            }
             publishRestingScale(scrollView)
         }
 
@@ -309,12 +354,22 @@ struct ZoomableImageView: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if let tap = gestureRecognizer as? UITapGestureRecognizer, tap.numberOfTapsRequired == 1 {
+                guard isVideo, isSelected, !isRecoveringInteraction,
+                      imageView.bounds.contains(touch.location(in: imageView)) else { return false }
+            }
             var target = touch.view
             while let view = target {
                 if view is UIControl { return false }
                 target = view.superview
             }
             return true
+        }
+
+        @objc func handleVideoTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended, isSelected, !isRecoveringInteraction,
+                  !isZoomTransitioning else { return }
+            onVideoTap()
         }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {

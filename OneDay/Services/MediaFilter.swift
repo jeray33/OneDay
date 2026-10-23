@@ -26,9 +26,9 @@ nonisolated enum MediaCategory: String, CaseIterable, Hashable, Identifiable, Se
 
     var icon: String {
         switch self {
-        case .photoVideo: return "photo.on.rectangle"
-        case .screenshot: return "rectangle.on.rectangle"
-        case .otherImage: return "photo.on.rectangle"
+        case .photoVideo: return "camera"
+        case .screenshot: return "apps.iphone"
+        case .otherImage: return "photo"
         }
     }
 }
