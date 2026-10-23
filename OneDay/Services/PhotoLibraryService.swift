@@ -82,25 +82,48 @@ final class PhotoLibraryService {
         return assets
     }
 
-    /// Capture timestamps (rounded to the second, as epoch seconds) of every
-    /// asset in the user's *own* library. iCloud Shared Album assets are not
-    /// part of this fetch, so this set represents only photos the user holds
-    /// directly.
-    ///
-    /// Used to tell "photos I contributed to a shared album" apart from
-    /// "photos a family member / friend contributed": a shared-album photo
-    /// whose capture second matches one of the user's own assets is almost
-    /// certainly the user's own upload. Shared albums recompress the image, so
-    /// dimensions differ from the original, but the capture time is preserved,
-    /// which makes the timestamp the only reliable signal.
-    nonisolated static func ownLibraryCreationSeconds() -> Set<Int> {
-        var seconds = Set<Int>()
-        PHAsset.fetchAssets(with: PHFetchOptions()).enumerateObjects { asset, _, _ in
-            if let date = asset.creationDate {
-                seconds.insert(Int(date.timeIntervalSince1970.rounded()))
-            }
+    /// Captures of the user's *own* library. iCloud Shared Album assets are
+    /// not part of the general fetch, so these are only photos the user holds
+    /// directly; `SharedCopyMatch` uses them to tell the user's own shared
+    /// uploads apart from photos family members or friends contributed.
+    nonisolated struct OwnCaptureIndex {
+        private var seconds = Set<Int>()
+        private var times: [TimeInterval] = []
+        private var assets: [PHAsset] = []
+
+        /// Assets must arrive in ascending `creationDate` order.
+        mutating func add(_ asset: PHAsset) {
+            guard let time = asset.creationDate?.timeIntervalSince1970 else { return }
+            seconds.insert(SharedCopyMatch.captureSecond(time))
+            times.append(time)
+            assets.append(asset)
         }
-        return seconds
+
+        func ownContributionIDs(among shared: [PHAsset]) -> Set<String> {
+            Set(shared.compactMap { asset in
+                guard let time = asset.creationDate?.timeIntervalSince1970,
+                      SharedCopyMatch.isOwnCopy(
+                        sharedTime: time,
+                        sharedNames: { Self.fileNames(of: asset) },
+                        ownSeconds: seconds,
+                        ownSortedTimes: times,
+                        ownNames: { Self.fileNames(of: assets[$0]) })
+                else { return nil }
+                return asset.localIdentifier
+            })
+        }
+
+        private static func fileNames(of asset: PHAsset) -> [String] {
+            PHAssetResource.assetResources(for: asset).map(\.originalFilename)
+        }
+    }
+
+    nonisolated static func ownLibraryCaptureIndex() -> OwnCaptureIndex {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        var index = OwnCaptureIndex()
+        PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in index.add(asset) }
+        return index
     }
 
 
@@ -191,8 +214,6 @@ final class PhotoLibraryService {
     ) async -> [TodayInHistoryEntry] {
         let shared = await SharedAlbumCache.shared.current()
         let (groups, sharedIDs, zoneByID) = await Task.detached(priority: .userInitiated) { [shared] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>, [String: TimeZone]) in
-            let sharedToMerge = shared.foreignSharedAssets
-            let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
             let result = PHAsset.fetchAssets(with: options)
@@ -203,9 +224,17 @@ final class PhotoLibraryService {
             var seen = Set<String>()
 
             var general: [PHAsset] = []
+            var ownCaptures = OwnCaptureIndex()
             result.enumerateObjects { asset, _, _ in
+                ownCaptures.add(asset)
                 if DayMediaScope.isSupported(asset.mediaType) { general.append(asset) }
             }
+            // This pass already reads the whole own library, so match here
+            // instead of relying on the snapshot's background scan.
+            let candidates = shared.foreignSharedAssets
+            let ownCopies = ownCaptures.ownContributionIDs(among: candidates)
+            let sharedToMerge = candidates.filter { !ownCopies.contains($0.localIdentifier) }
+            let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
             // Day keys come from the same population as every other entry
             // point (own library plus all shared-album captures).
             let population = general + shared.sharedAssets.filter { DayMediaScope.isSupported($0.mediaType) }
@@ -287,30 +316,40 @@ final class PhotoLibraryService {
             let windowEnd = end.addingTimeInterval(margin)
 
             let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            // Pad by the match tolerance so an own original just outside the
+            // window still identifies its shared copy.
+            let pad = SharedCopyMatch.tolerance + 1
             options.predicate = NSPredicate(
                 format: "creationDate >= %@ AND creationDate < %@",
-                windowStart as NSDate, windowEnd as NSDate
+                windowStart.addingTimeInterval(-pad) as NSDate, windowEnd.addingTimeInterval(pad) as NSDate
             )
-            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-
             var generalWindow: [PHAsset] = []
+            var ownCaptures = OwnCaptureIndex()
             PHAsset.fetchAssets(with: options).enumerateObjects { asset, _, _ in
-                if MediaFilter.isEligible(asset) { generalWindow.append(asset) }
+                guard let date = asset.creationDate else { return }
+                ownCaptures.add(asset)
+                if date >= windowStart, date < windowEnd, MediaFilter.isEligible(asset) {
+                    generalWindow.append(asset)
+                }
             }
 
             // Shared-album photos are absent from the general fetch above, so
             // merge in every one that falls on this day. These are filtered in
             // code (not via predicate) because shared collections do not
             // reliably honor complex fetch predicates. The shared-tag set marks
-            // them with the shared badge; those whose capture timestamp matches
-            // the user's own library are flagged as the user's own
-            // contributions so the view model can hide them when the
-            // contributor-match toggle is on. Both sets come from the cached,
-            // library-wide snapshot instead of a per-day full-library scan.
+            // them with the shared badge; those matching an own capture (see
+            // `SharedCopyMatch`) are flagged as the user's own
+            // contributions so the view model hides them. Matching against
+            // this window's own captures works before the library-wide
+            // snapshot finishes its background scan.
             let sharedWindow = shared.sharedAssets.filter { asset in
                 guard let date = asset.creationDate, date >= windowStart, date < windowEnd else { return false }
                 return MediaFilter.isEligible(asset)
             }
+            let unknownWindow = sharedWindow.filter { !shared.ownContributionIDs.contains($0.localIdentifier) }
+            let ownContributionIDs = shared.ownContributionIDs.union(
+                ownCaptures.ownContributionIDs(among: unknownWindow))
 
             let population = generalWindow + sharedWindow
             var seen = Set<String>()
@@ -329,7 +368,7 @@ final class PhotoLibraryService {
             var items = PhotoItem.build(
                 from: sorted,
                 sharedIDs: shared.sharedAssetIDs,
-                ownContributionIDs: shared.ownContributionIDs)
+                ownContributionIDs: ownContributionIDs)
             for index in items.indices {
                 items[index].captureTimeZone = zoneByID[sorted[index].localIdentifier] ?? clock.deviceZone
             }

@@ -8,8 +8,8 @@ import Photos
 /// specific day), so they are the same for every `items(on:)` / `eligibleDays()`
 /// / `todayInHistory()` call within a session:
 /// - `sharedAlbumAssets()` — every asset in the user's shared albums.
-/// - `ownLibraryCreationSeconds()` — capture seconds of the user's own library,
-///   used to tell the user's own uploads apart from photos shared by others.
+/// - `ownLibraryCaptureIndex()` — captures of the user's own library, used to
+///   tell the user's own uploads apart from photos shared by others.
 ///
 /// Previously both ran inside `items(on:)`, i.e. a full-library scan on every
 /// day open, which stalled the cover entrance. This actor computes them once
@@ -64,9 +64,9 @@ actor SharedAlbumCache {
     /// phase 1 fetches only shared-album membership (fast, a few hundred ms) and
     /// is returned immediately; phase 2 runs the multi-second own-library scan
     /// in the background and swaps in the complete snapshot (with contributor
-    /// matching) via `triggerFullRefresh`. Until phase 2 lands, every shared
-    /// photo is shown and badged (no one is hidden as "my own"); the badges then
-    /// refine a moment later.
+    /// matching) via `triggerFullRefresh`. Until phase 2 lands, `items(on:)`
+    /// and `todayInHistory` match the user's own uploads against the own
+    /// captures they fetch themselves, so no own copy is badged meanwhile.
     func current() async -> Snapshot {
         if let snapshot { return snapshot }
         if let loadTask { return await loadTask.value }
@@ -143,15 +143,9 @@ actor SharedAlbumCache {
         let sharedAssets = PhotoLibraryService.sharedAlbumAssets()
         guard !sharedAssets.isEmpty else { return .empty }
 
-        let ownSeconds = PhotoLibraryService.ownLibraryCreationSeconds()
+        let ownCaptures = PhotoLibraryService.ownLibraryCaptureIndex()
         let sharedAssetIDs = Set(sharedAssets.map(\.localIdentifier))
-        var ownContributionIDs = Set<String>()
-        for asset in sharedAssets {
-            if let date = asset.creationDate,
-               ownSeconds.contains(Int(date.timeIntervalSince1970.rounded())) {
-                ownContributionIDs.insert(asset.localIdentifier)
-            }
-        }
+        let ownContributionIDs = ownCaptures.ownContributionIDs(among: sharedAssets)
         return Snapshot(
             sharedAssets: sharedAssets,
             sharedAssetIDs: sharedAssetIDs,
