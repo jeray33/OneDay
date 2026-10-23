@@ -50,8 +50,9 @@ final class DayScrubberState {
 
     // MARK: Inputs (driven by the day page's scroll tracking)
 
-    /// Latest content offset reported by the scroll view. Only used as the
-    /// base for offset deltas, so its convention is irrelevant.
+    /// Latest content offset in `scrollTo(y:)` space (0 at the top rest,
+    /// content insets excluded). Targets are this plus a delta, so an offset
+    /// that included the insets would land every jump short by the inset.
     func updateRawOffset(_ offset: CGFloat) {
         if offset != rawOffset { rawOffset = offset }
     }

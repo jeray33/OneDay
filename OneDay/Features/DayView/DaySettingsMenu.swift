@@ -210,6 +210,9 @@ struct DaySettingsMenu: View {
                 }
             }
             Menu("标题") {
+                optionPicker("封面",
+                           binding: Binding(get: { model.coverStyle }, set: { model.coverStyle = $0 }),
+                           labelOf: { $0.label })
                 optionPicker("字体",
                            binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
                            labelOf: { $0.label })

@@ -139,7 +139,7 @@ struct DayCoverView: View {
 
 /// Applies the shared date matched-geometry effect only when a namespace is
 /// supplied, so the timeline date can fly onto the cover.
-private struct OptionalMatchedDate: ViewModifier {
+struct OptionalMatchedDate: ViewModifier {
     var namespace: Namespace.ID?
     var isSource: Bool
 

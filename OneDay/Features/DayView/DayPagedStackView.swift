@@ -28,7 +28,7 @@ struct DayPagedStackView: View {
         var below: Layer? { Layer(rawValue: rawValue + 1) }
     }
 
-    @State private var current: Layer = .cover
+    @State private var storedLayer: Layer?
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging = false
     @State private var pendingLayer: Layer?
@@ -39,10 +39,30 @@ struct DayPagedStackView: View {
     @State private var previousTranslation: CGFloat = 0
     @State private var contentEdges = ContentScrollEdges()
     @State private var backEdges = ContentScrollEdges()
+    @State private var photoCardUnderTopBar = false
     /// Top inset cached while the status bar is visible, matching
     /// `DayMagazineView`, so the fixed buttons line up with the header's
     /// stand-ins even after the preview hides the status bar.
     @State private var stableTopInset: CGFloat = 0
+
+    /// The photo cover lives inside the day page, so that style has no cover
+    /// layer and opens (or falls back) to the day page.
+    private var current: Layer {
+        get {
+            let layer = storedLayer ?? .cover
+            return layer == .cover && model.usesPhotoCover ? .content : layer
+        }
+        nonmutating set { storedLayer = newValue }
+    }
+
+    private func above(_ layer: Layer) -> Layer? {
+        if layer == .content && model.usesPhotoCover { return nil }
+        return layer.above
+    }
+
+    private func below(_ layer: Layer) -> Layer? {
+        layer.below
+    }
 
     // Flip tuning: fraction of the screen height that commits a flip.
     private let snapThreshold: CGFloat = 0.2
@@ -62,7 +82,9 @@ struct DayPagedStackView: View {
             ZStack {
                 backLayer(h: h)
                 contentLayer(h: h)
-                coverLayer(h: h)
+                if !model.usesPhotoCover {
+                    coverLayer(h: h)
+                }
                 fixedTopBar(h: h)
             }
             .frame(width: geo.size.width, height: h)
@@ -93,6 +115,7 @@ struct DayPagedStackView: View {
             flipOffset: dragOffset,
             model: model,
             topInset: topInset,
+            photoUnderBar: model.usesPhotoCover && !photoCardUnderTopBar,
             onClose: onClose,
             layerUnderBar: { offset in layerUnderTopBar(dragOffset: offset, h: h) }
         )
@@ -121,6 +144,8 @@ struct DayPagedStackView: View {
         var flipOffset: CGFloat
         let model: DayViewModel
         let topInset: CGFloat
+        /// The day page's photo cover lies under the buttons.
+        let photoUnderBar: Bool
         let onClose: () -> Void
         let layerUnderBar: (CGFloat) -> Layer
 
@@ -136,13 +161,17 @@ struct DayPagedStackView: View {
         }
 
         private func tint(for layer: Layer) -> Color {
-            layer == .cover ? model.coverForegroundColor : Theme.ink
+            switch layer {
+            case .cover: return model.coverForegroundColor
+            case .content: return photoUnderBar ? .white : Theme.ink
+            case .back: return Theme.ink
+            }
         }
 
         private func colorScheme(for layer: Layer) -> ColorScheme {
             switch layer {
             case .cover: return model.coverColorScheme
-            case .content: return model.pageColorScheme
+            case .content: return photoUnderBar ? .dark : model.pageColorScheme
             case .back: return model.backCoverColorScheme
             }
         }
@@ -178,7 +207,9 @@ struct DayPagedStackView: View {
             scrollEdgesBinding: $contentEdges,
             scrollDisabled: current != .content,
             scrollFrozen: current == .content && flipOwnsDrag,
-            showsTopButtons: previewOwnsTopButtons
+            showsTopButtons: previewOwnsTopButtons,
+            coverDateMatched: coverDateMatched,
+            photoCardUnderTopBar: $photoCardUnderTopBar
         )
         .offset(y: p.offsetY)
         .opacity(p.opacity)
@@ -214,7 +245,7 @@ struct DayPagedStackView: View {
         if layer == current {
             // While flipping backward, the page above drops over the current
             // page. Keep this lower page parked.
-            if dragOffset > 0, current.above != nil {
+            if dragOffset > 0, above(current) != nil {
                 return LayerTransform(offsetY: 0, opacity: 1)
             }
 
@@ -223,12 +254,12 @@ struct DayPagedStackView: View {
             return LayerTransform(offsetY: rubber(dragOffset, h: h), opacity: 1)
         }
 
-        if layer == current.below {
+        if layer == below(current) {
             // Beneath: rests in place, revealed as the active layer lifts away.
             return LayerTransform(offsetY: 0, opacity: 1)
         }
 
-        if layer == current.above {
+        if layer == above(current) {
             // Above: fully off-screen at rest (it sits on top in z-order, so
             // any peek would bleed over the active layer), drops in as we
             // swipe down.
@@ -247,8 +278,8 @@ struct DayPagedStackView: View {
 
     /// Rubber-band resistance when dragging past an edge that has no layer.
     private func rubber(_ value: CGFloat, h: CGFloat) -> CGFloat {
-        if current == .cover && value > 0 {
-            return value * 0.35     // no layer above cover
+        if above(current) == nil && value > 0 {
+            return value * 0.35     // no layer above
         }
         if current == .back && value < 0 {
             return value * 0.35     // no layer below back
@@ -304,10 +335,10 @@ struct DayPagedStackView: View {
                 let flingDown = velocity > 260
                 let flingUp = velocity < -260
                 if flipDirection < 0, distance < 0,
-                   (distance <= -threshold || flingUp), let below = current.below {
+                   (distance <= -threshold || flingUp), let below = self.below(current) {
                     commitFlip(to: below, target: -h)
                 } else if flipDirection > 0, distance > 0,
-                          (distance >= threshold || flingDown), let above = current.above {
+                          (distance >= threshold || flingDown), let above = self.above(current) {
                     commitFlip(to: above, target: h)
                 } else {
                     cancelDrag()
@@ -371,13 +402,15 @@ struct DayPagedStackView: View {
         case .content:
             // Only flip when the content scroll is pinned to the relevant edge.
             if translation < 0 { return contentEdges.atBottom }   // swipe up → back
-            if translation > 0 { return contentEdges.atTop }      // swipe down → cover
+            // Swipe down → cover. Without one, the scroll view keeps the
+            // pull so the photo cover can zoom.
+            if translation > 0 { return above(.content) != nil && contentEdges.atTop }
             return false
         }
     }
 
     private func constrained(_ value: CGFloat, h: CGFloat) -> CGFloat {
-        if current == .cover && value > 0 { return value * 0.35 }
+        if above(current) == nil && value > 0 { return value * 0.35 }
         if current == .back && value < 0 { return value * 0.35 }
         return value
     }

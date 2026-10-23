@@ -26,8 +26,14 @@ struct DayMagazineView: View {
     /// because the preview must cover the buttons, and only buttons inside
     /// this view sit beneath it.
     var showsTopButtons: Bool = true
+    /// Whether the photo cover's date joins the shared date transition.
+    var coverDateMatched: Bool = true
+    /// Set once the day page card, not the photo cover, lies under the
+    /// fixed top buttons.
+    var photoCardUnderTopBar: Binding<Bool>? = nil
 
     @Namespace private var previewNamespace
+    @State private var coverScroll = PhotoCoverScrollState()
 
     @State private var revealContent = false
     @State private var pinchScale: CGFloat = 1.0
@@ -65,8 +71,24 @@ struct DayMagazineView: View {
     var body: some View {
         GeometryReader { geo in
             let gridRevision = gridLayoutRevision(viewportWidth: geo.size.width)
+            let photoCover = model.usesPhotoCover
+            let coverHeight = (geo.size.height * 2 / 3).rounded()
+            let headerHeight = DayPageHeader.height(topInset: stableTopInsetValue)
+            // Content starts below the header bar, so the card's rest
+            // position is reached by this much leading space.
+            let coverSpace = photoCover ? max(0, coverHeight - headerHeight) : 0
             ScrollViewReader { proxy in
               ZStack {
+                if photoCover {
+                    DayPhotoCoverView(model: model, scroll: coverScroll,
+                                      width: geo.size.width, visibleHeight: coverHeight,
+                                      travel: coverSpace,
+                                      dateNamespace: coverDateMatched ? dateNamespace : nil,
+                                      dateIsSource: dateIsSource)
+                        .task(id: model.instanceID) { await model.prepareEditorial() }
+                    PhotoCardBackdrop(scroll: coverScroll, coverHeight: coverHeight,
+                                      travel: coverSpace, color: model.pageBackgroundColor)
+                }
                 ScrollView {
                     VStack(spacing: 0) {
                         Color.clear.frame(height: 0)
@@ -79,6 +101,11 @@ struct DayMagazineView: View {
                                     )
                                 }
                             )
+
+                        if photoCover {
+                            Color.clear.frame(height: coverSpace)
+                            Color.clear.frame(height: Self.cardTopPadding).id("card_top")
+                        }
 
                         if model.showsMediaTabs {
                             mediaTabs
@@ -130,7 +157,26 @@ struct DayMagazineView: View {
                         }
                     }
                     .coordinateSpace(name: "dayContent")
+                    // The card must be able to cover the photo completely
+                    // even on days with little content.
+                    .frame(minHeight: photoCover ? coverSpace + geo.size.height - headerHeight : 0,
+                           alignment: .top)
                     .padding(.bottom, 56)
+                    .background {
+                        if photoCover {
+                            EnclosingScrollViewReader { coverScroll.scrollView = $0 }
+                                .frame(width: 0, height: 0)
+                        }
+                    }
+                    .background(alignment: .top) {
+                        if photoCover {
+                            PhotoCardBackground(scroll: coverScroll, coverHeight: coverHeight,
+                                                travel: coverSpace,
+                                                color: model.pageBackgroundColor)
+                            // Bottom bounce must not reveal the back page.
+                            .padding(.bottom, -1000)
+                        }
+                    }
                     .background {
                         GeometryReader { contentGeometry in
                             Color.clear.preference(
@@ -145,17 +191,40 @@ struct DayMagazineView: View {
                 .scrollDisabled(scrollDisabled || scrollFrozen || pinchScale != 1.0)
                 .scrollIndicators(model.showDayScrollIndicator ? .automatic : .hidden)
                 .scrollPosition($scrollPosition)
+                .scrollTargetBehavior(PhotoCardSnapBehavior(
+                    travel: coverSpace, scroll: coverScroll))
+                // `scrollTo(y:)` excludes the header's content inset while
+                // `contentOffset` includes it; report the offset in the
+                // writable space so scrubber and anchor targets land exactly.
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.contentOffset.y
+                    geometry.contentOffset.y + geometry.contentInsets.top
                 } action: { _, offset in
                     scrubber.updateRawOffset(offset)
                 }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.contentInsets.top > DayPageHeader.titleRevealOffset
+                    geometry.contentOffset.y + geometry.contentInsets.top
+                        > coverSpace + DayPageHeader.titleRevealOffset
                 } action: { _, scrolled in
                     headerTitleVisible = scrolled
                 }
-                .background(model.pageBackgroundColor.ignoresSafeArea())
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top
+                } action: { _, scrolled in
+                    updatePhotoCover(scrolled: scrolled, active: photoCover,
+                                     coverHeight: coverHeight, travel: coverSpace)
+                }
+                .onChange(of: photoCover) { _, active in
+                    if !active {
+                        updatePhotoCover(scrolled: 0, active: false,
+                                         coverHeight: coverHeight, travel: coverSpace)
+                    }
+                }
+                .onScrollPhaseChange { oldPhase, newPhase, context in
+                    guard photoCover else { return }
+                    snapPhotoCard(from: oldPhase, to: newPhase,
+                                  geometry: context.geometry, travel: coverSpace)
+                }
+                .background((photoCover ? Color.clear : model.pageBackgroundColor).ignoresSafeArea())
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
                 // A safe-area bar lets content pass underneath the header.
@@ -196,10 +265,13 @@ struct DayMagazineView: View {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
                 .onChange(of: model.selectedMediaCategory) { _, _ in
+                    // With the photo cover, the tabs stay where they are if
+                    // the card has not reached the top yet.
+                    if photoCover, coverScroll.scrolled <= coverSpace { return }
                     var transaction = Transaction()
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
-                        proxy.scrollTo("scroll_top", anchor: .top)
+                        proxy.scrollTo(photoCover ? "card_top" : "scroll_top", anchor: .top)
                     }
                 }
                 .onPreferenceChange(ContentScrollBoundsKey.self) { bounds in
@@ -663,6 +735,60 @@ struct DayMagazineView: View {
         case 4: return 4
         case 5: return 3
         default: return 2
+        }
+    }
+
+    private static let cardTopPadding: CGFloat = 18
+
+    private func updatePhotoCover(
+        scrolled: CGFloat, active: Bool, coverHeight: CGFloat, travel: CGFloat
+    ) {
+        let delta = scrolled - coverScroll.scrolled
+        if abs(delta) > 0.5 { coverScroll.lastDelta = delta }
+        coverScroll.scrolled = scrolled
+        let pull = active ? max(0, -scrolled) : 0
+        if coverScroll.pull != pull { coverScroll.pull = pull }
+        let phase = active ? min(max(scrolled, 0), travel) : 0
+        if coverScroll.phase != phase { coverScroll.phase = phase }
+        guard let binding = photoCardUnderTopBar else { return }
+        let buttonMidY = stableTopInsetValue + DayTopBar.topSpacing + DayTopBar.buttonSize / 2
+        let cardTop = DayPhotoCoverView.cardTop(phase: phase, coverHeight: coverHeight,
+                                                travel: travel) + pull
+        let underBar = active && cardTop <= buttonMidY
+        if binding.wrappedValue != underBar { binding.wrappedValue = underBar }
+    }
+
+    /// Snaps whenever the release did not start `PhotoCardSpring` (no
+    /// UIKit scroll view) or the scroll still stopped over the photo, such
+    /// as a tap halting a snap. Programmatic scrolls (scrubber jumps) are
+    /// left where they land.
+    private func snapPhotoCard(
+        from oldPhase: ScrollPhase, to newPhase: ScrollPhase,
+        geometry: ScrollGeometry, travel: CGFloat
+    ) {
+        let scrolled = geometry.contentOffset.y + geometry.contentInsets.top
+        if newPhase == .interacting { coverScroll.spring.stop() }
+        guard !coverScroll.spring.isActive else { return }
+        guard travel > 0, scrolled > 1, scrolled < travel - 1 else { return }
+        let target: CGFloat
+        switch (oldPhase, newPhase) {
+        case (.interacting, .decelerating):
+            target = coverScroll.lastDelta > 0 ? travel : 0
+        case (.interacting, .idle), (.decelerating, .idle):
+            target = PhotoCardSnapBehavior.restingTarget(forPosition: scrolled, travel: travel)
+        default:
+            return
+        }
+        if let scrollView = coverScroll.scrollView {
+            coverScroll.spring.start(on: scrollView, to: target, velocity: 0)
+            return
+        }
+        // Longer trips take longer, so a far snap does not look rushed.
+        let distance = abs(target - scrolled) / travel
+        let response = 0.55 + 0.3 * Double(distance)
+        // `scrollTo(y:)` measures from the top rest, insets excluded.
+        withAnimation(.spring(response: response, dampingFraction: 0.92)) {
+            scrollPosition.scrollTo(y: target)
         }
     }
 

@@ -167,6 +167,9 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var coverDateFont: CoverDateFont {
         didSet { UserDefaults.standard.set(coverDateFont.rawValue, forKey: Self.coverDateFontKey) }
     }
+    var coverStyle: DayCoverStyle {
+        didSet { UserDefaults.standard.set(coverStyle.rawValue, forKey: DayCoverStyle.storageKey) }
+    }
     /// Whether the bottom quick-scroll toolbar is shown on the photo page.
     var showBottomToolbar: Bool {
         didSet { UserDefaults.standard.set(showBottomToolbar, forKey: Self.bottomToolbarKey) }
@@ -293,6 +296,19 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         tunnelCoverPhoto ?? coverPhotos.first
     }
 
+    /// Days without any media keep the minimal cover even in photo style.
+    var usesPhotoCover: Bool {
+        coverStyle == .photo && !editorialItems.isEmpty
+    }
+
+    /// Nil while the sharpest still is still being ranked. Video-only days
+    /// use their first video's still frame.
+    var photoCoverItem: PhotoItem? {
+        if let photo = minimalCoverPhoto { return photo }
+        guard !editorialItems.contains(where: { !$0.isVideo }) else { return nil }
+        return editorialItems.first
+    }
+
     var coverColorScheme: ColorScheme {
         .light
     }
@@ -349,6 +365,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         let savedCornerRadius = UserDefaults.standard.string(forKey: Self.photoCornerRadiusKey)
         self.photoCornerRadius = PhotoCornerRadius(rawValue: savedCornerRadius ?? "") ?? .none
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
+        self.coverStyle = DayCoverStyle(savedValue: UserDefaults.standard.string(forKey: DayCoverStyle.storageKey))
         self.showBottomToolbar = UserDefaults.standard.object(forKey: Self.bottomToolbarKey) as? Bool ?? true
         self.showScrubberSectionMarks = UserDefaults.standard.object(forKey: Self.scrubberMarksKey) as? Bool ?? true
         self.scrubberTickHaptics = UserDefaults.standard.object(forKey: Self.scrubberTickHapticsKey) as? Bool ?? true
