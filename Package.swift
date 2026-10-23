@@ -11,8 +11,7 @@ let package = Package(
             exclude: [
                 "ImageLoader.swift",
                 "LocationResolver.swift",
-                "MagazineLayoutEngine.swift",
-                "PersonStickerExtractor.swift",
+                "DaySectionComposer.swift",
                 "PhotoActionService.swift",
                 "PhotoRotationService.swift",
                 "PhotoContentVersion.swift",
@@ -22,10 +21,9 @@ let package = Package(
                 "PhotoSharpnessRanker.swift",
                 "OtherImageClassificationService.swift",
                 "RewindCandidateIndex.swift",
-                "SharedAlbumCache.swift",
-                "VisionSimilarity.swift"
+                "SharedAlbumCache.swift"
             ],
-            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "DayScrubberPolicy.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift", "LivePhotoPlaybackPolicy.swift", "PreviewInteractionPolicy.swift", "PhotoCornerGeometry.swift", "PhotoFrameGeometry.swift", "PhotoRotationPolicy.swift", "PhotoRotationRenderer.swift", "PhotoRotationAdjustment.swift", "PlaceNaming.swift", "OfflinePlaceIndex.swift", "TimeZoneIndex.swift", "CaptureClock.swift", "SharedAssetPolicy.swift"],
+            sources: ["MediaFilter.swift", "ImageClassificationStore.swift", "TunnelSelectionPlanner.swift", "DayMediaScope.swift", "DayMediaTabs.swift", "DayScrubberPolicy.swift", "GridColumnPolicy.swift", "ContentScrollEdges.swift", "TitleSegmentationPolicy.swift", "PageBackground.swift", "LivePhotoPlaybackPolicy.swift", "PreviewInteractionPolicy.swift", "PhotoCornerGeometry.swift", "PhotoFrameGeometry.swift", "PhotoRotationPolicy.swift", "PhotoRotationRenderer.swift", "PhotoRotationAdjustment.swift", "PlaceNaming.swift", "OfflinePlaceIndex.swift", "TimeZoneIndex.swift", "CaptureClock.swift", "SharedAssetPolicy.swift"],
             linkerSettings: [.linkedFramework("Photos"), .linkedFramework("ImageIO")]
         ),
         .testTarget(

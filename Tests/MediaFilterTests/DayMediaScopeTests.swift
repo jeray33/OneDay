@@ -56,15 +56,25 @@ final class DayMediaScopeTests: XCTestCase {
             Item(id: "foreign", type: .image, category: .photoVideo, shared: true)
         ]
         for includeShared in [false, true] {
-            for contributorMatch in [false, true] {
-                let body = source.filter {
-                    if !includeShared { return !$0.shared }
-                    return !contributorMatch || !$0.ownContribution
-                }
-                XCTAssertEqual(editorial(source).map(\.id), ["original", "foreign"])
-                if !includeShared { XCTAssertEqual(body.map(\.id), ["original"]) }
-                if includeShared && !contributorMatch { XCTAssertEqual(body.count, 3) }
-            }
+            let body = DayMediaScope.bodyItems(
+                from: source, includeShared: includeShared,
+                isShared: \.shared, isOwnSharedContribution: \.ownContribution)
+            XCTAssertEqual(editorial(source).map(\.id), ["original", "foreign"])
+            XCTAssertEqual(body.map(\.id), includeShared ? ["original", "foreign"] : ["original"])
+        }
+    }
+
+    func testOwnSharedCopiesAreExcludedForEveryMediaCategory() {
+        for category in MediaCategory.allCases {
+            let source = [
+                Item(id: "original", type: .image, category: category),
+                Item(id: "duplicate", type: .image, category: category, shared: true, ownContribution: true),
+                Item(id: "foreign", type: .image, category: category, shared: true)
+            ]
+            let body = DayMediaScope.bodyItems(
+                from: source, includeShared: true,
+                isShared: \.shared, isOwnSharedContribution: \.ownContribution)
+            XCTAssertEqual(body.map(\.id), ["original", "foreign"])
         }
     }
 

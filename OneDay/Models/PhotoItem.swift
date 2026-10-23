@@ -55,7 +55,6 @@ struct PhotoItem: Identifiable, Hashable {
     var duration: TimeInterval { asset.duration }
     var creationDate: Date? { asset.creationDate }
     var location: CLLocation? { asset.location }
-    var burstIdentifier: String? { asset.burstIdentifier }
 
     /// `true` for any item that came out of a shared space (album or library).
     /// Drives the in-app "shared" badge and the `includeSharedAlbums` filter.

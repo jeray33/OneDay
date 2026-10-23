@@ -103,9 +103,6 @@ final class PhotoLibraryService {
         return seconds
     }
 
-    /// UserDefaults key for the contributor-match test toggle. Kept in sync with
-    /// `DayViewModel.sharedContributorMatchKey`.
-    nonisolated static let sharedContributorMatchKey = "OneDay.sharedContributorMatch"
 
     /// All supported-media days, excluding today. Independent from display filters.
     func eligibleDays() async -> [Date] {

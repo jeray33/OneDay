@@ -98,7 +98,7 @@ struct RootView: View {
                                     if let layer = tunnelLayers.first(where: {
                                         Calendar.current.isDate($0.date, inSameDayAs: target)
                                     }) {
-                                        model.setTunnelCoverPhotos(from: layer, drift: req.drift)
+                                        model.setTunnelCoverPhoto(from: layer)
                                     }
                                     self.dayModel = model
                                     tunnelStartDate = model.date

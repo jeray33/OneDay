@@ -136,12 +136,11 @@ struct PreviewPageView: View {
     @State private var isAtDefaultScale = true
 
     private var sideBorder: CGFloat {
-        let base = (12 * model.borderWidth.scale).rounded()
-        return model.borderStyle.isPolaroid ? max(base, 10) : base
+        (12 * model.borderWidth.scale).rounded()
     }
     private var topBorder: CGFloat { sideBorder }
-    private var baseBottomBorder: CGFloat { model.borderStyle.isPolaroid ? sideBorder + 46 : sideBorder }
-    private var cardColor: Color { model.frameColor(for: item) }
+    private var baseBottomBorder: CGFloat { sideBorder }
+    private var cardColor: Color { Theme.frame }
     private var captionColor: Color {
         model.pageColorScheme == .dark ? .white : Color(white: 0.15)
     }

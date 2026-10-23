@@ -15,6 +15,18 @@ nonisolated enum DayMediaScope {
         items.filter { isSupported(mediaType($0)) && !isOwnSharedContribution($0) }
     }
 
+    /// Contributor matching is always enabled, independently of the shared
+    /// display toggle. Own shared copies must not duplicate own originals.
+    static func bodyItems<Item>(
+        from items: [Item], includeShared: Bool,
+        isShared: (Item) -> Bool,
+        isOwnSharedContribution: (Item) -> Bool
+    ) -> [Item] {
+        items.filter {
+            !isOwnSharedContribution($0) && (includeShared || !isShared($0))
+        }
+    }
+
     static func navigationDay(
         for creationDate: Date?, today: Date = Date(), calendar: Calendar = .current
     ) -> Date? {

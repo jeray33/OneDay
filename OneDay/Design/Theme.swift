@@ -62,7 +62,7 @@ enum PhotoBorderWidth: String, CaseIterable, Identifiable {
         case .max:    return "最厚"
         }
     }
-    /// Multiplier applied to every template's base border value.
+    /// Multiplier applied to each photo's base border width.
     var scale: CGFloat {
         switch self {
         case .none:   return 0
@@ -72,32 +72,6 @@ enum PhotoBorderWidth: String, CaseIterable, Identifiable {
         case .max:    return 1.0
         }
     }
-}
-
-enum PhotoBorderStyle: String, CaseIterable, Identifiable {
-    case white    = "white"
-    case black    = "black"
-    case colored  = "colored"
-    case polaroid = "polaroid"
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .white:    return "白边"
-        case .black:    return "黑边"
-        case .colored:  return "彩边"
-        case .polaroid: return "拍立得"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .white:    return "rectangle.portrait"
-        case .black:    return "rectangle.portrait.fill"
-        case .colored:  return "paintpalette"
-        case .polaroid: return "rectangle.portrait.bottomhalf.filled"
-        }
-    }
-    /// Whether this style uses the tall bottom edge (Polaroid look).
-    var isPolaroid: Bool { self == .polaroid }
 }
 
 enum PhotoCornerRadius: String, CaseIterable, Identifiable {
@@ -121,37 +95,6 @@ enum PhotoCornerRadius: String, CaseIterable, Identifiable {
         case .medium: return "中 14"
         case .large:  return "大 22"
         case .xlarge: return "最大 32"
-        }
-    }
-}
-
-enum PageBackground: String, CaseIterable, Identifiable {
-    case paper, pureWhite, dark, warm, dominant, vibrant, bright, bright2
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .paper:    return "白色"
-        case .pureWhite: return "纯白色"
-        case .dark:     return "黑色"
-        case .warm:     return "暖橙"
-        case .dominant: return "照片主色"
-        case .vibrant:  return "主色·艳丽"
-        case .bright:   return "明快1"
-        case .bright2:  return "明快2"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .paper:    return "sun.max"
-        case .pureWhite: return "circle"
-        case .dark:     return "moon"
-        case .warm:     return "circle.righthalf.filled"
-        case .dominant: return "paintpalette"
-        case .vibrant:  return "paintpalette.fill"
-        case .bright:   return "sun.max.fill"
-        case .bright2:  return "sun.haze.fill"
         }
     }
 }
@@ -420,30 +363,6 @@ enum ScrollParallax: String, CaseIterable, Identifiable {
     }
 }
 
-/// Phase-shift offset applied per photo index within multi-photo blocks to create a cascade.
-enum ScrollStagger: String, CaseIterable, Identifiable {
-    case none, slight, medium, strong, bold
-    var id: String { rawValue }
-    /// Added to phase.value for each additional photo in the block.
-    var factor: Double {
-        switch self {
-        case .none:   return 0
-        case .slight: return 0.25
-        case .medium: return 0.50
-        case .strong: return 0.80
-        case .bold:   return 1.20
-        }
-    }
-    var label: String {
-        switch self {
-        case .none:   return "无"
-        case .slight: return "细微"
-        case .medium: return "适中"
-        case .strong: return "明显"
-        case .bold:   return "强烈"
-        }
-    }
-}
 
 /// Spring curve for the scroll transition animation.
 enum ScrollSpring: String, CaseIterable, Identifiable {
@@ -641,35 +560,6 @@ enum TunnelTextPosition: String, CaseIterable, Identifiable {
     }
 }
 
-/// Three-layer page flip transition style for the cover/content/back stack.
-enum PageFlipMode: String, CaseIterable, Identifiable {
-    /// C: drag follows finger, snap-to-page on release, lower layer scales/fades in from a fixed start.
-    case snapParallax = "snap"
-    /// B: fully continuous drag, lower layer tracks finger linearly (more physical, harder to tune).
-    case freePhysics = "free"
-    /// Rigid physical paging with the departed page resting above-left at a slight angle.
-    case staggeredPhysics = "staggered"
-    /// Staggered physics with same-gesture handoff between content scrolling and page flipping.
-    case continuousStaggered = "continuousStaggered"
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .snapParallax: return "层叠吸附"
-        case .freePhysics:  return "全跟手物理"
-        case .staggeredPhysics: return "错落物理"
-        case .continuousStaggered: return "连续错落"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .snapParallax: return "rectangle.stack"
-        case .freePhysics:  return "rectangle.stack.fill"
-        case .staggeredPhysics: return "square.2.layers.3d"
-        case .continuousStaggered: return "arrow.up.and.down"
-        }
-    }
-}
-
 /// Display font shared by the cover and time-travel dates.
 enum CoverDateFont: String, CaseIterable, Identifiable {
     case impact
@@ -725,6 +615,11 @@ enum DateText {
     static func dottedDate(_ date: Date) -> String {
         let c = components(date)
         return String(format: "%04d.%02d.%02d", c.year, c.month, c.day)
+    }
+
+    static func dottedMonthDay(_ date: Date) -> String {
+        let c = components(date)
+        return String(format: "%02d.%02d", c.month, c.day)
     }
 
     /// Relative distance from `date` to now: years, else months, else days.

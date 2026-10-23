@@ -143,7 +143,6 @@ struct HeroOverlayView: View {
     @State private var heroFlightRect: CGRect = .zero
     @State private var heroImage: UIImage?
     @State private var loadedHeroVersion: String?
-    @State private var heroBorderColor: Color = .white
     @State private var heroFlightBorder: CGFloat = 4
     @State private var heroFlightBottomBorder: CGFloat = 4
     @State private var heroFlightRadius: CGFloat = 0
@@ -154,12 +153,11 @@ struct HeroOverlayView: View {
 
     /// Preview card border thickness, mirroring `PreviewPageView.sideBorder`.
     private var heroCardBorder: CGFloat {
-        let base = (12 * model.borderWidth.scale).rounded()
-        return model.borderStyle.isPolaroid ? max(base, 10) : base
+        (12 * model.borderWidth.scale).rounded()
     }
 
     private var heroCardBottomBorder: CGFloat {
-        heroCardBorder + (model.borderStyle.isPolaroid ? 46 : 0)
+        heroCardBorder
     }
 
     var body: some View {
@@ -182,7 +180,7 @@ struct HeroOverlayView: View {
                         HeroFlightView(
                             image: heroImage,
                             rect: heroFlightRect,
-                            borderColor: heroBorderColor,
+                            borderColor: Theme.frame,
                             borderWidth: heroFlightBorder,
                             bottomBorderWidth: heroFlightBottomBorder,
                             cornerRadius: heroFlightRadius
@@ -199,7 +197,6 @@ struct HeroOverlayView: View {
                 .task(id: model.allItems.first(where: { $0.id == model.previewCurrentID })?.contentVersion) {
                     guard let id = model.previewCurrentID,
                           let item = model.allItems.first(where: { $0.id == id }) else { return }
-                    heroBorderColor = model.frameColor(for: item)
                     if let img = await ImageLoader.shared.thumbnail(
                         asset: item.asset,
                         size: CGSize(width: 1000, height: 1000),
@@ -235,7 +232,6 @@ struct HeroOverlayView: View {
                 heroOpenID = item.id
                 heroImage = img
                 loadedHeroVersion = img == nil ? nil : item.contentVersion
-                heroBorderColor = model.frameColor(for: item)
                 if let source {
                     heroFlightBorder = source.border
                     heroFlightBottomBorder = source.bottomBorder

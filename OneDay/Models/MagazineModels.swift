@@ -1,75 +1,10 @@
 import Foundation
 import CoreLocation
 
-enum PhotoLayoutMode: String, CaseIterable, Identifiable {
-    case magazine
-    case alignedGrid
-
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .magazine:    return "杂志排布"
-        case .alignedGrid: return "整齐排布"
-        }
-    }
-}
-
-enum BlockTemplate: String, CaseIterable, Hashable {
-    case single    // reduced-width single, alternating alignment
-    case duo       // two side by side, equal-height row
-    case trio      // three across, equal-height row
-    case collage   // big+small group, height-locked columns
-    case stack     // similar / burst deck
-    case quote     // editorial pull-quote card (no photo)
-
-    /// Whether this template appears in the user-facing layout picker.
-    var isSelectable: Bool { self != .quote }
-
-    var label: String {
-        switch self {
-        case .single:  return "单张"
-        case .duo:     return "双张"
-        case .trio:    return "三联"
-        case .collage: return "拼贴"
-        case .stack:   return "叠牌"
-        case .quote:   return "引言"
-        }
-    }
-}
-
-/// Controls block sizing; derived from total photo count so denser days feel tighter.
-struct LayoutConfig: Equatable {
-    /// Fraction of contentWidth for a single photo (< 1 gives breathing room).
-    var singleScale: CGFloat
-    /// Target image-area height (pt) for duo / trio equal-height rows.
-    var rowHeight: CGFloat
-    /// 0 = no border, 1 = current max. Applied uniformly to every template's base border.
-    var borderScale: CGFloat = 1.0
-    /// White frame or photo-tinted colored frame.
-    var borderStyle: PhotoBorderStyle = .white
-    /// Strength of the shared photo projection.
-    var shadowLevel: PhotoShadowLevel = .max
-    /// Phase-value offset per photo index in multi-photo blocks (0 = no stagger).
-    var staggerFactor: Double = 0
-    /// Corner radius applied to every photo card (0 = sharp corners).
-    var cornerRadius: CGFloat = 0
-
-    static func make(itemCount: Int) -> LayoutConfig {
-        switch itemCount {
-        case ..<6:   return LayoutConfig(singleScale: 0.82, rowHeight: 200)
-        case ..<16:  return LayoutConfig(singleScale: 0.78, rowHeight: 180)
-        case ..<31:  return LayoutConfig(singleScale: 0.72, rowHeight: 160)
-        default:     return LayoutConfig(singleScale: 0.68, rowHeight: 145)
-        }
-    }
-}
-
+/// One grid photo and its scroll anchor, shared with preview restoration.
 struct MagazineBlock: Identifiable {
     let id = UUID()
-    let template: BlockTemplate
     var items: [PhotoItem]
-    var caption: String? = nil
 }
 
 enum TimeBand: Int, CaseIterable {
@@ -136,14 +71,10 @@ struct MagazineSection: Identifiable {
 
     var title: String { band.title }
 
-    /// Layout identity for detecting name-only updates: block templates and
-    /// their photo ids, independent of place titles.
+    /// Photo order for detecting name-only updates independently of titles.
     var structure: [String] {
         blocks.map { block in
-            block.template.rawValue + "|" + block.items.map(\.id).joined(separator: ",")
+            block.items.map(\.id).joined(separator: ",")
         }
     }
-
-    /// First photo of the section, used as the source for the section's tint.
-    var heroItem: PhotoItem? { blocks.first(where: { !$0.items.isEmpty })?.items.first }
 }

@@ -9,18 +9,12 @@ struct PhotoFrameView: View {
     let item: PhotoItem
     var width: CGFloat
     var border: CGFloat = 8
-    var kenBurns: Bool = false
     var favorite: Bool = false
     /// When `true`, renders a small circular badge (top-trailing) marking the
     /// photo as contributed by another participant of the user's iCloud Shared
     /// Photo Library.
     var shared: Bool = false
-    var ratioOverride: CGFloat? = nil
     var ratioRange: ClosedRange<CGFloat> = 0.55...1.85
-    var borderColor: Color = Theme.frame
-    /// Polaroid look: a tall white strip along the bottom edge.
-    var polaroid: Bool = false
-    var minimumPolaroidBottom: CGFloat = 20
     var shadowLevel: PhotoShadowLevel = .max
     var showCaption: Bool = false
     var cornerRadius: CGFloat = 0
@@ -29,17 +23,12 @@ struct PhotoFrameView: View {
     private let captionFontSize: CGFloat = 12
 
     private var ratio: CGFloat {
-        min(max(ratioOverride ?? item.aspectRatio, ratioRange.lowerBound), ratioRange.upperBound)
+        min(max(item.aspectRatio, ratioRange.lowerBound), ratioRange.upperBound)
     }
 
     private var imageSize: CGSize {
         let w = max(width - border * 2, 1)
         return CGSize(width: w, height: (w / ratio).rounded())
-    }
-
-    /// Bottom edge thickness. Polaroid keeps thin top/sides but a chunky bottom.
-    private var bottomBorder: CGFloat {
-        polaroid ? border + max(imageSize.height * 0.16, minimumPolaroidBottom) : border
     }
 
     var body: some View {
@@ -71,15 +60,15 @@ struct PhotoFrameView: View {
     }
 
     private var framedImage: some View {
-        PHImageView(asset: item.asset, displaySize: imageSize, fill: true, kenBurns: kenBurns)
+        PHImageView(asset: item.asset, displaySize: imageSize, fill: true)
             .clipShape(RoundedRectangle(cornerRadius: max(cornerRadius - border, 0), style: .continuous))
             .overlay(alignment: .bottomTrailing) { videoBadge }
             .overlay(alignment: .topLeading) { favoriteBadge }
             .overlay(alignment: .topTrailing) { sharedBadge }
             .padding(.top, border)
             .padding(.horizontal, border)
-            .padding(.bottom, bottomBorder)
-            .background(borderColor)
+            .padding(.bottom, border)
+            .background(Theme.frame)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .background {
                 if heroSourceID == item.id {
@@ -92,7 +81,7 @@ struct PhotoFrameView: View {
                             value: [item.id: HeroCellInfo(
                                 rect: rect,
                                 border: border * scaleX,
-                                bottomBorder: bottomBorder * scaleY,
+                                bottomBorder: border * scaleY,
                                 cornerRadius: cornerRadius * scaleX,
                                 contentVersion: item.contentVersion
                             )]

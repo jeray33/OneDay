@@ -10,10 +10,8 @@ import CoreMotion
 /// plain synchronous callback and the host does the async load itself.
 final class TunnelDayRequest {
     let date: Date
-    let drift: CGSize
-    init(_ date: Date, drift: CGSize = .zero) {
+    init(_ date: Date) {
         self.date = date
-        self.drift = drift
     }
 }
 
@@ -1005,13 +1003,12 @@ struct TunnelRewindView: View {
         }
         SoundEffects.settle()
 
-        let drift = combinedDrift
         // "轻微运动" runs the tunnel motion and the cover slide-up together, so
         // hand off immediately; other modes wait so their settle/rush shows first.
         if landingMotion != .slight {
             try? await Task.sleep(nanoseconds: 400_000_000)
         }
-        onLand(TunnelDayRequest(day, drift: drift))
+        onLand(TunnelDayRequest(day))
     }
 
     // MARK: Math helpers

@@ -76,17 +76,13 @@ final class DayMediaTabsTests: XCTestCase {
             Item(id: "own-shared", category: .otherImage, shared: true, ownContribution: true)
         ]
         for includeShared in [false, true] {
-            for contributorMatch in [false, true] {
-                let body = source.filter {
-                    if !includeShared { return !$0.shared }
-                    return !contributorMatch || !$0.ownContribution
-                }
-                let state = tabs(body)
-                XCTAssertEqual(state.availableCategories.contains(.screenshot), includeShared)
-                XCTAssertEqual(state.availableCategories.contains(.otherImage), includeShared && !contributorMatch)
-                XCTAssertEqual(state.selection(preserving: .otherImage),
-                               includeShared && !contributorMatch ? .otherImage : .photoVideo)
-            }
+            let body = DayMediaScope.bodyItems(
+                from: source, includeShared: includeShared,
+                isShared: \.shared, isOwnSharedContribution: \.ownContribution)
+            let state = tabs(body)
+            XCTAssertEqual(state.availableCategories.contains(.screenshot), includeShared)
+            XCTAssertFalse(state.availableCategories.contains(.otherImage))
+            XCTAssertEqual(state.selection(preserving: .otherImage), .photoVideo)
         }
     }
 

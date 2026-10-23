@@ -6,7 +6,6 @@ struct DayBackCoverView: View {
     var entries: [TodayInHistoryEntry]
     var isLoading: Bool
     var onSelectHistoryDay: ((Date) -> Void)? = nil
-    var onClose: () -> Void
     var scrollEdgesBinding: Binding<ContentScrollEdges>? = nil
     var scrollDisabled = false
 
@@ -17,34 +16,51 @@ struct DayBackCoverView: View {
     private let yearColumnWidth: CGFloat = 64
     private let yearPlaceSpacing: CGFloat = 0
     private let placeMinimumFontSize: CGFloat = 12
+    /// Distance from the top safe-area edge to the title block.
+    private let titleTopOffset: CGFloat = 82
+
+    @State private var headerTitleVisible = false
 
     var body: some View {
         GeometryReader { geometry in
+            let topInset = topSafeAreaInset()
             ZStack {
                 model.backCoverBackgroundColor.ignoresSafeArea()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(historyTitle)
-                            .font(model.coverDateFont.font(46))
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.55)
-                            .padding(.bottom, 88)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(DateText.dottedMonthDay(model.date))
+                                .font(model.coverDateFont.font(18))
+                                .foregroundStyle(Theme.ink.opacity(0.7))
+                            Text("历史今日")
+                                .font(model.coverDateFont.font(46))
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.55)
+                        }
+                        .padding(.bottom, 88)
 
                         historyContent(availableWidth: geometry.size.width - horizontalPadding * 2)
 
                         Color.clear.frame(height: 1)
                     }
                     .padding(.horizontal, horizontalPadding)
-                    .padding(.top, topSafeAreaInset() + 82)
+                    // The header bar already insets the content by its height.
+                    .padding(.top, max(0, topInset + titleTopOffset - DayPageHeader.height(topInset: topInset)))
                     .padding(.bottom, 160)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .scrollDisabled(scrollDisabled)
                 .scrollIndicators(.hidden)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top > DayPageHeader.titleRevealOffset
+                } action: { _, scrolled in
+                    headerTitleVisible = scrolled
+                }
                 .onScrollGeometryChange(for: ContentScrollEdges.self) { geometry in
-                    let minOffset = geometry.contentInsets.top
+                    // At rest the offset equals minus the top inset (the header bar).
+                    let minOffset = -geometry.contentInsets.top
                     let maxOffset = max(
                         minOffset,
                         geometry.contentSize.height
@@ -58,15 +74,19 @@ struct DayBackCoverView: View {
                 } action: { _, edges in
                     updateScrollEdges(edges)
                 }
-
-                DayTopBar(model: model, onClose: onClose, tint: Theme.ink)
+                .safeAreaBar(edge: .top, spacing: 0) {
+                    DayPageHeader(
+                        model: model,
+                        title: DateText.dottedMonthDay(model.date),
+                        titleVisible: headerTitleVisible,
+                        topInset: topInset
+                    )
+                }
+                .scrollEdgeEffectStyle(.soft, for: .top)
             }
             .environment(\.colorScheme, model.backCoverColorScheme)
         }
         .ignoresSafeArea()
-        .task(id: frameColorPreparationID) {
-            await model.prepareFrameColors(for: entries.flatMap(\.photos))
-        }
     }
 
     @ViewBuilder
@@ -136,7 +156,6 @@ struct DayBackCoverView: View {
         let border = max(3, longSide * 0.045) * model.borderWidth.scale
         let imageWidth = ratio >= 1 ? longSide : longSide * ratio
         let totalWidth = imageWidth + border * 2
-        let polaroidMinimum = min(20, max(5, totalWidth * 0.12))
 
         return PhotoFrameView(
             item: item,
@@ -144,9 +163,6 @@ struct DayBackCoverView: View {
             border: border,
             shared: item.isFromSharedLibrary,
             ratioRange: ratioRange,
-            borderColor: model.frameColor(for: item),
-            polaroid: model.borderStyle.isPolaroid,
-            minimumPolaroidBottom: polaroidMinimum,
             shadowLevel: model.photoShadow,
             cornerRadius: model.photoCornerRadius.value
         )
@@ -159,10 +175,6 @@ struct DayBackCoverView: View {
         return min(maximumPhotoLongSide, max(widestPossible - 8, 1))
     }
 
-    private var frameColorPreparationID: String {
-        let ids = entries.flatMap(\.photos).map(\.id).joined(separator: "|")
-        return "\(model.instanceID.uuidString)|\(model.borderStyle.rawValue)|\(ids)"
-    }
 
     private var historySeparatorWidth: CGFloat {
         yearColumnWidth + yearPlaceSpacing + maxThreePhotoRowWidth
@@ -172,12 +184,6 @@ struct DayBackCoverView: View {
         let border = max(3, maximumPhotoLongSide * 0.045) * model.borderWidth.scale
         let singleWidth = maximumPhotoLongSide + border * 2
         return singleWidth * 3 + photoSpacing * 2
-    }
-
-    private var historyTitle: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM.dd"
-        return "\(formatter.string(from: model.date)) in History"
     }
 
     private func historyPlaceLine(_ entry: TodayInHistoryEntry) -> String? {

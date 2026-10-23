@@ -4,14 +4,8 @@ import SwiftUI
 /// Provides a consistent ellipsis button that opens the full settings menu.
 struct DaySettingsMenu: View {
     let model: DayViewModel
+    var tint: Color = Theme.ink
     @AppStorage(CaptureClock.enabledKey) private var localCaptureTime = true
-
-    private var selectableTemplates: [BlockTemplate] {
-        BlockTemplate.allCases.filter { $0.isSelectable }
-    }
-    private var allTemplatesEnabled: Bool {
-        selectableTemplates.allSatisfy { model.enabledTemplates.contains($0) }
-    }
 
     var body: some View {
         Menu {
@@ -19,12 +13,6 @@ struct DaySettingsMenu: View {
                 get: { model.includeSharedAlbums },
                 set: { model.includeSharedAlbums = $0 }
             ))
-            if model.includeSharedAlbums {
-                Toggle("仅标记他人共享（比照）", isOn: Binding(
-                    get: { model.sharedContributorMatch },
-                    set: { model.sharedContributorMatch = $0 }
-                ))
-            }
             Toggle("按拍摄地时间", isOn: Binding(
                 get: { localCaptureTime },
                 set: { enabled in
@@ -43,191 +31,136 @@ struct DaySettingsMenu: View {
                         Label(option.label, systemImage: option.icon).tag(option)
                     }
                 }
-                if model.background == .dominant || model.background == .vibrant || model.background == .bright || model.background == .bright2 {
-                    Divider()
-                    Toggle("分段配色", isOn: Binding(
-                        get: { model.sectionTintEnabled },
-                        set: { model.sectionTintEnabled = $0 }
-                    ))
-                }
             }
             Menu("布局") {
-                Menu("排版方式") {
-                    ForEach(PhotoLayoutMode.allCases) { mode in
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                model.photoLayoutMode = mode
-                            }
-                        } label: {
-                            if model.photoLayoutMode == mode {
-                                Label(mode.label, systemImage: "checkmark")
-                            } else {
-                                Text(mode.label)
-                            }
-                        }
-                    }
-                }
-                Divider()
-                if model.photoLayoutMode == .magazine {
-                    Menu("照片组合") {
-                        Toggle("全选", isOn: Binding(
-                            get: { allTemplatesEnabled },
-                            set: { on in
-                                model.enabledTemplates = on
-                                    ? Set(selectableTemplates)
-                                    : [.single]
-                            }
-                        ))
-                        Divider()
-                        ForEach(selectableTemplates, id: \.self) { t in
-                            Toggle(t.label, isOn: Binding(
-                                get: { model.enabledTemplates.contains(t) },
-                                set: { on in
-                                    if on {
-                                        model.enabledTemplates.insert(t)
-                                    } else if model.enabledTemplates.count > 1 {
-                                        model.enabledTemplates.remove(t)
-                                    }
-                                }
-                            ))
-                        }
-                    }
-                } else {
-                    Menu("列数") {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                model.gridColumnMode = .automatic
-                            }
-                        } label: {
-                            if model.gridColumnMode == .automatic {
-                                Label("自动", systemImage: "checkmark")
-                            } else {
-                                Text("自动")
-                            }
-                        }
-                        Menu {
-                            Button("使用上次列数（\(Self.chineseColumnLabel(model.manualGridColumnCount))）") {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    model.gridColumnMode = .manual
-                                }
-                            }
-                            Divider()
-                            ForEach(1...6, id: \.self) { count in
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.3)) {
-                                        model.gridColumnCount = count
-                                    }
-                                } label: {
-                                    let label = Self.chineseColumnLabel(count)
-                                    if model.manualGridColumnCount == count {
-                                        Label(label, systemImage: "checkmark")
-                                    } else {
-                                        Text(label)
-                                    }
-                                }
-                            }
-                        } label: {
-                            if model.gridColumnMode == .manual {
-                                Label("手动", systemImage: "checkmark")
-                            } else {
-                                Text("手动")
-                            }
-                        }
-                    }
-                    Menu("横向间距") {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                model.gridHorizontalSpacing = nil
-                            }
-                        } label: {
-                            if model.gridHorizontalSpacing == nil {
-                                Label("自动", systemImage: "checkmark")
-                            } else {
-                                Text("自动")
-                            }
-                        }
-                        Divider()
-                        ForEach(Self.gridHorizontalSpacingOptions, id: \.self) { spacing in
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    model.gridHorizontalSpacing = spacing
-                                }
-                            } label: {
-                                let label = Self.spacingLabel(spacing)
-                                if model.gridHorizontalSpacing == spacing {
-                                    Label(label, systemImage: "checkmark")
-                                } else {
-                                    Text(label)
-                                }
-                            }
-                        }
-                    }
-                    Menu("纵向间距") {
-                        ForEach(Self.gridVerticalSpacingOptions, id: \.self) { spacing in
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    model.gridVerticalSpacing = spacing
-                                }
-                            } label: {
-                                let label = Self.spacingLabel(spacing)
-                                if model.gridVerticalSpacing == spacing {
-                                    Label(label, systemImage: "checkmark")
-                                } else {
-                                    Text(label)
-                                }
-                            }
-                        }
-                    }
-                    Toggle("懒加载", isOn: Binding(
-                        get: { model.gridLazyEnabled },
-                        set: { model.gridLazyEnabled = $0 }
-                    ))
-                }
-            }
-            Menu("白边") {
-                Picker("宽度", selection: Binding(
-                    get: { model.borderWidth },
-                    set: { model.borderWidth = $0 }
-                )) {
-                    ForEach(PhotoBorderWidth.allCases) { w in
-                        Text(w.label).tag(w)
-                    }
-                }
-                Picker("颜色", selection: Binding(
-                    get: { model.borderStyle },
-                    set: { model.borderStyle = $0 }
-                )) {
-                    ForEach(PhotoBorderStyle.allCases) { s in
-                        Label(s.label, systemImage: s.icon).tag(s)
-                    }
-                }
-            }
-            Menu("圆角") {
-                ForEach(PhotoCornerRadius.allCases) { cr in
+                Menu("列数") {
                     Button {
                         withAnimation(.easeInOut(duration: 0.3)) {
-                            model.photoCornerRadius = cr
+                            model.gridColumnMode = .automatic
                         }
                     } label: {
-                        if model.photoCornerRadius == cr {
-                            Label(cr.label, systemImage: "checkmark")
+                        if model.gridColumnMode == .automatic {
+                            Label("自动", systemImage: "checkmark")
                         } else {
-                            Text(cr.label)
+                            Text("自动")
+                        }
+                    }
+                    Menu {
+                        Button("使用上次列数（\(Self.chineseColumnLabel(model.manualGridColumnCount))）") {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.gridColumnMode = .manual
+                            }
+                        }
+                        Divider()
+                        ForEach(1...6, id: \.self) { count in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    model.gridColumnCount = count
+                                }
+                            } label: {
+                                let label = Self.chineseColumnLabel(count)
+                                if model.manualGridColumnCount == count {
+                                    Label(label, systemImage: "checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    } label: {
+                        if model.gridColumnMode == .manual {
+                            Label("手动", systemImage: "checkmark")
+                        } else {
+                            Text("手动")
                         }
                     }
                 }
-            }
-            Menu("投影") {
-                ForEach(PhotoShadowLevel.allCases) { level in
+                Menu("横向间距") {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            model.photoShadow = level
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            model.gridHorizontalSpacing = nil
                         }
                     } label: {
-                        if model.photoShadow == level {
-                            Label(level.label, systemImage: "checkmark")
+                        if model.gridHorizontalSpacing == nil {
+                            Label("自动", systemImage: "checkmark")
                         } else {
-                            Text(level.label)
+                            Text("自动")
+                        }
+                    }
+                    Divider()
+                    ForEach(Self.gridHorizontalSpacingOptions, id: \.self) { spacing in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.gridHorizontalSpacing = spacing
+                            }
+                        } label: {
+                            let label = Self.spacingLabel(spacing)
+                            if model.gridHorizontalSpacing == spacing {
+                                Label(label, systemImage: "checkmark")
+                            } else {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+                Menu("纵向间距") {
+                    ForEach(Self.gridVerticalSpacingOptions, id: \.self) { spacing in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.gridVerticalSpacing = spacing
+                            }
+                        } label: {
+                            let label = Self.spacingLabel(spacing)
+                            if model.gridVerticalSpacing == spacing {
+                                Label(label, systemImage: "checkmark")
+                            } else {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+                Toggle("懒加载", isOn: Binding(
+                    get: { model.gridLazyEnabled },
+                    set: { model.gridLazyEnabled = $0 }
+                ))
+            }
+            Menu("照片图片") {
+                Menu("白边") {
+                    Picker("宽度", selection: Binding(
+                        get: { model.borderWidth },
+                        set: { model.borderWidth = $0 }
+                    )) {
+                        ForEach(PhotoBorderWidth.allCases) { w in
+                            Text(w.label).tag(w)
+                        }
+                    }
+                }
+                Menu("圆角") {
+                    ForEach(PhotoCornerRadius.allCases) { cr in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                model.photoCornerRadius = cr
+                            }
+                        } label: {
+                            if model.photoCornerRadius == cr {
+                                Label(cr.label, systemImage: "checkmark")
+                            } else {
+                                Text(cr.label)
+                            }
+                        }
+                    }
+                }
+                Menu("投影") {
+                    ForEach(PhotoShadowLevel.allCases) { level in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                model.photoShadow = level
+                            }
+                        } label: {
+                            if model.photoShadow == level {
+                                Label(level.label, systemImage: "checkmark")
+                            } else {
+                                Text(level.label)
+                            }
                         }
                     }
                 }
@@ -251,9 +184,6 @@ struct DaySettingsMenu: View {
                     animPicker("弹簧曲线", icon: "waveform",
                                binding: Binding(get: { model.scrollSpring },   set: { model.scrollSpring = $0 }),
                                labelOf: { $0.label })
-                    animPicker("时差层次", icon: "stopwatch",
-                               binding: Binding(get: { model.scrollStagger },  set: { model.scrollStagger = $0 }),
-                               labelOf: { $0.label })
                 }
                 Section("消失") {
                     animPicker("淡出透明", icon: "eye.slash",
@@ -275,63 +205,41 @@ struct DaySettingsMenu: View {
                                labelOf: { $0.label })
                 }
             }
-            pageFlipMenu
-            animPicker("标题字体",
-                       binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
-                       labelOf: { $0.label })
-            Menu("标题分段") {
-                Toggle("地点分段", isOn: Binding(
-                    get: { model.titlePlaceSegmentation },
-                    set: { model.titlePlaceSegmentation = $0 }
-                ))
-                if model.titlePlaceSegmentation {
-                    Toggle("地点下时间分段", isOn: Binding(
-                        get: { model.titleNestedTimeSegmentation },
-                        set: { model.titleNestedTimeSegmentation = $0 }
+            Menu("标题") {
+                animPicker("标题字体",
+                           binding: Binding(get: { model.coverDateFont }, set: { model.coverDateFont = $0 }),
+                           labelOf: { $0.label })
+                Menu("标题大小") {
+                    ForEach(SectionTitleSize.allCases) { size in
+                        Button {
+                            model.sectionTitleSize = size
+                        } label: {
+                            if model.sectionTitleSize == size {
+                                Label(size.label, systemImage: "checkmark")
+                            } else {
+                                Text(size.label)
+                            }
+                        }
+                    }
+                }
+                Menu("标题分段") {
+                    Toggle("地点分段", isOn: Binding(
+                        get: { model.titlePlaceSegmentation },
+                        set: { model.titlePlaceSegmentation = $0 }
+                    ))
+                    if model.titlePlaceSegmentation {
+                        Toggle("地点下时间分段", isOn: Binding(
+                            get: { model.titleNestedTimeSegmentation },
+                            set: { model.titleNestedTimeSegmentation = $0 }
+                        ))
+                    }
+                    Toggle("时间分段", isOn: Binding(
+                        get: { model.titleTimeSegmentation },
+                        set: { model.titleTimeSegmentation = $0 }
                     ))
                 }
-                Toggle("时间分段", isOn: Binding(
-                    get: { model.titleTimeSegmentation },
-                    set: { model.titleTimeSegmentation = $0 }
-                ))
             }
-            Menu("标题大小") {
-                ForEach(SectionTitleSize.allCases) { size in
-                    Button {
-                        model.sectionTitleSize = size
-                    } label: {
-                        if model.sectionTitleSize == size {
-                            Label(size.label, systemImage: "checkmark")
-                        } else {
-                            Text(size.label)
-                        }
-                    }
-                }
-            }
-            Menu("封面模式") {
-                ForEach(CoverMode.allCases, id: \.self) { mode in
-                    Button {
-                        model.coverMode = mode
-                    } label: {
-                        if model.coverMode == mode {
-                            Label(mode.label, systemImage: "checkmark")
-                        } else {
-                            Text(mode.label)
-                        }
-                    }
-                }
-            }
-            animPicker("封面封底背景色",
-                       binding: Binding(
-                        get: { model.coverBackgroundMode },
-                        set: { model.coverBackgroundMode = $0 }
-                       ),
-                       labelOf: { $0.label })
-            Toggle("地点工具条", isOn: Binding(
-                get: { model.showLocationBar },
-                set: { model.showLocationBar = $0 }
-            ))
-            Menu("按钮选项") {
+            Menu("按钮") {
                 Toggle("底部工具栏", isOn: Binding(
                     get: { model.showBottomToolbar },
                     set: { model.showBottomToolbar = $0 }
@@ -354,36 +262,30 @@ struct DaySettingsMenu: View {
                 ))
             }
             if model.hasAnyLocation {
-                Toggle("轨迹地图", isOn: Binding(
-                    get: { model.showPhotoMap },
-                    set: { model.showPhotoMap = $0 }
-                ))
-                Menu("地图融合") {
-                    ForEach(MapBlendMode.allCases) { mode in
-                        Button {
-                            model.mapBlendMode = mode
-                        } label: {
-                            if model.mapBlendMode == mode {
-                                Label(mode.label, systemImage: "checkmark")
-                            } else {
-                                Text(mode.label)
+                Menu("地图") {
+                    Toggle("轨迹地图", isOn: Binding(
+                        get: { model.showPhotoMap },
+                        set: { model.showPhotoMap = $0 }
+                    ))
+                    Menu("地图融合") {
+                        ForEach(MapBlendMode.allCases) { mode in
+                            Button {
+                                model.mapBlendMode = mode
+                            } label: {
+                                if model.mapBlendMode == mode {
+                                    Label(mode.label, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.label)
+                                }
                             }
                         }
                     }
                 }
             }
-            Toggle("显示说明文字", isOn: Binding(
+            Toggle("说明文字", isOn: Binding(
                 get: { model.showPhotoCaptions },
                 set: { model.showPhotoCaptions = $0 }
             ))
-            if model.photoLayoutMode == .magazine {
-                Button {
-                    model.isDragEnabled.toggle()
-                } label: {
-                    Label(model.isDragEnabled ? "锁定照片位置" : "自由摆放照片",
-                          systemImage: model.isDragEnabled ? "lock" : "hand.draw")
-                }
-            }
             // Required by the bundled GeoNames data's CC BY 4.0 license:
             // source, license, and that the data was modified.
             Section("地名与时区数据来自 GeoNames，依据 CC BY 4.0 许可使用，经筛选和压缩处理") {
@@ -393,35 +295,9 @@ struct DaySettingsMenu: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Theme.ink)
+                .foregroundStyle(tint)
                 .frame(width: 38, height: 38)
                 .glassEffect(.regular.interactive(), in: .circle)
-        }
-    }
-
-    // MARK: - Page flip menu
-
-    private var pageFlipMenu: some View {
-        Menu("翻页模式") {
-            ForEach(PageFlipMode.allCases) { mode in
-                Button {
-                    model.pageFlipMode = mode
-                } label: {
-                    if model.pageFlipMode == mode {
-                        Label(mode.label, systemImage: "checkmark")
-                    } else {
-                        Text(mode.label)
-                    }
-                }
-            }
-            if model.pageFlipMode == .staggeredPhysics
-                || model.pageFlipMode == .continuousStaggered {
-                Divider()
-                Toggle("顶部防露边（上移 10）", isOn: Binding(
-                    get: { model.staggeredTopLiftEnabled },
-                    set: { model.staggeredTopLiftEnabled = $0 }
-                ))
-            }
         }
     }
 
@@ -476,31 +352,123 @@ struct DaySettingsMenu: View {
     }
 }
 
-/// Shared top bar with close button (leading) and settings menu (trailing).
-/// Used by the cover, photo page, and back cover for consistent chrome.
-struct DayTopBar: View {
-    let model: DayViewModel
-    let onClose: (() -> Void)?
+/// Glass close button shared by the fixed top bar and the photo page header.
+struct DayCloseButton: View {
     var tint: Color = Theme.ink
+    let action: () -> Void
 
     var body: some View {
-        VStack {
-            HStack {
-                if let onClose {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(tint)
-                            .frame(width: 38, height: 38)
-                            .glassEffect(.regular.interactive(), in: .circle)
-                    }
-                }
-                Spacer()
-                DaySettingsMenu(model: model)
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: DayTopBar.buttonSize, height: DayTopBar.buttonSize)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+    }
+}
+
+/// Hides top-bar buttons without changing layout. The switch is never
+/// animated: the fixed bar and the photo page header swap their buttons in
+/// place, and a cross-fade would briefly show two stacked glass circles.
+struct TopButtonVisibility: ViewModifier {
+    let visible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+            .animation(nil, value: visible)
+    }
+}
+
+/// Safe-area top bar of a scrolling page (photo page, back cover). Its button
+/// slots sit exactly under the fixed `DayTopBar` buttons and stay invisible
+/// unless `showsButtons`; the date title slides in once the page scrolls.
+///
+/// The visible title gives the system's soft scroll edge effect content to
+/// blur behind even when the button slots are transparent.
+struct DayPageHeader: View {
+    static let bottomSpacing: CGFloat = 8
+    /// Scroll distance after which the title appears.
+    static let titleRevealOffset: CGFloat = 4
+
+    let model: DayViewModel
+    let title: String
+    let titleVisible: Bool
+    let topInset: CGFloat
+    /// Real (hideable) buttons in the slots; nil leaves the slots empty.
+    var onClose: (() -> Void)? = nil
+    var showsButtons = false
+
+    /// Bar height for a given top inset, for pages that pad their content
+    /// to a fixed position below the bar.
+    static func height(topInset: CGFloat) -> CGFloat {
+        topInset + DayTopBar.topSpacing + DayTopBar.buttonSize + bottomSpacing
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let onClose {
+                DayCloseButton(action: onClose)
+                    .modifier(TopButtonVisibility(visible: showsButtons))
+            } else {
+                buttonSlot
             }
-            .padding(.horizontal, 16)
-            .padding(.top, topSafeAreaInset() + 6)
-            Spacer()
+            Text(title)
+                .font(model.coverDateFont.font(20))
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: .infinity)
+                .opacity(titleVisible ? 1 : 0)
+                .offset(y: titleVisible ? 0 : 10)
+                .animation(.spring(response: 0.36, dampingFraction: 0.88), value: titleVisible)
+                .accessibilityHidden(!titleVisible)
+            if onClose != nil {
+                DaySettingsMenu(model: model)
+                    .modifier(TopButtonVisibility(visible: showsButtons))
+            } else {
+                buttonSlot
+            }
+        }
+        .padding(.horizontal, DayTopBar.horizontalPadding)
+        .padding(.top, topInset + DayTopBar.topSpacing)
+        .padding(.bottom, Self.bottomSpacing)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var buttonSlot: some View {
+        Color.clear.frame(width: DayTopBar.buttonSize, height: DayTopBar.buttonSize)
+    }
+}
+
+/// Full-screen top bar with close button (leading) and settings menu
+/// (trailing). Drawn once above all pages of `DayPagedStackView`, so it stays
+/// put while pages flip. Its geometry must match the photo page header
+/// (`DayMagazineView.fixedHeader`), which keeps invisible stand-ins for these
+/// buttons to preserve its layout.
+struct DayTopBar: View {
+    static let buttonSize: CGFloat = 38
+    static let horizontalPadding: CGFloat = 16
+    static let topSpacing: CGFloat = 4
+
+    let model: DayViewModel
+    let onClose: () -> Void
+    var tint: Color = Theme.ink
+    var topInset: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                DayCloseButton(tint: tint, action: onClose)
+                Spacer(minLength: 0)
+                DaySettingsMenu(model: model, tint: tint)
+            }
+            .padding(.horizontal, Self.horizontalPadding)
+            .padding(.top, topInset + Self.topSpacing)
+            Spacer(minLength: 0)
         }
     }
 }

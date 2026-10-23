@@ -18,7 +18,7 @@ struct ZoomableImageView: UIViewRepresentable {
     let displaySize: CGSize
     var sideBorder: CGFloat = 8
     var topBorder: CGFloat = 8
-    /// Thickness of the bottom border strip (tall for Polaroid).
+    /// Thickness of the bottom border strip.
     var captionHeight: CGFloat = 0
     var cardColor: Color = .white
     var cornerRadius: CGFloat = 0

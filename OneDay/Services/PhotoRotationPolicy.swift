@@ -69,7 +69,7 @@ nonisolated enum PhotoRotationPolicy {
     }
 
     /// Solve the fit for the entire framed card before applying one rotation.
-    /// The Polaroid strip moves from bottom to trailing in local coordinates,
+    /// The bottom border moves to the trailing edge in local coordinates,
     /// so it lands back at the bottom when the whole card reaches 90 degrees.
     static func rotatingCardLayout(viewport: CGSize, imageAspect: CGFloat, sideBorder: CGFloat,
                                    bottomBorder: CGFloat, progress: Double) -> RotatingCardLayout {

@@ -15,14 +15,21 @@ struct DayMagazineView: View {
     var navLoading: Bool = false
     var scrollEdgesBinding: Binding<ContentScrollEdges>? = nil
     var scrollDisabled: Bool = false
+    /// Freezes the inner ScrollView while a page flip owns the drag, so the
+    /// scroll view cannot rubber-band the photo content away from the fixed
+    /// background/chrome (which only follow the flip offset). Distinct from
+    /// `scrollDisabled`, which also greys out the media tabs and bottom toolbar.
+    var scrollFrozen: Bool = false
+    /// Shows the header's own close/settings buttons. Normally false: the
+    /// paged stack draws fixed copies above all pages, and the header keeps
+    /// invisible stand-ins for layout. True while the photo preview is open,
+    /// because the preview must cover the buttons, and only buttons inside
+    /// this view sit beneath it.
+    var showsTopButtons: Bool = true
 
     @Namespace private var previewNamespace
 
-    // Free-canvas dragging
-    @State private var activeDragBlock: UUID?
-    @State private var liveTranslation: CGSize = .zero
     @State private var revealContent = false
-    @State private var activeSegmentID: String?
     @State private var pinchScale: CGFloat = 1.0
     @State private var pinchBaseline: CGFloat = 1.0
     @State private var editingItem: PhotoItem?
@@ -35,6 +42,7 @@ struct DayMagazineView: View {
     @State private var frameStore = HeroFrameStore()
     @State private var heroRequest: PhotoItem?
     @State private var fixedHeaderHeight: CGFloat = 0
+    @State private var headerTitleVisible = false
     /// Cached top safe-area inset. Read once when the status bar is visible,
     /// then reused so that `.statusBarHidden()` during the hero session cannot
     /// change the fixed header's height and shift the grid.
@@ -125,7 +133,7 @@ struct DayMagazineView: View {
                     .contentShape(Rectangle())
                     .highPriorityGesture(columnPinchGesture)
                 }
-                .scrollDisabled(activeDragBlock != nil || scrollDisabled || pinchScale != 1.0)
+                .scrollDisabled(scrollDisabled || scrollFrozen || pinchScale != 1.0)
                 .scrollIndicators(model.showDayScrollIndicator ? .automatic : .hidden)
                 .scrollPosition($scrollPosition)
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -133,14 +141,18 @@ struct DayMagazineView: View {
                 } action: { _, offset in
                     scrubber.updateRawOffset(offset)
                 }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top > DayPageHeader.titleRevealOffset
+                } action: { _, scrolled in
+                    headerTitleVisible = scrolled
+                }
                 .background(model.pageBackgroundColor.ignoresSafeArea())
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
-                .animation(.easeInOut(duration: 0.35), value: model.sectionTintEnabled)
-                // A safe-area bar lets content pass underneath the controls.
-                // The system progressively blurs that backdrop, not the buttons.
+                // A safe-area bar lets content pass underneath the header.
+                // The system progressively blurs that backdrop, not the header.
                 .safeAreaBar(edge: .top, spacing: 0) {
-                    fixedHeader(proxy: proxy)
+                    fixedHeader
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
                             fixedHeaderHeight = $0
                         }
@@ -175,7 +187,6 @@ struct DayMagazineView: View {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
                 .onChange(of: model.selectedMediaCategory) { _, _ in
-                    activeSegmentID = nil
                     var transaction = Transaction()
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
@@ -203,7 +214,6 @@ struct DayMagazineView: View {
                 .onChange(of: bottomBarHeight) { _, _ in
                     recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
                 }
-                .onPreferenceChange(BlockPositionKey.self) { updateActiveSegment($0) }
                 .onChange(of: model.previewCurrentID) { _, id in
                     guard model.selected != nil, let id,
                           let blockID = model.blockID(forItemID: id) else { return }
@@ -321,7 +331,6 @@ struct DayMagazineView: View {
     private var columnPinchGesture: some Gesture {
         MagnificationGesture()
             .onChanged { scale in
-                guard model.photoLayoutMode == .alignedGrid else { return }
                 pinchScale = scale
                 let ratio = scale / pinchBaseline
                 if ratio < 0.75 {
@@ -359,37 +368,15 @@ struct DayMagazineView: View {
 
     // MARK: Top bar
 
-    @ViewBuilder
-    private func fixedHeader(proxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 10) {
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Theme.ink)
-                    .frame(width: 38, height: 38)
-                    .glassEffect(.regular.interactive(), in: .circle)
-            }
-            if model.routeStops.count >= 2 && model.showLocationBar {
-                let stops = zip(model.routeStops, model.routeStopDisplayNames).map {
-                    RouteSelectorView.Stop(id: $0.0.id, name: $0.1)
-                }
-                RouteSelectorView(stops: stops, activeID: activeSegmentID) { id in
-                    guard let stop = model.routeStops.first(where: { $0.id == id }),
-                          let target = model.scrollTarget(for: stop) else { return }
-                    withAnimation(.easeInOut(duration: 0.55)) {
-                        proxy.scrollTo(target, anchor: .top)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            } else {
-                Spacer()
-            }
-            DaySettingsMenu(model: model)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, stableTopInsetValue + 4)
-        .padding(.bottom, 8)
-        .frame(maxWidth: .infinity)
+    private var fixedHeader: some View {
+        DayPageHeader(
+            model: model,
+            title: DateText.dottedDate(model.date),
+            titleVisible: headerTitleVisible,
+            topInset: stableTopInsetValue,
+            onClose: onClose,
+            showsButtons: showsTopButtons
+        )
         .revealFade(shouldRevealContent, delay: 0.32)
     }
 
@@ -416,7 +403,7 @@ struct DayMagazineView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(model.selected != nil || activeDragBlock != nil || scrollDisabled)
+                .disabled(model.selected != nil || scrollDisabled)
                 .accessibilityLabel(category.label)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityIdentifier("day-media-tab-\(category.rawValue)")
@@ -428,100 +415,7 @@ struct DayMagazineView: View {
         .revealFade(shouldRevealContent, delay: 0.32)
     }
 
-    // MARK: Block row (with optional free-canvas dragging)
-
-    @ViewBuilder
-    private func blockRow(_ block: MagazineBlock, contentWidth: CGFloat) -> some View {
-        let committed = model.blockOffsets[block.id] ?? .zero
-        let live = activeDragBlock == block.id ? liveTranslation : .zero
-        let isActive = activeDragBlock == block.id
-
-        MagazineBlockView(
-            block: block,
-            width: contentWidth,
-            namespace: previewNamespace,
-            config: model.layoutConfig,
-            frameColor: { model.frameColor(for: $0) },
-            isFavorite: { model.isFavorite($0) },
-            onSelect: { heroRequest = $0 },
-            onAction: { action, item in
-                Task { await model.perform(action, on: item) }
-            },
-            showCaptions: model.showPhotoCaptions,
-            onEditCaption: { editingItem = $0 },
-            hiddenItemID: heroHiddenID
-        )
-        .frame(maxWidth: .infinity)
-        .scrollTransition(.animated(model.scrollSpring.animation)) { content, phase in
-            let sc  = model.scrollScale.value
-            let mv  = model.scrollMovement.value
-            let rot = model.scrollRotation.value
-            let fa  = model.scrollFade.offScreenOpacity
-            let blr = CGFloat(model.scrollBlur.radius)
-            let baseY: CGFloat = phase == .bottomTrailing ?  mv :
-                                  phase == .topLeading     ? -mv * 0.64 : 0
-            return content
-                .opacity(phase.isIdentity ? 1 : fa)
-                .scaleEffect(
-                    phase == .topLeading     ? (1.0 - sc) :
-                    phase == .bottomTrailing ? (1.0 + sc) : 1.0
-                )
-                .rotationEffect(.degrees(
-                    phase == .topLeading     ?  rot :
-                    phase == .bottomTrailing ? -rot : 0
-                ))
-                .offset(y: baseY)
-                .blur(radius: phase == .bottomTrailing ? blr * CGFloat(phase.value) : 0)
-        }
-        // Continuous 3D tilt + parallax driven by live scroll position.
-        // phase.value: -1 (top) → 0 (center) → +1 (bottom).
-        .scrollTransition(.interactive) { content, phase in
-            // -- Parallax lag (above center only) --
-            let par    = model.scrollParallax.factor
-            let pv     = min(0.0, phase.value)
-            let parY   = CGFloat(-pv) * par
-
-            // -- 3D perspective tilt --
-            let xDeg   = CGFloat(model.scrollTiltX.degrees)
-            let yDeg   = CGFloat(model.scrollTiltY.degrees)
-            let decay  = model.scrollTiltDecay.power
-            let v      = phase.value
-            // Apply decay curve: sign preserved, magnitude adjusted by power
-            let absV   = abs(v)
-            let signV  = v >= 0 ? 1.0 : -1.0
-            let eV     = CGFloat(signV * pow(absV, decay))
-            return content
-                .rotation3DEffect(.degrees(eV * xDeg), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
-                .rotation3DEffect(.degrees(eV * yDeg), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-                .offset(y: parY)
-        }
-        .overlay(alignment: .topTrailing) {
-            if model.isDragEnabled {
-                Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(7)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .padding(6)
-            }
-        }
-        .offset(x: committed.width + live.width, y: committed.height + live.height)
-        .scaleEffect(isActive ? 1.04 : 1)
-        .shadow(color: .black.opacity(isActive ? 0.22 : 0),
-                radius: isActive ? 14 : 0, y: isActive ? 8 : 0)
-        .zIndex(isActive ? 10 : 0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isActive)
-        .gesture(canvasGesture(for: block),
-                 including: model.isDragEnabled ? .all : .subviews)
-        .id(block.id)
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: BlockPositionKey.self,
-                    value: [block.id.uuidString: geo.frame(in: .named("dayScroll")).minY])
-            }
-        )
-    }
+    // MARK: Aligned grid
 
     @ViewBuilder
     private func alignedGridRow(_ blocks: [MagazineBlock], contentWidth: CGFloat) -> some View {
@@ -553,7 +447,6 @@ struct DayMagazineView: View {
                     if entry.startsBlock {
                         alignedGridCell(entry.item, width: finalCellWidth)
                             .id(entry.blockID)
-                            .background(blockPositionReader(for: entry.blockID))
                     } else {
                         alignedGridCell(entry.item, width: finalCellWidth)
                     }
@@ -573,7 +466,6 @@ struct DayMagazineView: View {
                             if entry.startsBlock {
                                 alignedGridCell(entry.item, width: finalCellWidth)
                                     .id(entry.blockID)
-                                    .background(blockPositionReader(for: entry.blockID))
                             } else {
                                 alignedGridCell(entry.item, width: finalCellWidth)
                             }
@@ -590,11 +482,10 @@ struct DayMagazineView: View {
     private func alignedGridCell(_ item: PhotoItem, width: CGFloat) -> some View {
         let count = min(max(model.gridColumnCount, 1), 6)
         let border = max(
-            (alignedGridBorderBase(for: count) * model.layoutConfig.borderScale).rounded(),
+            (alignedGridBorderBase(for: count) * model.borderWidth.scale).rounded(),
             0
         )
         let ratioRange = (CGFloat(9) / 20)...(CGFloat(16) / 9)
-        let polaroidMinimum = min(20, max(5, width * 0.12))
         // While a preview is open, apply scroll transitions instantly (no
         // spring) so revealing the grid on close cannot make cells wobble.
         let scrollAnimation = model.selected != nil ? .linear(duration: 0) : model.scrollSpring.animation
@@ -615,9 +506,6 @@ struct DayMagazineView: View {
             favorite: model.isFavorite(item),
             shared: item.isFromSharedLibrary,
             ratioRange: ratioRange,
-            borderColor: model.frameColor(for: item),
-            polaroid: model.borderStyle.isPolaroid,
-            minimumPolaroidBottom: polaroidMinimum,
             shadowLevel: model.photoShadow,
             showCaption: model.showPhotoCaptions,
             cornerRadius: model.photoCornerRadius.value,
@@ -696,28 +584,6 @@ struct DayMagazineView: View {
         }
     }
 
-    private func blockPositionReader(for blockID: UUID) -> some View {
-        GeometryReader { geo in
-            Color.clear.preference(
-                key: BlockPositionKey.self,
-                value: [blockID.uuidString: geo.frame(in: .named("dayScroll")).minY]
-            )
-        }
-    }
-
-    private func updateActiveSegment(_ positions: [String: CGFloat]) {
-        guard !positions.isEmpty else { return }
-        // The scroll viewport now includes the translucent fixed header.
-        let anchorY = fixedHeaderHeight + 24
-        // Current block = the last one whose top has passed the anchor line.
-        let passed = positions.filter { $0.value <= anchorY }
-        let currentKey = passed.max(by: { $0.value < $1.value })?.key
-            ?? positions.min(by: { $0.value < $1.value })?.key
-        guard let key = currentKey, let uuid = UUID(uuidString: key),
-              let sid = model.stopID(forBlockID: uuid), sid != activeSegmentID else { return }
-        activeSegmentID = sid
-    }
-
     private func updateScrollEdges(_ edges: ContentScrollEdges) {
         if let binding = scrollEdgesBinding, binding.wrappedValue != edges {
             binding.wrappedValue = edges
@@ -741,7 +607,7 @@ struct DayMagazineView: View {
 
     /// Whether the bottom toolbar accepts interaction right now.
     private var bottomToolbarEnabled: Bool {
-        !scrollDisabled && activeDragBlock == nil && pinchScale == 1 && model.selected == nil
+        !scrollDisabled && pinchScale == 1 && model.selected == nil
     }
 
     /// Jumps the content to a scrubber progress. Targets are derived purely
@@ -759,36 +625,12 @@ struct DayMagazineView: View {
         }
     }
 
-    private func canvasGesture(for block: MagazineBlock) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.22)
-            .sequenced(before: DragGesture())
-            .onChanged { value in
-                if case .second(true, let drag) = value {
-                    if activeDragBlock != block.id {
-                        activeDragBlock = block.id
-                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
-                    }
-                    liveTranslation = drag?.translation ?? .zero
-                }
-            }
-            .onEnded { value in
-                if case .second(_, let drag?) = value {
-                    let base = model.blockOffsets[block.id] ?? .zero
-                    model.blockOffsets[block.id] = CGSize(width: base.width + drag.translation.width,
-                                                          height: base.height + drag.translation.height)
-                }
-                activeDragBlock = nil
-                liveTranslation = .zero
-            }
-    }
-
     // MARK: Sections
 
     @ViewBuilder
     private func sectionView(_ section: MagazineSection, index: Int, contentWidth: CGFloat) -> some View {
         let rows = sectionRows(section)
         if !rows.isEmpty {
-            let tint = model.sectionTintActive
             let hasHeading = section.placeHeading != nil
                 || section.placeHeadingPending
                 || section.showsTimeHeading
@@ -800,11 +642,7 @@ struct DayMagazineView: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, tint ? (hasHeading ? 40 : 20) : 0)
-            .padding(.bottom, tint && hasHeading ? 120 : 0)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(tint ? model.sectionBackgroundColor(section) : Color.clear)
-            .environment(\.colorScheme, tint ? model.sectionColorScheme(section) : model.pageColorScheme)
             .reveal(shouldRevealContent, delay: 0.42 + Double(index) * 0.14)
             .background(
                 GeometryReader { geo in
@@ -846,11 +684,10 @@ struct DayMagazineView: View {
             .animation(.easeIn(duration: 0.3), value: title)
     }
 
-    /// Spacing above each section. Segmented coloring keeps sections flush;
-    /// Otherwise use 64pt with headings and half that when headings are hidden.
-    /// A pending place heading already reserves its heading slot.
+    /// Spacing above each section: 64pt with headings and half that when
+    /// headings are hidden. A pending place heading already reserves its
+    /// heading slot.
     private func sectionTopSpacing(for index: Int) -> CGFloat {
-        guard !model.sectionTintActive else { return 0 }
         let section = model.sections[index]
         return section.placeHeading != nil
             || section.placeHeadingPending
@@ -864,8 +701,6 @@ struct DayMagazineView: View {
             Text(text)
                 .font(Theme.serif(13))
                 .foregroundStyle(Theme.ink.opacity(0.7))
-        case .block(let block):
-            blockRow(block, contentWidth: contentWidth)
         case .grid(let blocks):
             alignedGridRow(blocks, contentWidth: contentWidth)
         }
@@ -883,12 +718,12 @@ struct DayMagazineView: View {
     }
 
     /// Builds the ordered rows for a section: time-segment labels interleaved
-    /// with photo blocks. A section spanning ≤ 2h gets one label under the
+    /// with photo grids. A section spanning ≤ 2h gets one label under the
     /// title; a longer section is split into clock-aligned 2-hour segments,
     /// each labelled above its first photo with that segment's actual span.
     /// Place-only sections keep a single overall range without splitting rows.
     private func sectionRows(_ section: MagazineSection) -> [SectionRow] {
-        let blocks = section.blocks.filter { $0.template != .quote }
+        let blocks = section.blocks
         guard !blocks.isEmpty else { return [] }
         guard section.showsTimeHeading || section.placeHeading != nil else {
             return contentRows(for: blocks)
@@ -925,12 +760,7 @@ struct DayMagazineView: View {
     }
 
     private func contentRows(for blocks: [MagazineBlock]) -> [SectionRow] {
-        switch model.photoLayoutMode {
-        case .magazine:
-            return blocks.map { .block($0) }
-        case .alignedGrid:
-            return [.grid(blocks)]
-        }
+        [.grid(blocks)]
     }
 
     /// Items that carry a capture date, oldest first.
@@ -980,10 +810,9 @@ struct DayMagazineView: View {
 
 // MARK: - Section rows
 
-/// A rendered row inside a section: a time label, magazine block, or aligned photo grid.
+/// A rendered row inside a section: a time label or aligned photo grid.
 private enum SectionRow {
     case label(String)
-    case block(MagazineBlock)
     case grid([MagazineBlock])
 }
 
@@ -1001,13 +830,6 @@ private struct ContentScrollBoundsKey: PreferenceKey {
     static var defaultValue: CGRect? = nil
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = nextValue() ?? value
-    }
-}
-
-private struct BlockPositionKey: PreferenceKey {
-    static var defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
     }
 }
 
