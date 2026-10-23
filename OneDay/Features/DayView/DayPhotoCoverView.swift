@@ -70,14 +70,21 @@ struct PhotoCardSnapBehavior: ScrollTargetBehavior {
 }
 
 /// A damped spring run frame by frame on the UIKit scroll view, so a snap
-/// starts at the finger's velocity, settles with a slight overshoot, and
-/// stops the moment the page is touched again.
+/// starts at the finger's velocity and stops the moment the page is touched
+/// again. Returning to the photo overshoots into a small zoom bounce; rising
+/// to the top lands without overshoot, because bouncing there would wobble
+/// the content under the top bar's title and blur. It taps like a page flip
+/// when the card first reaches its rest.
 @MainActor
 final class PhotoCardSpring: NSObject {
     /// ≈0.41 s response; the damping leaves about 40 pt of overshoot.
     static let stiffness: CGFloat = 235
     static let dampingRatio: CGFloat = 0.57
+    /// Critical damping for the rise to the top.
+    static let risingDampingRatio: CGFloat = 1
     private static let maxVelocity: CGFloat = 4000
+    /// Lighter than a page flip's full-strength tap.
+    static let hapticIntensity: CGFloat = 0.55
 
     private var link: CADisplayLink?
     private weak var scrollView: UIScrollView?
@@ -87,6 +94,10 @@ final class PhotoCardSpring: NSObject {
     private var lastTime: CFTimeInterval = 0
     private var touchReleased = false
     private var pending = false
+    private var arrived = false
+    private var startSide: CGFloat = 0
+    private var rising = false
+    private let haptic = UIImpactFeedbackGenerator(style: .soft)
 
     /// True from the release that will snap until the spring settles or
     /// is interrupted.
@@ -104,6 +115,10 @@ final class PhotoCardSpring: NSObject {
         self.velocity = min(max(velocity, -Self.maxVelocity), Self.maxVelocity)
         position = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
         touchReleased = !scrollView.isTracking
+        startSide = position - target
+        rising = target > position
+        arrived = abs(startSide) < 1
+        if !arrived { haptic.prepare() }
         // Setting the current offset halts the system deceleration.
         scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         let link = CADisplayLink(target: self, selector: #selector(step(_:)))
@@ -134,13 +149,24 @@ final class PhotoCardSpring: NSObject {
         let now = link.targetTimestamp
         var remaining = min(max(now - lastTime, 0), 1.0 / 30)
         lastTime = now
-        let damping = 2 * Self.dampingRatio * Self.stiffness.squareRoot()
+        let ratio = rising ? Self.risingDampingRatio : Self.dampingRatio
+        let damping = 2 * ratio * Self.stiffness.squareRoot()
         while remaining > 0 {
             let h = min(remaining, 1.0 / 240)
             let acceleration = -Self.stiffness * (position - target) - damping * velocity
             velocity += acceleration * h
             position += velocity * h
             remaining -= h
+            // A fast throw can still carry a critically damped spring past.
+            if rising, position >= target {
+                position = target
+                velocity = 0
+                break
+            }
+        }
+        if !arrived, (position - target) * startSide <= 0 {
+            arrived = true
+            haptic.impactOccurred(intensity: Self.hapticIntensity)
         }
         let settled = abs(position - target) < 0.3 && abs(velocity) < 6
         if settled { position = target }
@@ -222,6 +248,40 @@ struct PhotoCardBackground: View {
             .fill(color)
             .padding(.top, DayPhotoCoverView.cardTopInContent(
                 phase: scroll.phase, coverHeight: coverHeight, travel: travel))
+    }
+}
+
+/// Clips content that starts flush with the card to the card's top edge
+/// and corners. The card's edge runs ahead of the content, so content that
+/// draws above its own frame (the map's top extension) follows the edge up.
+struct PhotoCardTopClip: ViewModifier {
+    var scroll: PhotoCoverScrollState?
+    var coverHeight: CGFloat
+    var travel: CGFloat
+
+    func body(content: Content) -> some View {
+        if let scroll {
+            let phase = scroll.phase
+            let lead = travel - DayPhotoCoverView.cardTopInContent(
+                phase: phase, coverHeight: coverHeight, travel: travel)
+            content.clipShape(CardTopShape(
+                lead: lead, radius: DayPhotoCoverView.cardRadius(phase: phase, travel: travel)))
+        } else {
+            content
+        }
+    }
+
+    private struct CardTopShape: Shape {
+        var lead: CGFloat
+        var radius: CGFloat
+
+        func path(in rect: CGRect) -> Path {
+            var extended = rect
+            extended.origin.y -= lead
+            extended.size.height += lead
+            return UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius,
+                                          style: .continuous).path(in: extended)
+        }
     }
 }
 

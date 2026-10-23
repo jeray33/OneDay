@@ -24,6 +24,11 @@ struct DayRouteMapBanner: View {
     /// The page background color used to pre-blend the map snapshot.
     let backgroundColor: Color
     let isDarkPage: Bool
+    /// Extra map drawn above the banner's frame, for a parent that reveals
+    /// it by clipping. The route stays centered in the banner itself.
+    var topExtension: CGFloat = 0
+
+    private static let mapHeight: CGFloat = 240
 
     @State private var snapshot: UIImage?
     @State private var linePoints: [CGPoint] = []
@@ -41,10 +46,12 @@ struct DayRouteMapBanner: View {
         } else {
             VStack(spacing: 0) {
                 GeometryReader { geo in
-                    content(in: geo.size)
-                        .task(id: taskKey(geo.size)) { await makeSnapshot(size: geo.size) }
+                    let size = CGSize(width: geo.size.width, height: geo.size.height + topExtension)
+                    content(in: size)
+                        .task(id: taskKey(size)) { await makeSnapshot(size: size) }
+                        .offset(y: -topExtension)
                 }
-                .frame(height: 240)
+                .frame(height: Self.mapHeight)
 
                 trackText
                 dateTitle
@@ -70,12 +77,14 @@ struct DayRouteMapBanner: View {
         }
         .frame(width: size.width, height: size.height)
         .clipped()
-        // Bottom 40% fades from opaque to transparent, dissolving into the page.
+        // The banner's bottom 40% fades from opaque to transparent,
+        // dissolving into the page.
         .mask(
             LinearGradient(
                 stops: [
                     .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.6),
+                    .init(color: .black,
+                          location: 1 - 0.4 * Self.mapHeight / max(size.height, Self.mapHeight)),
                     .init(color: .clear, location: 1.0)
                 ],
                 startPoint: .top,
@@ -246,13 +255,17 @@ struct DayRouteMapBanner: View {
         // banner while leaving a bit more breathing room toward the bottom edge.
         let latDelta = max((maxLat - minLat) * 2.0, 0.008)
         let lonDelta = max((maxLon - minLon) * 1.8, 0.008)
+        // The top extension widens the latitude span at the same scale and
+        // moves the center north so the banner's own part is unchanged.
+        let extensionRatio = topExtension / Self.mapHeight
         let shiftedCenter = CLLocationCoordinate2D(
-            latitude: latCenter + latDelta * 0.10,
+            latitude: latCenter + latDelta * (0.10 + extensionRatio / 2),
             longitude: lonCenter
         )
         return MKCoordinateRegion(
             center: shiftedCenter,
-            span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta)
+            span: MKCoordinateSpan(latitudeDelta: latDelta * (1 + extensionRatio),
+                                   longitudeDelta: lonDelta)
         )
     }
 }

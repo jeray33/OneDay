@@ -104,7 +104,9 @@ struct DayMagazineView: View {
 
                         if photoCover {
                             Color.clear.frame(height: coverSpace)
-                            Color.clear.frame(height: Self.cardTopPadding).id("card_top")
+                            // Without tabs, the content starts flush with the card.
+                            Color.clear.frame(height: model.showsMediaTabs ? Self.cardTopPadding : 0)
+                                .id("card_top")
                         }
 
                         if model.showsMediaTabs {
@@ -129,8 +131,13 @@ struct DayMagazineView: View {
                                               dateFont: model.coverDateFont.font(SectionTitleSize.small.size),
                                               blendMode: model.mapBlendMode,
                                               backgroundColor: model.pageBackgroundColor,
-                                              isDarkPage: model.pageColorScheme == .dark)
+                                              isDarkPage: model.pageColorScheme == .dark,
+                                              topExtension: photoCover && !model.showsMediaTabs
+                                                  ? coverHeight - coverSpace : 0)
                                 .frame(width: geo.size.width)
+                                .modifier(PhotoCardTopClip(
+                                    scroll: photoCover && !model.showsMediaTabs ? coverScroll : nil,
+                                    coverHeight: coverHeight, travel: coverSpace))
                         }
 
                         if usesContinuousPlaceCards {
@@ -202,8 +209,10 @@ struct DayMagazineView: View {
                     scrubber.updateRawOffset(offset)
                 }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.contentInsets.top
-                        > coverSpace + DayPageHeader.titleRevealOffset
+                    // The card's top rest is exactly `coverSpace`, so the
+                    // title must already show there, not only past it.
+                    let reveal = photoCover ? coverSpace - 1 : DayPageHeader.titleRevealOffset
+                    return geometry.contentOffset.y + geometry.contentInsets.top > reveal
                 } action: { _, scrolled in
                     headerTitleVisible = scrolled
                 }
@@ -783,6 +792,7 @@ struct DayMagazineView: View {
             coverScroll.spring.start(on: scrollView, to: target, velocity: 0)
             return
         }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: PhotoCardSpring.hapticIntensity)
         // Longer trips take longer, so a far snap does not look rushed.
         let distance = abs(target - scrolled) / travel
         let response = 0.55 + 0.3 * Double(distance)
