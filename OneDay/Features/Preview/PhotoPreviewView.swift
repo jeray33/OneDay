@@ -25,6 +25,7 @@ struct PhotoPreviewView: View {
     @AppStorage("OneDay.previewSwipeGlossLevel") private var swipeGlossLevel = SwipeGlossLevel.medium.rawValue
     @AppStorage("OneDay.previewSwipeSpeedBiasEnabled") private var swipeSpeedBiasEnabled = false
     @AppStorage("OneDay.previewSwipeSpeedBiasLevel") private var swipeSpeedBiasLevel = SwipeSpeedBiasLevel.medium.rawValue
+    @AppStorage(PreviewBackground.storageKey) private var savedBackground = PreviewBackground.day.rawValue
 
     @State private var selection: String
     // Reuse page preloads without blanking the stationary footer on selection.
@@ -36,7 +37,7 @@ struct PhotoPreviewView: View {
     @State private var sharingContent: PreparedPhotoShare?
     @State private var sharePreparationID: UUID?
     @State private var sharePreparationTask: Task<Void, Never>?
-    @State private var dynamicBg: Color?
+    @State private var dynamicGradient = BackCoverGradient.gradient()
     @State private var showAlbumConfig = false
     @State private var tagAlbums: [AlbumInfo] = []
     @State private var membershipIDs: Set<String> = []
@@ -195,18 +196,47 @@ struct PhotoPreviewView: View {
         "\(currentItem?.contentVersion ?? "")|\(scenePhase == .active && isSessionOpen && !isClosing)|\(videoRetryID)"
     }
 
+    private var previewBackground: PreviewBackground {
+        PreviewBackground(savedValue: savedBackground)
+    }
+
+    private var previewColorScheme: ColorScheme {
+        previewBackground == .immersive ? .dark : model.pageColorScheme
+    }
+
+    private var controlsColor: Color {
+        previewBackground == .immersive ? .white : .black
+    }
+
+    private var backgroundRequestID: String {
+        "\(previewBackground.rawValue)|\(currentItem?.contentVersion ?? "")"
+    }
+
     var body: some View {
         GeometryReader { geometry in
             previewContent(size: geometry.size)
         }
         .ignoresSafeArea()
+        .environment(\.colorScheme, previewColorScheme)
+    }
+
+    private var previewBackdrop: some View {
+        Group {
+            if previewBackground == .immersive {
+                LinearGradient(
+                    gradient: dynamicGradient,
+                    startPoint: .top, endPoint: .bottom)
+            } else {
+                model.pageBackgroundColor
+            }
+        }
+        .ignoresSafeArea()
+        .opacity(sessionOpacity * Double(1 - dragProgress))
     }
 
     private func previewContent(size: CGSize) -> some View {
         ZStack {
-            (dynamicBg ?? model.pageBackgroundColor)
-                .ignoresSafeArea()
-                .opacity(sessionOpacity * Double(1 - dragProgress))
+            previewBackdrop
 
             TabView(selection: $selection) {
                 ForEach(visibleItems) { item in
@@ -286,6 +316,7 @@ struct PhotoPreviewView: View {
             AlbumConfigSheet(model: model) {
                 refreshTagAlbums()
             }
+            .environment(\.colorScheme, model.pageColorScheme)
         }
         .sheet(isPresented: $showPendingDelete) {
             PendingDeleteSheet(
@@ -299,6 +330,7 @@ struct PhotoPreviewView: View {
                     Task { await confirmPendingDelete(selectedIDs: selectedIDs) }
                 }
             )
+            .environment(\.colorScheme, model.pageColorScheme)
         }
         .alert("将旋转保存到照片图库？", isPresented: $showRotationConfirmation) {
             Button("取消", role: .cancel) { rotationConfirmationItem = nil }
@@ -392,7 +424,9 @@ struct PhotoPreviewView: View {
                 imageCategoryOverride = ImageClassificationStore.shared.override(for: item.asset.localIdentifier)
                 Task { await OtherImageClassificationService.shared.classify([item.asset]) }
             }
-            await updateDynamicBackground()
+        }
+        .task(id: backgroundRequestID) {
+            await updatePreviewGradient()
         }
         .task(id: videoRequestID) {
             guard scenePhase == .active, isSessionOpen, !isClosing else { return }
@@ -485,7 +519,7 @@ struct PhotoPreviewView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             if let item = currentItem {
-                PreviewInfoView(item: item, model: model,
+                PreviewInfoView(item: item,
                                 place: item.location == nil ? nil : previewPlaces[item.id]) {
                     requestFlip(toBack: true)
                 }
@@ -531,11 +565,17 @@ struct PhotoPreviewView: View {
         }
     }
 
-    private func updateDynamicBackground() async {
-        guard let item = currentItem else { return }
-        let color = await model.photoDerivedBackground(for: item)
-        guard !Task.isCancelled, currentItem?.contentVersion == item.contentVersion else { return }
-        withAnimation(.easeInOut(duration: 0.45)) { dynamicBg = color }
+    private func updatePreviewGradient() async {
+        let requestID = backgroundRequestID
+        guard previewBackground == .immersive, let item = currentItem else { return }
+        let gradient = await model.previewGradient(for: item)
+        // Rapid paging, edits, or changing the menu must not apply an old color.
+        guard !Task.isCancelled, backgroundRequestID == requestID else { return }
+        // Keep the displayed gradient while loading, then blend directly to
+        // the new photo instead of flashing the neutral fallback in between.
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) {
+            dynamicGradient = gradient
+        }
     }
 
     private func requestClose() {
@@ -744,6 +784,16 @@ struct PhotoPreviewView: View {
                         }
                     }
                     Divider()
+                    Menu("背景") {
+                        Picker("背景", selection: Binding(
+                            get: { previewBackground },
+                            set: { savedBackground = $0.rawValue }
+                        )) {
+                            ForEach(PreviewBackground.allCases) { background in
+                                Text(background.label).tag(background)
+                            }
+                        }
+                    }
                     Menu("横滑视觉效果") {
                         Toggle(isOn: $swipeYawEnabled) {
                             Label("Y轴转角", systemImage: "rotate.3d")
@@ -827,7 +877,7 @@ struct PhotoPreviewView: View {
     private func icon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 16, weight: .bold))
-            .foregroundStyle(.black)
+            .foregroundStyle(controlsColor)
             .frame(width: 40, height: 40)
             .glassEffect(.regular.interactive(), in: .circle)
     }
@@ -843,7 +893,7 @@ struct PhotoPreviewView: View {
         if let text = toastText {
             Text(text)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.black)
+                .foregroundStyle(controlsColor)
                 .padding(.horizontal, 14)
                 .frame(height: 32)
                 .background(.ultraThinMaterial, in: Capsule())
@@ -870,7 +920,7 @@ struct PhotoPreviewView: View {
                      : (currentItem?.isForeignShared == true ? "他人共享的照片不能删除" : "这张照片不能删除"))
                     .font(.system(size: 13, weight: .semibold))
             }
-            .foregroundStyle(.black)
+            .foregroundStyle(controlsColor)
             .padding(.horizontal, 14)
             .frame(height: 32)
             .background(.ultraThinMaterial, in: Capsule())
@@ -897,7 +947,7 @@ struct PhotoPreviewView: View {
                     let canFavorite = item.sharedCapabilities.canFavorite
                     Image(systemName: fav ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(fav ? Theme.accent : .black.opacity(canFavorite ? 1 : 0.35))
+                        .foregroundStyle(fav ? Theme.accent : controlsColor.opacity(canFavorite ? 1 : 0.35))
                         .frame(width: 40, height: 40)
                         .glassEffect(.regular.interactive(), in: .circle)
                         .contentTransition(.symbolEffect(.replace))
@@ -908,7 +958,7 @@ struct PhotoPreviewView: View {
                     } label: {
                         Image(systemName: "arrow.uturn.backward")
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(controlsColor)
                             .frame(width: 40, height: 40)
                             .glassEffect(.regular.interactive(), in: .circle)
                     }
@@ -920,7 +970,7 @@ struct PhotoPreviewView: View {
                 } label: {
                     Image(systemName: model.showAlbumTagBar ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.plus")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.black)
+                        .foregroundStyle(controlsColor)
                         .frame(width: 40, height: 40)
                         .glassEffect(.regular.interactive(), in: .circle)
                 }

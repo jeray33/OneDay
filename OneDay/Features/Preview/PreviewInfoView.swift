@@ -2,13 +2,13 @@ import SwiftUI
 
 /// A single stationary information block shared by all preview pages.
 struct PreviewInfoView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let item: PhotoItem
-    let model: DayViewModel
     let place: String?
     var onFlipRequest: () -> Void
 
     private var captionColor: Color {
-        model.pageColorScheme == .dark ? .white : Color(white: 0.15)
+        colorScheme == .dark ? .white : Color(white: 0.15)
     }
 
     private var dateLine: String {

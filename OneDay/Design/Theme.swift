@@ -17,126 +17,6 @@ enum Theme {
     }
 }
 
-enum PhotoShadowLevel: String, CaseIterable, Identifiable {
-    case none, extraFine, fine, small, medium, mediumLarge, large, max
-
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .none:        return "无投影"
-        case .extraFine:   return "极细"
-        case .fine:        return "细小"
-        case .small:       return "较小"
-        case .medium:      return "中等"
-        case .mediumLarge: return "稍大"
-        case .large:       return "较大"
-        case .max:         return "最大"
-        }
-    }
-
-    /// Multiplier for every photo-shadow component. Max preserves the current effect.
-    var scale: CGFloat {
-        switch self {
-        case .none:        return 0
-        case .extraFine:   return 0.15
-        case .fine:        return 0.28
-        case .small:       return 0.42
-        case .medium:      return 0.58
-        case .mediumLarge: return 0.72
-        case .large:       return 0.86
-        case .max:         return 1
-        }
-    }
-}
-
-enum PhotoBorderWidth: String, CaseIterable, Identifiable {
-    case none, thin, medium, thick, max
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .none:   return "无"
-        case .thin:   return "细"
-        case .medium: return "中"
-        case .thick:  return "厚"
-        case .max:    return "最厚"
-        }
-    }
-    /// Multiplier applied to each photo's base border width.
-    var scale: CGFloat {
-        switch self {
-        case .none:   return 0
-        case .thin:   return 0.33
-        case .medium: return 0.56
-        case .thick:  return 0.78
-        case .max:    return 1.0
-        }
-    }
-}
-
-enum PhotoCornerRadius: String, CaseIterable, Identifiable {
-    case none, slight, small, medium, large, xlarge
-    var id: String { rawValue }
-    var value: CGFloat {
-        switch self {
-        case .none:   return 0
-        case .slight: return 4
-        case .small:  return 8
-        case .medium: return 14
-        case .large:  return 22
-        case .xlarge: return 32
-        }
-    }
-    var label: String {
-        switch self {
-        case .none:   return "无"
-        case .slight: return "轻微 4"
-        case .small:  return "小 8"
-        case .medium: return "中 14"
-        case .large:  return "大 22"
-        case .xlarge: return "最大 32"
-        }
-    }
-}
-
-/// Original map colors or a grayscale map blended into the page background.
-enum MapBlendMode: String, CaseIterable, Identifiable {
-    case normal, multiply, overlay, softLight, colorBurnDodge
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .normal:         return "默认"
-        case .multiply:       return "正片叠底"
-        case .overlay:        return "叠加"
-        case .softLight:      return "柔光"
-        case .colorBurnDodge: return "颜色加深/减淡"
-        }
-    }
-
-    /// Blend mode applied on light pages.
-    var lightBlendMode: BlendMode {
-        switch self {
-        case .normal:         return .normal
-        case .multiply:       return .multiply
-        case .overlay:        return .overlay
-        case .softLight:      return .softLight
-        case .colorBurnDodge: return .colorBurn
-        }
-    }
-
-    /// Blend mode applied on dark pages (after optional color inversion).
-    var darkBlendMode: BlendMode {
-        switch self {
-        case .normal:         return .normal
-        case .multiply:       return .screen
-        case .overlay:        return .overlay
-        case .softLight:      return .softLight
-        case .colorBurnDodge: return .colorDodge
-        }
-    }
-}
-
 /// Sort order for the "rewind" time-travel tunnel: today/newest first, then either
 /// descending chronologically (reverse) or shuffled (random).
 enum RewindSortOrder: String, CaseIterable, Identifiable {
@@ -338,12 +218,6 @@ enum DateText {
         return calendar
     }
 
-    /// Cover top caption, e.g. "2 年前的一天".
-    static func coverCaption(_ date: Date) -> String? {
-        guard let rel = relativeCaption(date) else { return "今天的一天" }
-        return "\(rel)的一天"
-    }
-
     /// Big date rendered with dot separators, e.g. "2024.03.31".
     static func dottedDate(_ date: Date) -> String {
         let c = components(date)
@@ -355,23 +229,4 @@ enum DateText {
         return String(format: "%02d.%02d", c.month, c.day)
     }
 
-    /// Relative distance from `date` to now: years, else months, else days.
-    static func relativeCaption(_ date: Date) -> String? {
-        let now = Date()
-        let parts = Calendar.current.dateComponents([.year, .month, .day], from: date, to: now)
-        if let years = parts.year, years >= 1 { return "\(years) 年前" }
-        if let months = parts.month, months >= 1 { return "\(months) 个月前" }
-        if let days = parts.day, days >= 1 { return "\(days) 天前" }
-        return nil
-    }
-
-    /// A longer, editorial caption for the back cover: combines relative distance
-    /// with weekday for a "this very day" feel.
-    static func backCoverCaption(_ date: Date) -> String {
-        let wd = weekday(date)
-        if let rel = relativeCaption(date) {
-            return "那个 \(rel) 的\(wd)"
-        }
-        return "那个\(wd)"
-    }
 }

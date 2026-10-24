@@ -419,3 +419,17 @@ private struct PhotoCoverContent: View {
         }
     }
 }
+
+/// Shares the timeline date transition without requiring a separate cover page.
+private struct OptionalMatchedDate: ViewModifier {
+    var namespace: Namespace.ID?
+    var isSource: Bool
+
+    func body(content: Content) -> some View {
+        if let namespace {
+            content.matchedGeometryEffect(id: "flowDate", in: namespace, isSource: isSource)
+        } else {
+            content
+        }
+    }
+}

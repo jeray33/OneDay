@@ -1,7 +1,7 @@
 import XCTest
 @testable import MediaFilter
 
-final class DayCoverStyleTests: XCTestCase {
+final class CoverRelativeCaptionTests: XCTestCase {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
@@ -40,9 +40,4 @@ final class DayCoverStyleTests: XCTestCase {
         XCTAssertEqual(caption(date(2024, 3, 31), now: date(2026, 10, 24)), "2年前的一天")
     }
 
-    func testStyleDefaultsToMinimal() {
-        XCTAssertEqual(DayCoverStyle(savedValue: nil), .minimal)
-        XCTAssertEqual(DayCoverStyle(savedValue: "bogus"), .minimal)
-        XCTAssertEqual(DayCoverStyle(savedValue: "photo"), .photo)
-    }
 }

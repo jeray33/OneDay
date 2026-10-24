@@ -3,9 +3,9 @@ import MapKit
 import CoreLocation
 
 /// Full-width trajectory map banner shown at the top of the photo page.
-/// Renders an original-color or grayscale `MKMapSnapshotter` image
-/// using the user's chosen `MapBlendMode`, with the day's trajectory drawn on a
-/// Canvas in the brand blues. The bottom 40% fades to transparent via a linear
+/// Renders an unmodified system map snapshot in the selected native style,
+/// with the day's trajectory drawn on a Canvas in the brand blues.
+/// The bottom 40% fades to transparent via a linear
 /// mask so the map dissolves into the page. Below the map, a location track text
 /// shows the sequence of stop names; when there are
 /// multiple stops, each dot is enlarged and drawn with its sequence number.
@@ -16,11 +16,7 @@ struct DayRouteMapBanner: View {
     /// Display names for each stop (resolved titles, or "定位中…" / "地点 N"
     /// placeholders), used to render the location track text below the map.
     let stopNames: [String]
-    /// Whether to keep original colors or blend into the page background.
-    let blendMode: MapBlendMode
-    /// The page background color used to pre-blend the map snapshot.
-    let backgroundColor: Color
-    let isDarkPage: Bool
+    let mapStyle: RouteMapStyle
     /// Extra map drawn above the banner's frame, for a parent that reveals
     /// it by clipping. The route stays centered in the banner itself.
     var topExtension: CGFloat = 0
@@ -56,7 +52,10 @@ struct DayRouteMapBanner: View {
     }
 
     private func taskKey(_ size: CGSize) -> String {
-        "\(locations.count)-\(stopCoordinates.count)-\(blendMode.rawValue)-\(colorString(backgroundColor))-\(Int(size.width))x\(Int(size.height))"
+        let points = (coordinates + stopCoordinates)
+            .map { "\($0.latitude),\($0.longitude)" }
+            .joined(separator: ";")
+        return "\(mapStyle.rawValue)-\(locations.count)-\(points)-\(Int(size.width))x\(Int(size.height))"
     }
 
     @ViewBuilder
@@ -144,7 +143,7 @@ struct DayRouteMapBanner: View {
     private func makeSnapshot(size: CGSize) async {
         guard size.width > 1, size.height > 1 else { return }
         let options = MKMapSnapshotter.Options()
-        options.mapType = blendMode == .normal ? .mutedStandard : .standard
+        options.mapType = mapStyle.mapType
         options.region = region
         options.size = size
         options.pointOfInterestFilter = .excludingAll
@@ -157,73 +156,15 @@ struct DayRouteMapBanner: View {
                 cont.resume(returning: snap)
             }
         }
-        guard let result else { return }
+        guard let result, !Task.isCancelled else { return }
         let lines = coordinates.map { result.point(for: $0) }
         let stops = stopCoordinates.map { result.point(for: $0) }
-        let blended: UIImage
-        if blendMode == .normal {
-            blended = result.image
-        } else {
-            let grayscale = grayscaleImage(from: result.image)
-            let mode = isDarkPage ? blendMode.darkBlendMode : blendMode.lightBlendMode
-            blended = blendImage(grayscale, with: backgroundColor, mode: mode)
-        }
         await MainActor.run {
-            self.snapshot = blended
+            guard !Task.isCancelled else { return }
+            self.snapshot = result.image
             self.linePoints = lines
             self.stopPoints = stops
         }
-    }
-
-    /// Desaturates the map snapshot so the map blends cleanly with the page background.
-    private func grayscaleImage(from image: UIImage) -> UIImage {
-        guard let ciImage = CIImage(image: image) else { return image }
-        let filter = CIFilter(name: "CIColorControls")!
-        filter.setValue(ciImage, forKey: kCIInputImageKey)
-        filter.setValue(0.0, forKey: kCIInputSaturationKey)
-        guard let output = filter.outputImage,
-              let cgImage = CIContext().createCGImage(output, from: output.extent) else {
-            return image
-        }
-        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
-    }
-
-    /// Blends the grayscale map snapshot with a solid page background color using
-    /// Core Image so the map appears fused into the page, not layered on top of it.
-    private func blendImage(_ image: UIImage, with color: Color, mode: BlendMode) -> UIImage {
-        guard let inputImage = CIImage(image: image) else { return image }
-        let background = solidColorImage(color: UIColor(color), extent: inputImage.extent)
-
-        let filterName: String
-        switch mode {
-        case .multiply:     filterName = "CIMultiplyCompositing"
-        case .screen:       filterName = "CIScreenBlendMode"
-        case .overlay:      filterName = "CIOverlayBlendMode"
-        case .softLight:    filterName = "CISoftLightBlendMode"
-        case .colorBurn:    filterName = "CIColorBurnBlendMode"
-        case .colorDodge:   filterName = "CIColorDodgeBlendMode"
-        default:            filterName = "CISourceOverCompositing"
-        }
-
-        let filter = CIFilter(name: filterName)!
-        filter.setValue(inputImage, forKey: kCIInputImageKey)
-        filter.setValue(background, forKey: kCIInputBackgroundImageKey)
-        guard let output = filter.outputImage,
-              let cgImage = CIContext().createCGImage(output, from: output.extent) else {
-            return image
-        }
-        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
-    }
-
-    private func solidColorImage(color: UIColor, extent: CGRect) -> CIImage {
-        CIImage(color: CIColor(color: color)).cropped(to: extent)
-    }
-
-    private func colorString(_ color: Color) -> String {
-        let uiColor = UIColor(color)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        guard uiColor.getRed(&r, green: &g, blue: &b, alpha: &a) else { return "unknown" }
-        return String(format: "%02X%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255), Int(a * 255))
     }
 
     // MARK: Region
@@ -253,16 +194,5 @@ struct DayRouteMapBanner: View {
             span: MKCoordinateSpan(latitudeDelta: latDelta * (1 + extensionRatio),
                                    longitudeDelta: lonDelta)
         )
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func `if`(_ condition: Bool, transform: (Self) -> some View) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self
-        }
     }
 }

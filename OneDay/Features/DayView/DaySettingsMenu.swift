@@ -11,13 +11,14 @@ extension EnvironmentValues {
     }
 }
 
-/// Shared settings menu used by the cover, photo page, and back cover.
+/// Shared settings menu used by the photo page and back cover.
 /// Provides a consistent ellipsis button that opens the full settings menu.
 struct DaySettingsMenu: View {
     let model: DayViewModel
     var tint: Color = Theme.ink
     @AppStorage(CaptureClock.enabledKey) private var localCaptureTime = true
     @Environment(\.dayPhotoViewportWidth) private var photoViewportWidth
+    @State private var showsDataAttribution = false
 
     var body: some View {
         Menu {
@@ -34,28 +35,19 @@ struct DaySettingsMenu: View {
                     NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
                 }
             ))
-            optionPicker("封面",
-                       binding: Binding(get: { model.coverStyle }, set: { model.coverStyle = $0 }),
-                       labelOf: { $0.label })
-            Menu("封底") {
-                optionPicker("翻页",
-                           binding: Binding(get: { model.backCoverTransition },
-                                            set: { model.backCoverTransition = $0 }),
-                           labelOf: { $0.label })
-                optionPicker("背景",
-                           binding: Binding(get: { model.backCoverBackground },
-                                            set: { model.backCoverBackground = $0 }),
-                           labelOf: { $0.label })
-            }
+            Toggle("说明", isOn: Binding(
+                get: { model.showPhotoCaptions },
+                set: { model.showPhotoCaptions = $0 }
+            ))
             Menu("背景") {
-                Picker("", selection: Binding(
-                    get: { model.background },
-                    set: { model.background = $0 }
-                )) {
-                    ForEach(PageBackground.allCases) { option in
-                        Text(option.label).tag(option)
-                    }
-                }
+                optionPicker("内容",
+                             binding: Binding(get: { model.background },
+                                              set: { model.background = $0 }),
+                             labelOf: { $0.label })
+                optionPicker("封底",
+                             binding: Binding(get: { model.backCoverBackground },
+                                              set: { model.backCoverBackground = $0 }),
+                             labelOf: { $0.label })
             }
             Menu("布局") {
                 Menu("排列") {
@@ -296,10 +288,6 @@ struct DaySettingsMenu: View {
                 }
             }
             Menu("按钮") {
-                Toggle("底部工具栏", isOn: Binding(
-                    get: { model.showBottomToolbar },
-                    set: { model.showBottomToolbar = $0 }
-                ))
                 Toggle("段落刻度", isOn: Binding(
                     get: { model.showScrubberSectionMarks },
                     set: { model.showScrubberSectionMarks = $0 }
@@ -308,45 +296,19 @@ struct DaySettingsMenu: View {
                     get: { model.scrubberTickHaptics },
                     set: { model.scrubberTickHaptics = $0 }
                 ))
-                Toggle("系统滚动条", isOn: Binding(
-                    get: { model.showDayScrollIndicator },
-                    set: { model.showDayScrollIndicator = $0 }
-                ))
-                Toggle("文字导航", isOn: Binding(
-                    get: { model.showTextDayNavigation },
-                    set: { model.showTextDayNavigation = $0 }
-                ))
             }
             if model.hasAnyLocation {
-                Menu("地图") {
-                    Toggle("轨迹地图", isOn: Binding(
-                        get: { model.showPhotoMap },
-                        set: { model.showPhotoMap = $0 }
-                    ))
-                    Menu("地图融合") {
-                        ForEach(MapBlendMode.allCases) { mode in
-                            Button {
-                                model.mapBlendMode = mode
-                            } label: {
-                                if model.mapBlendMode == mode {
-                                    Label(mode.label, systemImage: "checkmark")
-                                } else {
-                                    Text(mode.label)
-                                }
-                            }
-                        }
-                    }
-                }
+                optionPicker("地图",
+                             binding: Binding(get: { model.routeMapStyle },
+                                              set: { model.routeMapStyle = $0 }),
+                             labelOf: { $0.label })
             }
-            Toggle("说明", isOn: Binding(
-                get: { model.showPhotoCaptions },
-                set: { model.showPhotoCaptions = $0 }
-            ))
             // Required by the bundled GeoNames data's CC BY 4.0 license:
             // source, license, and that the data was modified.
-            Section("地名与时区数据来自 GeoNames，依据 CC BY 4.0 许可使用，经筛选和压缩处理") {
-                Link("GeoNames 官网", destination: URL(string: "https://www.geonames.org")!)
-                Link("CC BY 4.0 许可", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/deed.zh-hans")!)
+            Section {
+                Button("数据与许可") {
+                    showsDataAttribution = true
+                }
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -354,6 +316,9 @@ struct DaySettingsMenu: View {
                 .foregroundStyle(tint)
                 .frame(width: 38, height: 38)
                 .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .sheet(isPresented: $showsDataAttribution) {
+            GeoNamesAttributionSheet()
         }
     }
 
@@ -410,6 +375,46 @@ struct DaySettingsMenu: View {
 
     static func spacingLabel(_ spacing: CGFloat) -> String {
         "\(Int(spacing)) pt"
+    }
+}
+
+private struct GeoNamesAttributionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(attribution)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(24)
+            }
+            .navigationTitle("数据与许可")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.height(220), .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var attribution: AttributedString {
+        var text = AttributedString("地名与时区数据来自 ")
+        var source = AttributedString("GeoNames")
+        source.link = URL(string: "https://www.geonames.org")
+        source.underlineStyle = .single
+        text.append(source)
+        text.append(AttributedString("，依据 "))
+        var license = AttributedString("CC BY 4.0")
+        license.link = URL(string: "https://creativecommons.org/licenses/by/4.0/deed.zh-hans")
+        license.underlineStyle = .single
+        text.append(license)
+        text.append(AttributedString(" 许可使用，经筛选和压缩处理。"))
+        return text
     }
 }
 

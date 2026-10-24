@@ -4,8 +4,8 @@ import XCTest
 
 final class PageBackgroundTests: XCTestCase {
     func testOnlyRetainedBackgroundsAreSelectable() {
-        XCTAssertEqual(PageBackground.allCases, [.paper, .pureWhite, .bright])
-        XCTAssertEqual(PageBackground.allCases.map(\.label), ["白色", "纯白色", "明快"])
+        XCTAssertEqual(PageBackground.allCases, [.pureWhite, .paper, .bright])
+        XCTAssertEqual(PageBackground.allCases.map(\.label), ["白色", "浅灰", "明快"])
     }
 
     func testRetainedSelectionsKeepTheirStoredIdentity() {
@@ -27,6 +27,10 @@ final class PageBackgroundTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let obsolete = [
+            "OneDay.coverStyle": "minimal",
+            "OneDay.backCoverBackground": "white",
+            "OneDay.backCoverTransition": "reveal",
+            "OneDay.backCoverReducedMotion": "followThenFade",
             "OneDay.coverBackgroundMode": "vibrant",
             "OneDay.coverMode": "scattered",
             "OneDay.photoLayoutMode": "magazine",
@@ -74,6 +78,27 @@ final class PageBackgroundTests: XCTestCase {
             XCTAssertNil(defaults.object(forKey: "OneDay.rewindMode"))
             XCTAssertEqual(defaults.string(forKey: "OneDay.rewindSortOrder"), "random")
             XCTAssertEqual(defaults.string(forKey: "OneDay.tunnelTapMode"), "photo")
+        }
+    }
+
+    func testRemovedCoverChoicesAreDiscardedForAllSavedModes() {
+        let suite = "PageBackgroundTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("bright2", forKey: "OneDay.pageBackground")
+        defaults.set("impact", forKey: "OneDay.coverDateFont")
+        for value in ["minimal", "photo", "tinted", "white", "gray", "black",
+                      "immersive", "reveal", "sync", "invalid"] {
+            for key in ["OneDay.coverStyle", "OneDay.backCoverBackground", "OneDay.backCoverTransition"] {
+                defaults.set(value, forKey: key)
+            }
+            DayAppearancePreferences.migrateLegacySettings(in: defaults)
+            DayAppearancePreferences.migrateLegacySettings(in: defaults)
+            for key in ["OneDay.coverStyle", "OneDay.backCoverBackground", "OneDay.backCoverTransition"] {
+                XCTAssertNil(defaults.object(forKey: key))
+            }
+            XCTAssertEqual(defaults.string(forKey: "OneDay.pageBackground"), "bright2")
+            XCTAssertEqual(defaults.string(forKey: "OneDay.coverDateFont"), "impact")
         }
     }
 }

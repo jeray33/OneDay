@@ -3,6 +3,7 @@ import SwiftUI
 /// Horizontal strip of album chips shown at the bottom of photo preview.
 /// Leading chip opens configuration; other chips toggle membership for the current photo.
 struct AlbumTagBar: View {
+    @Environment(\.colorScheme) private var colorScheme
     let albums: [AlbumInfo]
     /// Album ids that currently contain the previewed photo.
     let membershipIDs: Set<String>
@@ -13,6 +14,8 @@ struct AlbumTagBar: View {
     var onConfigure: () -> Void
     var onTapAlbum: (AlbumInfo) -> Void
     @State private var flashAlbumID: String?
+
+    private var foregroundColor: Color { colorScheme == .dark ? .white : .black }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -31,7 +34,7 @@ struct AlbumTagBar: View {
         Button(action: onConfigure) {
             Image(systemName: "gearshape.fill")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.black)
+                .foregroundStyle(foregroundColor)
                 .frame(width: 30, height: 28)
                 .background(.ultraThinMaterial, in: Capsule())
         }
@@ -59,7 +62,7 @@ struct AlbumTagBar: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(.black.opacity(isReadOnly ? 0.45 : 1))
+            .foregroundStyle(foregroundColor.opacity(isReadOnly ? 0.45 : 1))
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(.ultraThinMaterial, in: Capsule())
@@ -100,7 +103,7 @@ struct AlbumTagBar: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(.black.opacity(isReadOnly ? 0.45 : 1))
+            .foregroundStyle(foregroundColor.opacity(isReadOnly ? 0.45 : 1))
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(

@@ -26,10 +26,10 @@ struct DayBackCoverView: View {
             let topInset = topSafeAreaInset()
             ZStack {
                 Group {
-                    if let gradient = model.backCoverGradient {
-                        LinearGradient(gradient: gradient, startPoint: .top, endPoint: .bottom)
+                    if let background = model.backCoverBackground.pageBackground {
+                        model.backgroundColor(for: background)
                     } else {
-                        model.backCoverBackgroundColor
+                        LinearGradient(gradient: model.backCoverGradient, startPoint: .top, endPoint: .bottom)
                     }
                 }
                 .ignoresSafeArea()

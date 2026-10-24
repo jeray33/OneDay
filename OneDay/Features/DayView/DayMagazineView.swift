@@ -6,7 +6,6 @@ struct DayMagazineView: View {
     var model: DayViewModel
     var dateNamespace: Namespace.ID
     var dateIsSource: Bool
-    var contentRevealed: Bool
     var onClose: () -> Void
     var prevDate: Date? = nil
     var nextDate: Date? = nil
@@ -35,7 +34,7 @@ struct DayMagazineView: View {
     @Namespace private var previewNamespace
     @State private var coverScroll = PhotoCoverScrollState()
 
-    @State private var revealContent = false
+    @State private var shouldRevealContent = false
     @State private var pinchScale: CGFloat = 1.0
     @State private var pinchBaseline: CGFloat = 1.0
 
@@ -59,10 +58,6 @@ struct DayMagazineView: View {
     @State private var scrollPosition = ScrollPosition()
     @State private var bottomBarHeight: CGFloat = 0
 
-    private var shouldRevealContent: Bool {
-        contentRevealed && revealContent
-    }
-
     /// Uses the cached inset when available, falling back to a live read.
     private var stableTopInsetValue: CGFloat {
         stableTopInset > 0 ? stableTopInset : topSafeAreaInset()
@@ -71,24 +66,21 @@ struct DayMagazineView: View {
     var body: some View {
         GeometryReader { geo in
             let gridRevision = gridLayoutRevision(viewportWidth: geo.size.width)
-            let photoCover = model.usesPhotoCover
             let coverHeight = (geo.size.height * 2 / 3).rounded()
             let headerHeight = DayPageHeader.height(topInset: stableTopInsetValue)
             // Content starts below the header bar, so the card's rest
             // position is reached by this much leading space.
-            let coverSpace = photoCover ? max(0, coverHeight - headerHeight) : 0
+            let coverSpace = max(0, coverHeight - headerHeight)
             ScrollViewReader { proxy in
               ZStack {
-                if photoCover {
-                    DayPhotoCoverView(model: model, scroll: coverScroll,
-                                      width: geo.size.width, visibleHeight: coverHeight,
-                                      travel: coverSpace,
-                                      dateNamespace: coverDateMatched ? dateNamespace : nil,
-                                      dateIsSource: dateIsSource)
-                        .task(id: model.instanceID) { await model.prepareEditorial() }
-                    PhotoCardBackdrop(scroll: coverScroll, coverHeight: coverHeight,
-                                      travel: coverSpace, color: model.pageBackgroundColor)
-                }
+                DayPhotoCoverView(model: model, scroll: coverScroll,
+                                  width: geo.size.width, visibleHeight: coverHeight,
+                                  travel: coverSpace,
+                                  dateNamespace: coverDateMatched ? dateNamespace : nil,
+                                  dateIsSource: dateIsSource)
+                    .task(id: model.instanceID) { await model.prepareEditorial() }
+                PhotoCardBackdrop(scroll: coverScroll, coverHeight: coverHeight,
+                                  travel: coverSpace, color: model.pageBackgroundColor)
                 ScrollView {
                     VStack(spacing: 0) {
                         Color.clear.frame(height: 0)
@@ -102,17 +94,15 @@ struct DayMagazineView: View {
                                 }
                             )
 
-                        if photoCover {
-                            Color.clear.frame(height: coverSpace)
-                            // Without tabs, the content starts flush with the card.
-                            Color.clear.frame(height: model.showsMediaTabs ? Self.cardTopPadding : 0)
-                                .id("card_top")
-                        }
+                        Color.clear.frame(height: coverSpace)
+                        // Without tabs, the content starts flush with the card.
+                        Color.clear.frame(height: model.showsMediaTabs ? Self.cardTopPadding : 0)
+                            .id("card_top")
 
                         if model.showsMediaTabs {
                             mediaTabs
                         }
-                        Color.clear.frame(height: model.showsPhotoMap ? 0 : 24)
+                        Color.clear.frame(height: model.hasAnyLocation ? 0 : 24)
 
                         if model.allItems.isEmpty {
                             Text("这一天没有可显示内容")
@@ -123,18 +113,16 @@ struct DayMagazineView: View {
                                 .padding(.top, 40)
                         }
 
-                        if !model.allItems.isEmpty && model.showsPhotoMap {
+                        if model.hasAnyLocation {
                             DayRouteMapBanner(locations: model.routeLocations,
                                               stopCoordinates: model.routeStopCoordinates,
                                               stopNames: model.routeStopDisplayNames,
-                                              blendMode: model.mapBlendMode,
-                                              backgroundColor: model.pageBackgroundColor,
-                                              isDarkPage: model.pageColorScheme == .dark,
-                                              topExtension: photoCover && !model.showsMediaTabs
+                                              mapStyle: model.routeMapStyle,
+                                              topExtension: !model.showsMediaTabs
                                                   ? coverHeight - coverSpace : 0)
                                 .frame(width: geo.size.width)
                                 .modifier(PhotoCardTopClip(
-                                    scroll: photoCover && !model.showsMediaTabs ? coverScroll : nil,
+                                    scroll: !model.showsMediaTabs ? coverScroll : nil,
                                     coverHeight: coverHeight, travel: coverSpace))
                         }
 
@@ -153,34 +141,27 @@ struct DayMagazineView: View {
                         }
 
                         VStack(spacing: 0) {
-                            if model.showTextDayNavigation {
-                                dayNavigationFooter
-                            }
                             backCoverHint
-                                .padding(.top, model.showTextDayNavigation ? 0 : 96)
+                                .padding(.top, 96)
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
                     }
                     .coordinateSpace(name: "dayContent")
                     // The card must be able to cover the photo completely
                     // even on days with little content.
-                    .frame(minHeight: photoCover ? coverSpace + geo.size.height - headerHeight : 0,
+                    .frame(minHeight: coverSpace + geo.size.height - headerHeight,
                            alignment: .top)
                     .padding(.bottom, 56)
                     .background {
-                        if photoCover {
-                            EnclosingScrollViewReader { coverScroll.scrollView = $0 }
-                                .frame(width: 0, height: 0)
-                        }
+                        EnclosingScrollViewReader { coverScroll.scrollView = $0 }
+                            .frame(width: 0, height: 0)
                     }
                     .background(alignment: .top) {
-                        if photoCover {
-                            PhotoCardBackground(scroll: coverScroll, coverHeight: coverHeight,
-                                                travel: coverSpace,
-                                                color: model.pageBackgroundColor)
-                            // Bottom bounce must not reveal the back page.
-                            .padding(.bottom, -1000)
-                        }
+                        PhotoCardBackground(scroll: coverScroll, coverHeight: coverHeight,
+                                            travel: coverSpace,
+                                            color: model.pageBackgroundColor)
+                        // Bottom bounce must not reveal the back page.
+                        .padding(.bottom, -1000)
                     }
                     .background {
                         GeometryReader { contentGeometry in
@@ -194,7 +175,7 @@ struct DayMagazineView: View {
                     .highPriorityGesture(columnPinchGesture)
                 }
                 .scrollDisabled(scrollDisabled || scrollFrozen || pinchScale != 1.0)
-                .scrollIndicators(model.showDayScrollIndicator ? .automatic : .hidden)
+                .scrollIndicators(.hidden)
                 .scrollPosition($scrollPosition)
                 .scrollTargetBehavior(PhotoCardSnapBehavior(
                     travel: coverSpace, scroll: coverScroll))
@@ -209,29 +190,20 @@ struct DayMagazineView: View {
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     // The card's top rest is exactly `coverSpace`, so the
                     // title must already show there, not only past it.
-                    let reveal = photoCover ? coverSpace - 1 : DayPageHeader.titleRevealOffset
-                    return geometry.contentOffset.y + geometry.contentInsets.top > reveal
+                    geometry.contentOffset.y + geometry.contentInsets.top > coverSpace - 1
                 } action: { _, scrolled in
                     headerTitleVisible = scrolled
                 }
                 .onScrollGeometryChange(for: CGFloat.self) { geometry in
                     geometry.contentOffset.y + geometry.contentInsets.top
                 } action: { _, scrolled in
-                    updatePhotoCover(scrolled: scrolled, active: photoCover,
+                    updatePhotoCover(scrolled: scrolled,
                                      coverHeight: coverHeight, travel: coverSpace)
                 }
-                .onChange(of: photoCover) { _, active in
-                    if !active {
-                        updatePhotoCover(scrolled: 0, active: false,
-                                         coverHeight: coverHeight, travel: coverSpace)
-                    }
-                }
                 .onScrollPhaseChange { oldPhase, newPhase, context in
-                    guard photoCover else { return }
                     snapPhotoCard(from: oldPhase, to: newPhase,
                                   geometry: context.geometry, travel: coverSpace)
                 }
-                .background((photoCover ? Color.clear : model.pageBackgroundColor).ignoresSafeArea())
                 .environment(\.colorScheme, model.pageColorScheme)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
                 // A safe-area bar lets content pass underneath the header.
@@ -244,27 +216,25 @@ struct DayMagazineView: View {
                 }
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .safeAreaBar(edge: .bottom, spacing: 0) {
-                    if model.showBottomToolbar {
-                        DayBottomToolbar(
-                            state: scrubber,
-                            prevDate: prevDate,
-                            nextDate: nextDate,
-                            navLoading: navLoading,
-                            enabled: bottomToolbarEnabled,
-                            showsSectionMarks: model.showScrubberSectionMarks,
-                            tickHapticsEnabled: model.scrubberTickHaptics,
-                            onPrevDay: { onPrevDay?() },
-                            onNextDay: { onNextDay?() },
-                            onScrub: { progress, animated in
-                                scrub(to: progress, animated: animated)
-                            }
-                        )
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                            bottomBarHeight = $0
+                    DayBottomToolbar(
+                        state: scrubber,
+                        prevDate: prevDate,
+                        nextDate: nextDate,
+                        navLoading: navLoading,
+                        enabled: bottomToolbarEnabled,
+                        showsSectionMarks: model.showScrubberSectionMarks,
+                        tickHapticsEnabled: model.scrubberTickHaptics,
+                        onPrevDay: { onPrevDay?() },
+                        onNextDay: { onNextDay?() },
+                        onScrub: { progress, animated in
+                            scrub(to: progress, animated: animated)
                         }
-                        .onDisappear { bottomBarHeight = 0 }
-                        .revealFade(shouldRevealContent, delay: 0.5)
+                    )
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        bottomBarHeight = $0
                     }
+                    .onDisappear { bottomBarHeight = 0 }
+                    .revealFade(shouldRevealContent, delay: 0.5)
                 }
                 .scrollEdgeEffectStyle(.soft, for: .bottom)
                 .coordinateSpace(name: "dayScroll")
@@ -274,11 +244,11 @@ struct DayMagazineView: View {
                 .onChange(of: model.selectedMediaCategory) { _, _ in
                     // With the photo cover, the tabs stay where they are if
                     // the card has not reached the top yet.
-                    if photoCover, coverScroll.scrolled <= coverSpace { return }
+                    if coverScroll.scrolled <= coverSpace { return }
                     var transaction = Transaction()
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
-                        proxy.scrollTo(photoCover ? "card_top" : "scroll_top", anchor: .top)
+                        proxy.scrollTo("card_top", anchor: .top)
                     }
                 }
                 .onPreferenceChange(ContentScrollBoundsKey.self) { bounds in
@@ -384,48 +354,16 @@ struct DayMagazineView: View {
             // hero session might hide it. This prevents the ScrollView content
             // from shifting when the status bar toggles during preview open/close.
             stableTopInset = topSafeAreaInset()
-            revealContent = false
+            shouldRevealContent = false
             try? await Task.sleep(nanoseconds: 160_000_000)
             withAnimation(.spring(response: 0.82, dampingFraction: 0.90)) {
-                revealContent = true
+                shouldRevealContent = true
             }
             await model.prepare()
         }
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
-    }
-
-    // MARK: Day navigation
-
-    private var dayNavigationFooter: some View {
-        HStack {
-            Button { onPrevDay?() } label: {
-                Text(prevDate.map { "← \(Self.navDateText($0))" } ?? "← 无上一次")
-                    .font(Theme.serif(16, weight: .medium))
-                    .foregroundStyle(navLoading || prevDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
-            }
-            .disabled(navLoading || prevDate == nil)
-
-            Spacer()
-
-            Button { onNextDay?() } label: {
-                Text(nextDate.map { "\(Self.navDateText($0)) →" } ?? "无下一次 →")
-                    .font(Theme.serif(16, weight: .medium))
-                    .foregroundStyle(navLoading || nextDate == nil ? Theme.ink.opacity(0.3) : Theme.ink)
-            }
-            .disabled(navLoading || nextDate == nil)
-        }
-        .overlay {
-            if navLoading {
-                ProgressView().scaleEffect(0.7).tint(Theme.ink)
-            }
-        }
-        .padding(.horizontal, 28)
-        .padding(.top, 96)
-        .padding(.bottom, 36)
-        .frame(maxWidth: .infinity)
-        .revealFade(shouldRevealContent, delay: 0.5)
     }
 
     /// Same style as the tunnel page's bottom hint.
@@ -435,11 +373,6 @@ struct DayMagazineView: View {
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity)
             .revealFade(shouldRevealContent, delay: 0.5)
-    }
-
-    private static func navDateText(_ date: Date) -> String {
-        let components = DateText.components(date)
-        return "\(components.year).\(components.month).\(components.day)"
     }
 
     private var selectedBinding: Binding<PhotoItem?> {
@@ -748,20 +681,20 @@ struct DayMagazineView: View {
     private static let cardTopPadding: CGFloat = 18
 
     private func updatePhotoCover(
-        scrolled: CGFloat, active: Bool, coverHeight: CGFloat, travel: CGFloat
+        scrolled: CGFloat, coverHeight: CGFloat, travel: CGFloat
     ) {
         let delta = scrolled - coverScroll.scrolled
         if abs(delta) > 0.5 { coverScroll.lastDelta = delta }
         coverScroll.scrolled = scrolled
-        let pull = active ? max(0, -scrolled) : 0
+        let pull = max(0, -scrolled)
         if coverScroll.pull != pull { coverScroll.pull = pull }
-        let phase = active ? min(max(scrolled, 0), travel) : 0
+        let phase = min(max(scrolled, 0), travel)
         if coverScroll.phase != phase { coverScroll.phase = phase }
         guard let binding = photoCardUnderTopBar else { return }
         let buttonMidY = stableTopInsetValue + DayTopBar.topSpacing + DayTopBar.buttonSize / 2
         let cardTop = DayPhotoCoverView.cardTop(phase: phase, coverHeight: coverHeight,
                                                 travel: travel) + pull
-        let underBar = active && cardTop <= buttonMidY
+        let underBar = cardTop <= buttonMidY
         if binding.wrappedValue != underBar { binding.wrappedValue = underBar }
     }
 

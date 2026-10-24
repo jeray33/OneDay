@@ -2,15 +2,6 @@ import SwiftUI
 import Photos
 import CoreLocation
 
-enum SectionTitleSize: String, CaseIterable, Identifiable {
-    case xsmall, small, medium, large, xlarge
-    var id: String { rawValue }
-    var label: String { ["最小", "较小", "适中", "较大", "最大"][Self.allCases.firstIndex(of: self) ?? 4] }
-    /// Largest is now the previous "small", "large" is the previous "xsmall",
-    /// and the remaining sizes decrease in 6pt steps.
-    var size: CGFloat { [14, 20, 26, 32, 38][Self.allCases.firstIndex(of: self) ?? 4] }
-}
-
 @MainActor
 @Observable
 final class DayViewModel {
@@ -75,14 +66,9 @@ final class DayViewModel {
     private static let gridVerticalSpacingKey = "OneDay.gridVerticalSpacing"
     private static let gridLazyEnabledKey = "OneDay.gridLazyEnabled"
     private static let coverDateFontKey  = CoverDateFont.storageKey
-    private static let bottomToolbarKey  = "OneDay.bottomToolbar"
     private static let scrubberMarksKey  = "OneDay.scrubberSectionMarks"
     private static let scrubberTickHapticsKey = "OneDay.scrubberTickHaptics"
-    private static let dayScrollIndicatorKey = "OneDay.dayScrollIndicator"
-    private static let textDayNavKey     = "OneDay.textDayNavigation"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
-    private static let mapBlendModeKey     = "OneDay.mapBlendMode"
-private static let photoMapKey       = "OneDay.photoMap"
     private static let photoCaptionsKey  = "OneDay.photoCaptions"
 private static let albumTagBarKey    = "OneDay.albumTagBar"
     private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
@@ -92,6 +78,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var background: PageBackground {
         didSet {
             UserDefaults.standard.set(background.rawValue, forKey: Self.backgroundKey)
+        }
+    }
+    var backCoverBackground: BackCoverBackground {
+        didSet {
+            UserDefaults.standard.set(backCoverBackground.rawValue, forKey: BackCoverBackground.storageKey)
         }
     }
     var borderWidth: PhotoBorderWidth {
@@ -123,16 +114,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var placeCardRatio: PlaceCardRatio {
         didSet {
             UserDefaults.standard.set(placeCardRatio.rawValue, forKey: PlaceCardRatio.storageKey)
-        }
-    }
-    var backCoverBackground: BackCoverBackground {
-        didSet {
-            UserDefaults.standard.set(backCoverBackground.rawValue, forKey: BackCoverBackground.storageKey)
-        }
-    }
-    var backCoverTransition: BackCoverTransition {
-        didSet {
-            UserDefaults.standard.set(backCoverTransition.rawValue, forKey: BackCoverTransition.storageKey)
         }
     }
     var placeCardFlow: PlaceCardFlow {
@@ -182,13 +163,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var coverDateFont: CoverDateFont {
         didSet { UserDefaults.standard.set(coverDateFont.rawValue, forKey: Self.coverDateFontKey) }
     }
-    var coverStyle: DayCoverStyle {
-        didSet { UserDefaults.standard.set(coverStyle.rawValue, forKey: DayCoverStyle.storageKey) }
-    }
-    /// Whether the bottom quick-scroll toolbar is shown on the photo page.
-    var showBottomToolbar: Bool {
-        didSet { UserDefaults.standard.set(showBottomToolbar, forKey: Self.bottomToolbarKey) }
-    }
     /// Whether the scrubber draws (and buzzes on) section-start marks.
     var showScrubberSectionMarks: Bool {
         didSet { UserDefaults.standard.set(showScrubberSectionMarks, forKey: Self.scrubberMarksKey) }
@@ -196,18 +170,6 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     /// Whether scrubbing across ordinary ticks gives a light haptic tick.
     var scrubberTickHaptics: Bool {
         didSet { UserDefaults.standard.set(scrubberTickHaptics, forKey: Self.scrubberTickHapticsKey) }
-    }
-    /// Whether the photo page shows the system scroll indicator.
-    var showDayScrollIndicator: Bool {
-        didSet { UserDefaults.standard.set(showDayScrollIndicator, forKey: Self.dayScrollIndicatorKey) }
-    }
-    /// Whether the text previous/next links appear at the end of the photo page.
-    var showTextDayNavigation: Bool {
-        didSet { UserDefaults.standard.set(showTextDayNavigation, forKey: Self.textDayNavKey) }
-    }
-    /// Whether the trajectory map banner appears at the top of the photo page.
-    var showPhotoMap: Bool {
-        didSet { UserDefaults.standard.set(showPhotoMap, forKey: Self.photoMapKey) }
     }
     var sectionTitleSize: SectionTitleSize {
         didSet { UserDefaults.standard.set(sectionTitleSize.rawValue, forKey: Self.sectionTitleSizeKey) }
@@ -235,9 +197,8 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         get { titleSegmentation.timeEnabled }
         set { titleSegmentation.timeEnabled = newValue }
     }
-    /// How the grayscale trajectory map blends into the page background.
-    var mapBlendMode: MapBlendMode {
-        didSet { UserDefaults.standard.set(mapBlendMode.rawValue, forKey: Self.mapBlendModeKey) }
+    var routeMapStyle: RouteMapStyle {
+        didSet { UserDefaults.standard.set(routeMapStyle.rawValue, forKey: RouteMapStyle.storageKey) }
     }
     /// Whether to show each photo's caption/description beneath it in the photo
     /// page and in the photo preview.
@@ -298,70 +259,32 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var tunnelCoverPhoto: PhotoItem?
-    private(set) var coverBackgroundColor: Color = .white
-    private var backCoverTintColor: Color = .white
     private var heroHue: (hue: CGFloat, saturation: CGFloat)?
-    private(set) var coverPlaces: [String] = []
-
-    var coverPhotoCount: Int { editorialItems.filter { !$0.isVideo }.count }
-    var coverVideoCount: Int { editorialItems.filter(\.isVideo).count }
-    var coverRouteLocations: [CLLocation] { editorialItems.compactMap(\.location) }
-    var coverTravelKilometers: Double { routeDistanceKilometers(for: coverRouteLocations) }
-
-    var minimalCoverPhoto: PhotoItem? {
-        tunnelCoverPhoto ?? coverPhotos.first
-    }
-
-    /// Days without any media keep the minimal cover even in photo style.
-    var usesPhotoCover: Bool {
-        coverStyle == .photo && !editorialItems.isEmpty
-    }
 
     /// Nil while the sharpest still is still being ranked. Video-only days
     /// use their first video's still frame.
     var photoCoverItem: PhotoItem? {
-        if let photo = minimalCoverPhoto { return photo }
+        if let photo = tunnelCoverPhoto ?? coverPhotos.first { return photo }
         guard !editorialItems.contains(where: { !$0.isVideo }) else { return nil }
         return editorialItems.first
     }
 
-    var coverColorScheme: ColorScheme {
-        .light
-    }
-    /// Text and icon color on the cover, contrasting with its background.
-    var coverForegroundColor: Color {
-        Color(white: 0.14)
-    }
-    var backCoverBackgroundColor: Color {
-        if let gradient = backCoverGradient { return gradient.stops.last?.color ?? .black }
-        return backCoverBackground.whiteLevel.map { Color(white: $0) } ?? backCoverTintColor
-    }
-    /// Non-nil when the back cover uses the immersive gradient.
-    var backCoverGradient: Gradient? {
-        guard backCoverBackground == .immersive else { return nil }
-        let stops = BackCoverBackground.immersiveStops(
+    var backCoverGradient: Gradient {
+        BackCoverGradient.gradient(
             hue: heroHue.map { Double($0.hue) }, saturation: Double(heroHue?.saturation ?? 0))
-        return Gradient(stops: stops.map {
-            .init(color: Color(hue: $0.hue, saturation: $0.saturation, brightness: $0.brightness),
-                  location: $0.location)
-        })
-    }
-    var backCoverColorScheme: ColorScheme {
-        backCoverBackground.isDark ? .dark : .light
     }
 
-    /// Editorial summary for the back cover.
-    var backCoverSummary: BackCoverSummary {
-        BackCoverSummary(
-            photoCount: coverPhotoCount,
-            videoCount: coverVideoCount,
-            kilometers: coverTravelKilometers,
-            places: coverPlaces
-        )
+    var backCoverColorScheme: ColorScheme {
+        backCoverBackground == .immersive ? .dark : .light
     }
+
     private(set) var brightColor: Color = .white
 
     var pageBackgroundColor: Color {
+        backgroundColor(for: background)
+    }
+
+    func backgroundColor(for background: PageBackground) -> Color {
         switch background {
         case .paper:    return Color(white: 0.96)
         case .pureWhite: return Color(white: 1.0)
@@ -388,6 +311,8 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         self.hiddenIDs = Set(items.filter { $0.isHidden }.map(\.id))
         let saved = UserDefaults.standard.string(forKey: Self.backgroundKey)
         self.background = PageBackground(savedValue: saved)
+        self.backCoverBackground = BackCoverBackground(
+            savedValue: UserDefaults.standard.string(forKey: BackCoverBackground.storageKey))
         let savedWidth = UserDefaults.standard.string(forKey: Self.borderWidthKey)
         self.borderWidth = PhotoBorderWidth(rawValue: savedWidth ?? "") ?? .max
         let savedShadow = UserDefaults.standard.string(forKey: Self.photoShadowKey)
@@ -395,15 +320,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         let savedCornerRadius = UserDefaults.standard.string(forKey: Self.photoCornerRadiusKey)
         self.photoCornerRadius = PhotoCornerRadius(rawValue: savedCornerRadius ?? "") ?? .none
         self.coverDateFont = CoverDateFont(rawValue:         UserDefaults.standard.string(forKey: Self.coverDateFontKey)  ?? "") ?? .impact
-        self.coverStyle = DayCoverStyle(savedValue: UserDefaults.standard.string(forKey: DayCoverStyle.storageKey))
-        self.showBottomToolbar = UserDefaults.standard.object(forKey: Self.bottomToolbarKey) as? Bool ?? true
         self.showScrubberSectionMarks = UserDefaults.standard.object(forKey: Self.scrubberMarksKey) as? Bool ?? true
         self.scrubberTickHaptics = UserDefaults.standard.object(forKey: Self.scrubberTickHapticsKey) as? Bool ?? true
-        self.showDayScrollIndicator = UserDefaults.standard.object(forKey: Self.dayScrollIndicatorKey) as? Bool ?? true
-        self.showTextDayNavigation = UserDefaults.standard.object(forKey: Self.textDayNavKey) as? Bool ?? false
-        self.showPhotoMap = UserDefaults.standard.object(forKey: Self.photoMapKey) as? Bool ?? true
         self.sectionTitleSize = SectionTitleSize(rawValue: UserDefaults.standard.string(forKey: Self.sectionTitleSizeKey) ?? "") ?? .xlarge
-        self.mapBlendMode = MapBlendMode(rawValue: UserDefaults.standard.string(forKey: Self.mapBlendModeKey) ?? "") ?? .multiply
+        self.routeMapStyle = RouteMapStyle(
+            savedValue: UserDefaults.standard.string(forKey: RouteMapStyle.storageKey))
 self.showPhotoCaptions = UserDefaults.standard.object(forKey: Self.photoCaptionsKey) as? Bool ?? false
 self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey) as? Bool ?? true
         let savedDisabled = UserDefaults.standard.stringArray(forKey: Self.disabledAlbumIDsKey) ?? []
@@ -418,12 +339,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         )
         self.placeCardRatio = PlaceCardRatio(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardRatio.storageKey)
-        )
-        self.backCoverBackground = BackCoverBackground(
-            savedValue: UserDefaults.standard.string(forKey: BackCoverBackground.storageKey)
-        )
-        self.backCoverTransition = BackCoverTransition(
-            savedValue: UserDefaults.standard.string(forKey: BackCoverTransition.storageKey)
         )
         self.placeCardFlow = PlaceCardFlow(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardFlow.storageKey)
@@ -651,24 +566,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     private func prepareEditorialContent(generation: UUID) async {
         await computeCoverPhotos(generation: generation)
         guard isCurrentEditorialPreparation(generation) else { return }
-        await computeCoverBackgroundColor(generation: generation)
-        guard isCurrentEditorialPreparation(generation) else { return }
-
-        var stopPlaces: [PlaceNaming.StopPlace] = []
-        for segment in PhotoRoute.segments(for: editorialItems) {
-            let location = CLLocation(
-                latitude: segment.coordinate.latitude, longitude: segment.coordinate.longitude)
-            let resolution = await LocationResolver.shared.place(for: location, priority: .pageContent)
-            guard isCurrentEditorialPreparation(generation) else { return }
-            stopPlaces.append(PlaceNaming.StopPlace(resolution))
-        }
-        var places: [String] = []
-        var seen = Set<String>()
-        for title in PlaceNaming.stopTitles(for: stopPlaces) {
-            guard case .title(let name) = title, seen.insert(name).inserted else { continue }
-            places.append(name)
-        }
-        coverPlaces = places
+        await computeHeroHue(generation: generation)
     }
 
     /// Real library updates replace the source; preview updates wait until close.
@@ -715,7 +613,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         if let tunnelCoverPhoto, !sourceIDs.contains(tunnelCoverPhoto.id) {
             self.tunnelCoverPhoto = nil
         }
-        coverPlaces = []
         Task { await prepareEditorial() }
     }
 
@@ -796,17 +693,14 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         coverPhotos = ranked
     }
 
-    /// Cover and back-cover backgrounds rotate away from the hero photo's hue:
-    /// +30° for the cover and +180° for the back, both in the pastel range.
-    private func computeCoverBackgroundColor(generation: UUID) async {
+    /// Keeps the existing hero-photo source for the immersive back cover.
+    private func computeHeroHue(generation: UUID) async {
         guard let hero = coverPhotos.first ?? editorialItems.first,
               let image = await ImageLoader.shared.thumbnail(
                 asset: hero.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else {
             guard isCurrentEditorialPreparation(generation) else { return }
             withAnimation(.easeInOut(duration: 0.3)) {
-                coverBackgroundColor = .white
-                backCoverTintColor = .white
                 heroHue = nil
             }
             return
@@ -816,19 +710,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
         withAnimation(.easeInOut(duration: 0.3)) {
-            coverBackgroundColor = brightTint(h: shiftedHue(h, by: 30.0 / 360.0), s: s)
-            backCoverTintColor = brightTint(h: shiftedHue(h, by: 0.5), s: s)
             heroHue = (h, s)
         }
     }
 
-    private func shiftedHue(_ hue: CGFloat, by shift: CGFloat) -> CGFloat {
-        var result = (hue + shift).truncatingRemainder(dividingBy: 1)
-        if result < 0 { result += 1 }
-        return result
-    }
-
-    /// Keep the landed tunnel photo as the minimal cover's hero.
+    /// Keep the landed tunnel photo as the photo cover's hero.
     func setTunnelCoverPhoto(from layer: TunnelLayer) {
         let itemsByID = Dictionary(editorialItems.map { ($0.id, $0) },
                                    uniquingKeysWith: { first, _ in first })
@@ -843,19 +729,14 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         routeSegments.map(\.coordinate)
     }
 
-    /// Whether the trajectory map banner should appear at the top of the photo
-    /// page: requires the user setting on and at least one located photo.
-    var showsPhotoMap: Bool { showPhotoMap && hasAnyLocation }
-
-    /// Only the pastel background follows the currently previewed photo.
-    func photoDerivedBackground(for item: PhotoItem) async -> Color? {
-        guard background == .bright else { return nil }
+    /// Uses the current preview item, independent of the day and cover colors.
+    func previewGradient(for item: PhotoItem) async -> Gradient {
         guard let image = await ImageLoader.shared.thumbnail(
                 asset: item.asset, size: CGSize(width: 48, height: 48)),
-              let base = image.averageColor else { return nil }
+              let base = image.averageColor else { return BackCoverGradient.gradient() }
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         base.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return brightTint(h: h, s: s)
+        return BackCoverGradient.gradient(hue: Double(h), saturation: Double(s))
     }
 
     // MARK: Route
@@ -1171,21 +1052,5 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     private func remove(_ item: PhotoItem) {
         removeItems(ids: [item.id])
-    }
-}
-
-// MARK: - Back cover summary
-
-struct BackCoverSummary: Equatable {
-    let photoCount: Int
-    let videoCount: Int
-    let kilometers: Double
-    let places: [String]
-
-    var hasRoute: Bool { kilometers >= 0.05 }
-    var distanceText: String {
-        if kilometers >= 1 { return String(format: "%.1f 公里", kilometers) }
-        if kilometers >= 0.05 { return String(format: "%.0f 米", kilometers * 1000) }
-        return "未远行"
     }
 }

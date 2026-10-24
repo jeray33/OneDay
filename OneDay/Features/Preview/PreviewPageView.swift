@@ -256,6 +256,8 @@ struct PreviewPageView: View {
                                   place: place,
                                   adminLine: placeAdminLine,
                                   placeStatus: placeStatus)
+                // This card stays white even when the surrounding preview is dark.
+                .environment(\.colorScheme, .light)
                 .frame(width: card.width, height: card.height)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .rotation3DEffect(
