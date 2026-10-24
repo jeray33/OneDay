@@ -128,6 +128,38 @@ final class WaterfallLayoutPolicyTests: XCTestCase {
         XCTAssertFalse(WaterfallLayoutPolicy.shouldLoadImage(frame: viewport, viewport: .zero))
     }
 
+    func testImageLoadingKeepsLoadedCellsLongEnoughToAvoidOscillation() {
+        let viewport = CGRect(x: 0, y: 100, width: 400, height: 600)
+        // Within one screen of the viewport: loads either way.
+        let near = CGRect(x: 0, y: 1_200, width: 100, height: 100)
+        XCTAssertTrue(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: near, viewport: viewport, isLoaded: false
+        ))
+        XCTAssertTrue(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: near, viewport: viewport, isLoaded: true
+        ))
+        // Past one screen but within 2.5 screens: only an already-loaded cell
+        // keeps its image, so a boundary cell cannot flip on and off.
+        let mid = CGRect(x: 0, y: 1_800, width: 100, height: 100)
+        XCTAssertFalse(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: mid, viewport: viewport, isLoaded: false
+        ))
+        XCTAssertTrue(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: mid, viewport: viewport, isLoaded: true
+        ))
+        // Past 2.5 screens even a loaded cell releases its image.
+        let far = CGRect(x: 0, y: 2_300, width: 100, height: 100)
+        XCTAssertFalse(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: far, viewport: viewport, isLoaded: true
+        ))
+        XCTAssertFalse(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: far, viewport: viewport, isLoaded: false
+        ))
+        XCTAssertFalse(WaterfallLayoutPolicy.shouldLoadImage(
+            frame: .zero, viewport: viewport, isLoaded: true
+        ))
+    }
+
     func testAnchorPrefersVisibleTopAndUsesLeftmostTie() {
         let viewport = CGRect(x: 0, y: 80, width: 400, height: 600)
         let frames = [

@@ -8,7 +8,14 @@ final class DayViewModel {
     let instanceID = UUID()
     let date: Date
     private(set) var sections: [MagazineSection]
-    private(set) var allItems: [PhotoItem]
+    private(set) var allItems: [PhotoItem] {
+        didSet {
+            gridItemIDs = allItems.map(\.id)
+            gridCaptions = allItems.map(\.caption)
+        }
+    }
+    private(set) var gridItemIDs: [String] = []
+    private(set) var gridCaptions: [String?] = []
     var selected: PhotoItem? {
         didSet {
             guard selected == nil,
@@ -50,6 +57,7 @@ final class DayViewModel {
         coverPhotos = replacing(coverPhotos)
         if tunnelCoverPhoto?.id == id { tunnelCoverPhoto = replacement }
         sourceRevision = UUID()
+        recomputeRouteDerived()
         rebuildSections(animated: false)
     }
 
@@ -153,8 +161,9 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
                                       forKey: Self.gridVerticalSpacingKey)
         }
     }
-    /// Uses LazyVGrid in aligned mode, viewport-based image loading in waterfall
-    /// mode. Turning this off keeps every photo view loaded in either layout.
+    /// Whether the aligned grid uses LazyVGrid (only near-viewport rows are
+    /// instantiated). Images are viewport-gated in every layout regardless;
+    /// this only trades cell materialization for scroll fluidity.
     var gridLazyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(gridLazyEnabled, forKey: Self.gridLazyEnabledKey)
@@ -372,10 +381,13 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.titleSegmentation = segmentation
         self.allItemsUnfiltered = sortedItems
         self.allItems = composedItems
+        self.gridItemIDs = composedItems.map(\.id)
+        self.gridCaptions = composedItems.map(\.caption)
         self.includeSharedAlbums = savedShared
         self.mediaTabs = tabs
         self.selectedMediaCategory = selectedCategory
         self.sections = composedSections
+        recomputeRouteDerived()
         // Old multi-select choices no longer control the day body.
         UserDefaults.standard.removeObject(forKey: "OneDay.dayMediaCategories")
         if segmentation.form == .card {
@@ -482,6 +494,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             brightColor = .white
         }
         allItems = filtered
+        recomputeRouteDerived()
         rebuildSections(animated: animated)
     }
 
@@ -617,52 +630,100 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// Loads captions for all photos asynchronously and updates `allItems`.
+    ///
+    /// Native captions and cached values cost a selector call and two
+    /// dictionary probes, so they are read for the whole day up front. The
+    /// embedded-metadata fallback reads whole image files, so it runs strictly
+    /// bounded (four at a time), local-only, and never re-attempts an asset
+    /// this session has already ruled out.
     private func loadPhotoCaptions(generation: UUID? = nil) async {
         let items = allItems
         guard !items.isEmpty else { return }
 
-        let pairs = await withTaskGroup(of: (Int, String?).self) { group in
-            for (index, item) in items.enumerated() {
-                group.addTask {
-                    let caption = await PhotoCaptionManager.shared.caption(for: item.asset)
-                    return (index, caption)
-                }
+        var captionsByID: [String: String] = [:]
+        for item in items {
+            guard isCurrentFilterPreparation(generation) else { return }
+            if let caption = await PhotoCaptionManager.shared.caption(
+                for: item.asset, embeddedFallback: false) {
+                captionsByID[item.id] = caption
             }
-            var results: [(Int, String?)] = []
-            for await result in group { results.append(result) }
-            return results
+        }
+        if !captionsByID.isEmpty {
+            guard isCurrentFilterPreparation(generation) else { return }
+            applyCaptions(captionsByID)
         }
 
-        guard isCurrentFilterPreparation(generation) else { return }
-        var captionsByID: [String: String] = [:]
-        for (index, caption) in pairs where items.indices.contains(index) {
-            if let caption { captionsByID[items[index].id] = caption }
+        // The embedded fallback only applies to caption-less images.
+        let pending = items.filter {
+            captionsByID[$0.id] == nil && $0.asset.mediaType == .image
         }
-        var updated = allItems
-        for index in updated.indices {
-            if let caption = captionsByID[updated[index].id] {
-                updated[index].caption = caption
+        guard !pending.isEmpty else { return }
+
+        var embedded: [String: String] = [:]
+        var next = 0
+        await withTaskGroup(of: (String, String?).self) { group in
+            @MainActor func enqueueNext() {
+                guard !Task.isCancelled, next < pending.count else { return }
+                let item = pending[next]
+                let id = item.id
+                let asset = item.asset
+                next += 1
+                group.addTask {
+                    let caption = await PhotoCaptionManager.shared.caption(
+                        for: asset, allowsNetworkAccess: false)
+                    return (id, caption)
+                }
+            }
+            for _ in 0..<min(4, pending.count) { enqueueNext() }
+            for await (id, caption) in group {
+                if let caption { embedded[id] = caption }
+                enqueueNext()
             }
         }
-        allItems = updated
+        guard !embedded.isEmpty, isCurrentFilterPreparation(generation) else { return }
+        applyCaptions(embedded)
+    }
+
+    /// Propagates found captions into the body items, the unfiltered source,
+    /// and the composed sections — O(n) per collection through the id
+    /// dictionary, writing only where a caption actually changed.
+    private func applyCaptions(_ captionsByID: [String: String]) {
+        guard !captionsByID.isEmpty else { return }
+        var updated = allItems
+        var changed = false
+        for index in updated.indices {
+            guard let caption = captionsByID[updated[index].id],
+                  updated[index].caption != caption else { continue }
+            updated[index].caption = caption
+            changed = true
+        }
+        if changed {
+            allItems = updated
+            recomputeRouteDerived()
+        }
         for index in allItemsUnfiltered.indices {
-            if let caption = captionsByID[allItemsUnfiltered[index].id] {
+            if let caption = captionsByID[allItemsUnfiltered[index].id],
+               allItemsUnfiltered[index].caption != caption {
                 allItemsUnfiltered[index].caption = caption
             }
         }
-
-        // Propagate captions into the composed sections so every rendered copy
-        // of a PhotoItem has the caption.
-        for sIndex in sections.indices {
-            for bIndex in sections[sIndex].blocks.indices {
-                for iIndex in sections[sIndex].blocks[bIndex].items.indices {
-                    let id = sections[sIndex].blocks[bIndex].items[iIndex].id
-                    if let caption = updated.first(where: { $0.id == id })?.caption {
-                        sections[sIndex].blocks[bIndex].items[iIndex].caption = caption
+        // Propagate into the composed sections so every rendered copy of a
+        // PhotoItem carries the caption.
+        var updatedSections = sections
+        var sectionsChanged = false
+        for sIndex in updatedSections.indices {
+            for bIndex in updatedSections[sIndex].blocks.indices {
+                for iIndex in updatedSections[sIndex].blocks[bIndex].items.indices {
+                    let id = updatedSections[sIndex].blocks[bIndex].items[iIndex].id
+                    if let caption = captionsByID[id],
+                       updatedSections[sIndex].blocks[bIndex].items[iIndex].caption != caption {
+                        updatedSections[sIndex].blocks[bIndex].items[iIndex].caption = caption
+                        sectionsChanged = true
                     }
                 }
             }
         }
+        if sectionsChanged { sections = updatedSections }
     }
 
     private func computePageColor(generation: UUID? = nil) async {
@@ -722,12 +783,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// True when at least one located photo/video exists (map is worth showing).
-    var hasAnyLocation: Bool { !routeLocations.isEmpty }
+    var hasAnyLocation: Bool { routeFacts().hasAnyLocation }
 
     /// Centroid coordinate of each route stop (one dot per stop on the map).
-    var routeStopCoordinates: [CLLocationCoordinate2D] {
-        routeSegments.map(\.coordinate)
-    }
+    var routeStopCoordinates: [CLLocationCoordinate2D] { routeFacts().coordinates }
 
     /// Uses the current preview item, independent of the day and cover colors.
     func previewGradient(for item: PhotoItem) async -> Gradient {
@@ -750,18 +809,55 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// missing entry means the stop is still resolving.
     private var segmentPlaces: [String: PlaceNaming.StopPlace] = [:]
 
-    /// Real trajectory: every located photo/video in chronological order.
-    var routeLocations: [CLLocation] {
-        allItems.compactMap(\.location)
+    /// Every route fact derived from the body items and the resolved stop
+    /// names. Recomputed whenever either changes (`recomputeRouteDerived`)
+    /// so layout code reading these stays O(1); the map banner and the cover
+    /// read them on every scroll frame.
+    private struct RouteDerived {
+        let locations: [CLLocation]
+        let segments: [RouteSegment]
+        let stops: [RouteStop]
+        let displayNames: [String]
+        let coordinates: [CLLocationCoordinate2D]
+        let kilometers: Double
+        let hasAnyLocation: Bool
     }
+
+    private var routeDerived: RouteDerived?
+
+    /// Rebuilds the derived route facts. Called at every point the body items
+    /// or resolved stop names change, never from a read.
+    private func recomputeRouteDerived() {
+        let items = allItems
+        let locations = items.compactMap(\.location)
+        let segments = PhotoRoute.segments(for: items)
+        let stops = Self.mergedStops(for: segments, places: segmentPlaces)
+        routeDerived = RouteDerived(
+            locations: locations,
+            segments: segments,
+            stops: stops,
+            displayNames: Self.displayNames(for: stops),
+            coordinates: segments.map(\.coordinate),
+            kilometers: routeDistanceKilometers(for: locations),
+            hasAnyLocation: !locations.isEmpty)
+    }
+
+    private func routeFacts() -> RouteDerived {
+        if let routeDerived { return routeDerived }
+        recomputeRouteDerived()
+        return routeDerived ?? RouteDerived(
+            locations: [], segments: [], stops: [], displayNames: [],
+            coordinates: [], kilometers: 0, hasAnyLocation: false)
+    }
+
+    /// Real trajectory: every located photo/video in chronological order.
+    var routeLocations: [CLLocation] { routeFacts().locations }
 
     /// Geographic clustering of located items into ordered stops (route mode:
     /// a returning location yields a new stop). A new stop starts when an item
     /// is farther than 200m from the running centroid of the
     /// current stop.
-    var routeSegments: [RouteSegment] {
-        PhotoRoute.segments(for: allItems)
-    }
+    var routeSegments: [RouteSegment] { routeFacts().segments }
 
     /// A displayed route stop. Consecutive segments that resolve to the exact
     /// same title merge into one stop; consecutive unresolvable stops merge
@@ -783,10 +879,16 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
     }
 
-    var routeStops: [RouteStop] {
-        let segments = routeSegments
+    var routeStops: [RouteStop] { routeFacts().stops }
+
+    /// Consecutive segments that resolve to the exact same title merge into
+    /// one stop; consecutive unresolvable ones stay separate. Only two real,
+    /// identical names merge; loading or unavailable stops never do.
+    private static func mergedStops(
+        for segments: [RouteSegment], places: [String: PlaceNaming.StopPlace]
+    ) -> [RouteStop] {
         guard !segments.isEmpty else { return [] }
-        let titles = PlaceNaming.stopTitles(for: segments.map { segmentPlaces[$0.id] ?? .loading })
+        let titles = PlaceNaming.stopTitles(for: segments.map { places[$0.id] ?? .loading })
         var stops: [RouteStop] = []
         for (segment, title) in zip(segments, titles) {
             let state: RouteStop.NameState
@@ -795,8 +897,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             case .title(let name): state = .resolved(name)
             case .unavailable: state = .unavailable
             }
-            // Only two real, identical names merge; loading or unavailable
-            // stops always stay separate.
             if let last = stops.last, let lastName = last.name, case .resolved(let name) = state,
                lastName == name {
                 stops[stops.count - 1] = RouteStop(id: last.id, nameState: last.nameState,
@@ -812,8 +912,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// Fully materialized stop names for the map banner:
     /// resolved titles, "定位中…" while resolving, and "地点 N" only once the
     /// geocoder has definitively failed for that stop this session.
-    var routeStopDisplayNames: [String] {
-        routeStops.enumerated().map { index, stop in
+    var routeStopDisplayNames: [String] { routeFacts().displayNames }
+
+    private static func displayNames(for stops: [RouteStop]) -> [String] {
+        stops.enumerated().map { index, stop in
             switch stop.nameState {
             case .resolved(let title): return title
             case .loading: return "定位中…"
@@ -822,7 +924,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
     }
 
-    var hasRoute: Bool { routeStops.count >= 2 }
+    var hasRoute: Bool { routeFacts().stops.count >= 2 }
 
     /// The block that contains a given photo id, used to silently scroll the
     /// day page so the preview's current photo cell is on screen for the hero
@@ -848,6 +950,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             let resolution = await LocationResolver.shared.place(for: loc, priority: .pageContent)
             guard isCurrentFilterPreparation(generation) else { return }
             segmentPlaces[segment.id] = PlaceNaming.StopPlace(resolution)
+            recomputeRouteDerived()
         }
         applyPlaceNames()
     }
@@ -878,9 +981,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     /// Total travel distance along the trajectory, in kilometers.
-    var travelKilometers: Double {
-        routeDistanceKilometers(for: routeLocations)
-    }
+    var travelKilometers: Double { routeFacts().kilometers }
 
     private func routeDistanceKilometers(for locations: [CLLocation]) -> Double {
         guard locations.count >= 2 else { return 0 }
@@ -1043,6 +1144,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         allItemsUnfiltered.removeAll { ids.contains($0.id) }
         pendingSourceItems?.removeAll { ids.contains($0.id) }
         allItems.removeAll { ids.contains($0.id) }
+        recomputeRouteDerived()
         favoriteIDs.subtract(ids)
         hiddenIDs.subtract(ids)
         invalidateEditorialPreparation()

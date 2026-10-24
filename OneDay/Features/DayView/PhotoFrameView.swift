@@ -69,7 +69,10 @@ struct PhotoFrameView: View {
             .background {
                 if heroSourceID == item.id {
                     GeometryReader { geo in
-                        let rect = geo.frame(in: .named(heroCoordinateSpace))
+                        // Content space: the rect is stable while the page
+                        // scrolls, so this report only changes when the
+                        // layout itself changes.
+                        let rect = geo.frame(in: .named(dayContentSpace))
                         let scaleX = geo.size.width > 0 ? rect.width / geo.size.width : 1
                         let scaleY = geo.size.height > 0 ? rect.height / geo.size.height : 1
                         Color.clear.preference(
@@ -90,10 +93,17 @@ struct PhotoFrameView: View {
                     .strokeBorder(Theme.ink.opacity(0.15), lineWidth: 1 / max(displayScale, 1))
                     .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(0.16 * Double(shadowLevel.scale)),
-                    radius: 7 * shadowLevel.scale,
-                    x: 0,
-                    y: 4 * shadowLevel.scale)
+            // The shadow hangs from the card silhouette alone rather than the
+            // photo and badge composite, so it is never re-rasterized when the
+            // image or badges update.
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Theme.frame)
+                    .shadow(color: .black.opacity(0.16 * Double(shadowLevel.scale)),
+                            radius: 7 * shadowLevel.scale,
+                            x: 0,
+                            y: 4 * shadowLevel.scale)
+            )
     }
 
     @ViewBuilder
@@ -103,7 +113,7 @@ struct PhotoFrameView: View {
                 .font(.system(size: 7, weight: .bold))
                 .foregroundStyle(.red)
                 .padding(3)
-                .glassEffect(.regular.interactive(),
+                .glassEffect(.regular,
                              in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .padding(4)
                 .transition(.scale.combined(with: .opacity))
@@ -117,7 +127,7 @@ struct PhotoFrameView: View {
                 .font(.system(size: 6, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .padding(3)
-                .glassEffect(.regular.interactive(),
+                .glassEffect(.regular,
                              in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .padding(4)
                 .transition(.scale.combined(with: .opacity))

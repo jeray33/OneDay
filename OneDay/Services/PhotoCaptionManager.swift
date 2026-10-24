@@ -21,15 +21,31 @@ final class PhotoCaptionManager {
     /// Positive-only cache. Absent captions are never cached, so a caption added later in
     /// the Photos app still shows up on the next read.
     private var memoryCache: [String: String] = [:]
+    /// Session-only memo of assets whose embedded metadata was already
+    /// checked and held nothing (asset id → content version), so bulk caption
+    /// loads never re-read whole image files for the same content twice.
+    private var embeddedChecked: [String: String] = [:]
     private static let userDefaultsPrefix = "OneDay.caption."
 
     // MARK: Read
 
     /// Returns the caption for an asset, or nil if none is set.
-    func caption(for asset: PHAsset) async -> String? {
+    ///
+    /// - `embeddedFallback`: also read embedded IPTC/TIFF metadata, which
+    ///   requires the asset's image data. Bulk loads pass `false` for a
+    ///   cheap first pass and run the bounded fallback separately.
+    /// - `allowsNetworkAccess`: the embedded fallback may download the
+    ///   original when it only exists in iCloud; bulk loads skip that.
+    func caption(for asset: PHAsset,
+                 embeddedFallback: Bool = true,
+                 allowsNetworkAccess: Bool = true) async -> String? {
         let id = asset.localIdentifier
 
-        if let native = Self.nativeCaption(for: asset) {
+        let native = await Task.detached(priority: .utility) {
+            Self.nativeCaption(for: asset)
+        }.value
+        guard !Task.isCancelled else { return nil }
+        if let native {
             store(native, for: id)
             return native
         }
@@ -44,17 +60,26 @@ final class PhotoCaptionManager {
             return saved
         }
 
-        if let embedded = await Self.embeddedCaption(for: asset) {
+        guard embeddedFallback else { return nil }
+        // A miss is never persisted, so a caption added in Photos shows up on
+        // the next read; within a session, though, an asset already checked at
+        // this content version is never re-read.
+        if embeddedChecked[id] == asset.contentVersion { return nil }
+
+        if let embedded = await Self.embeddedCaption(
+            for: asset, allowsNetworkAccess: allowsNetworkAccess) {
+            embeddedChecked[id] = nil
             store(embedded, for: id)
             return embedded
         }
-
+        embeddedChecked[id] = asset.contentVersion
         return nil
     }
 
     /// Clears cached captions. Call after photos are edited or replaced.
     func clearCache() {
         memoryCache.removeAll()
+        embeddedChecked.removeAll()
     }
 
     // MARK: - Private: cache
@@ -82,8 +107,8 @@ final class PhotoCaptionManager {
 
     // MARK: - Private: native caption
 
-    private static let descriptionPropertiesSelector = NSSelectorFromString("descriptionProperties")
-    private static let assetDescriptionSelector = NSSelectorFromString("assetDescription")
+    private nonisolated static let descriptionPropertiesSelector = NSSelectorFromString("descriptionProperties")
+    private nonisolated static let assetDescriptionSelector = NSSelectorFromString("assetDescription")
 
     private nonisolated static func nativeCaption(for asset: PHAsset) -> String? {
         guard asset.responds(to: descriptionPropertiesSelector),
@@ -97,12 +122,14 @@ final class PhotoCaptionManager {
 
     // MARK: - Private: embedded metadata fallback
 
-    private nonisolated static func embeddedCaption(for asset: PHAsset) async -> String? {
+    private nonisolated static func embeddedCaption(
+        for asset: PHAsset, allowsNetworkAccess: Bool
+    ) async -> String? {
         guard asset.mediaType == .image else { return nil }
 
         return await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
-            options.isNetworkAccessAllowed = true
+            options.isNetworkAccessAllowed = allowsNetworkAccess
             options.deliveryMode = .fastFormat
             options.resizeMode = .fast
             PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in

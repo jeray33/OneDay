@@ -41,7 +41,7 @@ struct PHImageView: View {
                 animateKenBurns = true
             }
         }
-        .task(id: asset.contentVersion) {
+        .task(id: "\(asset.localIdentifier)|\(asset.contentVersion)") {
             for await frame in ImageLoader.shared.stream(
                 asset: asset,
                 targetSize: targetSize,

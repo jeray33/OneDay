@@ -186,6 +186,10 @@ struct DayMagazineView: View {
                     geometry.contentOffset.y + geometry.contentInsets.top
                 } action: { _, offset in
                     scrubber.updateRawOffset(offset)
+                    frameStore.contentScrollOffset = offset
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, inset in
+                    frameStore.contentTopInset = inset
                 }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     // The card's top rest is exactly `coverSpace`, so the
@@ -277,9 +281,12 @@ struct DayMagazineView: View {
                           let blockID = model.blockID(forItemID: id) else { return }
                     // Only scroll when the target cell is off screen, so
                     // closing the preview preserves a visible cell's position.
-                    if let rect = frameStore.cells[id]?.rect,
-                       rect.midY >= fixedHeaderHeight, rect.midY <= geo.size.height {
-                        return
+                    // Cell frames are content-space; convert before testing.
+                    if let cell = frameStore.cells[id] {
+                        let midY = frameStore.screenRect(for: cell.rect).midY
+                        if midY >= fixedHeaderHeight, midY <= geo.size.height {
+                            return
+                        }
                     }
                     var t = Transaction()
                     t.disablesAnimations = true
@@ -309,13 +316,18 @@ struct DayMagazineView: View {
               }
               .onPreferenceChange(DayGridSnapshotKey.self) { snapshot in
                   guard let snapshot else { return }
+                  // Cell frames arrive in the content coordinate space;
+                  // shift the screen viewport into that same space.
                   let viewport = CGRect(
                       x: 0, y: fixedHeaderHeight, width: geo.size.width,
                       height: max(0, geo.size.height - fixedHeaderHeight - bottomBarHeight)
                   )
+                  let contentViewport = DayContentCoordinates.contentRect(
+                      for: viewport, scrollOffset: frameStore.contentScrollOffset,
+                      topInset: frameStore.contentTopInset)
                   let adjustment = gridAnchorTracker.update(
                       frames: snapshot.frames, revision: snapshot.revision,
-                      viewport: viewport, offset: scrubber.metrics.offset,
+                      viewport: contentViewport, offset: scrubber.metrics.offset,
                       enabled: shouldRevealContent && !scrollDisabled && !scrollFrozen
                           && model.selected == nil
                   )
@@ -329,7 +341,7 @@ struct DayMagazineView: View {
                       if model.gridArrangement == .waterfall, model.selected != nil,
                          let id = model.previewCurrentID,
                          let rect = snapshot.frames[id],
-                         !viewport.contains(CGPoint(x: rect.midX, y: rect.midY)),
+                         !contentViewport.contains(CGPoint(x: rect.midX, y: rect.midY)),
                          let blockID = model.blockID(forItemID: id) {
                           proxy.scrollTo(blockID, anchor: .center)
                       }
@@ -488,8 +500,8 @@ struct DayMagazineView: View {
             verticalSpacing: model.gridVerticalSpacing,
             border: model.borderWidth.rawValue,
             showsCaptions: model.showPhotoCaptions,
-            captions: model.showPhotoCaptions ? model.allItems.map(\.caption) : [],
-            itemIDs: model.allItems.map(\.id),
+            captions: model.showPhotoCaptions ? model.gridCaptions : [],
+            itemIDs: model.gridItemIDs,
             sections: model.sections.map(\.id),
             placeCardIDs: model.sections.compactMap { $0.placeCard?.id },
             cardPhotoFallbacks: Dictionary(uniqueKeysWithValues: model.sections.compactMap { section in
@@ -536,7 +548,7 @@ struct DayMagazineView: View {
             ) {
                 ForEach(entries) { entry in
                     gridEntryCell(entry, width: finalCellWidth, viewportSize: viewportSize,
-                                  usesViewportLoading: true, marksPlaceCards: marksPlaceCards)
+                                  marksPlaceCards: marksPlaceCards, idEveryPhoto: true)
                 }
             }
             .padding(.horizontal, horizontalInset)
@@ -579,24 +591,22 @@ struct DayMagazineView: View {
     @ViewBuilder
     private func gridEntryCell(
         _ entry: DayGridEntry, width: CGFloat, viewportSize: CGSize,
-        usesViewportLoading: Bool = false, marksPlaceCards: Bool = false
+        marksPlaceCards: Bool = false, idEveryPhoto: Bool = false
     ) -> some View {
         switch entry {
         case .photo(let photo):
-            if usesViewportLoading {
-                ViewportPhotoCell(
-                    viewportSize: viewportSize,
-                    lazyEnabled: model.gridLazyEnabled,
-                    forceLoad: heroHiddenID == photo.id || heroRequest?.id == photo.id
-                ) { loadsImage in
-                    photoGridCell(photo.item, width: width, loadsImage: loadsImage)
-                }
-                .id(photo.blockID)
-            } else if photo.startsBlock {
-                photoGridCell(photo.item, width: width)
-                    .id(photo.blockID)
+            // Every layout gates its images on the viewport; the lazy toggle
+            // only decides whether the aligned grid materializes cells lazily.
+            let cell = ViewportPhotoCell(
+                viewportSize: viewportSize,
+                forceLoad: heroHiddenID == photo.id || heroRequest?.id == photo.id
+            ) { loadsImage in
+                photoGridCell(photo.item, width: width, loadsImage: loadsImage)
+            }
+            if idEveryPhoto || photo.startsBlock {
+                cell.id(photo.blockID)
             } else {
-                photoGridCell(photo.item, width: width)
+                cell
             }
         case .placeCard(let card):
             PlaceSectionCardView(

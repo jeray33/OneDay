@@ -1,6 +1,16 @@
 import Foundation
 import CoreGraphics
 
+nonisolated enum DayContentCoordinates {
+    static func screenRect(for rect: CGRect, scrollOffset: CGFloat, topInset: CGFloat) -> CGRect {
+        rect.offsetBy(dx: 0, dy: topInset - scrollOffset)
+    }
+
+    static func contentRect(for rect: CGRect, scrollOffset: CGFloat, topInset: CGFloat) -> CGRect {
+        rect.offsetBy(dx: 0, dy: scrollOffset - topInset)
+    }
+}
+
 nonisolated struct DayGridLayoutRevision: Equatable {
     let instanceID: UUID
     let category: String?

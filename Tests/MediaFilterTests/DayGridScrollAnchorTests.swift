@@ -2,6 +2,16 @@ import XCTest
 @testable import MediaFilter
 
 final class DayGridScrollAnchorTests: XCTestCase {
+    func testContentCoordinatesRoundTripWithInsetAndBounce() {
+        let rect = CGRect(x: 12, y: 900, width: 170, height: 240)
+        for offset: CGFloat in [-70, 0, 420, 1_200] {
+            let screen = DayContentCoordinates.screenRect(for: rect, scrollOffset: offset, topInset: 88)
+            XCTAssertEqual(screen.minY, rect.minY - offset + 88)
+            XCTAssertEqual(DayContentCoordinates.contentRect(
+                for: screen, scrollOffset: offset, topInset: 88), rect)
+        }
+    }
+
     private let instanceID = UUID()
     private let sectionID = UUID()
     private let viewport = CGRect(x: 0, y: 80, width: 400, height: 600)

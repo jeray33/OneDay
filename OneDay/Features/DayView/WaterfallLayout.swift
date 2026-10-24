@@ -79,22 +79,27 @@ struct WaterfallLayout: Layout {
 }
 
 /// Lightweight cells remain laid out off screen so ScrollViewReader can find
-/// every photo. Expensive Photos requests exist only near the viewport.
+/// every photo. Expensive Photos requests exist only near the viewport, with
+/// hysteresis: a cell loads its image within one screen of the viewport and
+/// stays loaded until it drifts past `WaterfallLayoutPolicy.unloadScreens`
+/// screens, so cells sitting at the boundary cannot flip on and off while
+/// scrolling slowly. Every layout uses this gate; the grid's lazy toggle only
+/// decides whether the aligned grid also materializes cells lazily.
 struct ViewportPhotoCell<Content: View>: View {
     let viewportSize: CGSize
-    let lazyEnabled: Bool
     let forceLoad: Bool
     @ViewBuilder var content: (Bool) -> Content
 
-    @State private var nearViewport = false
+    @State private var isLoaded = false
 
     var body: some View {
-        content(!lazyEnabled || nearViewport || forceLoad)
+        content(isLoaded || forceLoad)
             .onGeometryChange(for: Bool.self) { geometry in
                 WaterfallLayoutPolicy.shouldLoadImage(
                     frame: geometry.frame(in: .named(heroCoordinateSpace)),
-                    viewport: CGRect(origin: .zero, size: viewportSize)
+                    viewport: CGRect(origin: .zero, size: viewportSize),
+                    isLoaded: isLoaded
                 )
-            } action: { nearViewport = $0 }
+            } action: { isLoaded = $0 }
     }
 }

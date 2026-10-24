@@ -7,6 +7,12 @@ import Photos
 /// any jump.
 let heroCoordinateSpace = "daySurface"
 
+/// The day page's scroll-content coordinate space. Photo cells report their
+/// frames in it, so the reports stay constant while the page scrolls and only
+/// change when the layout itself changes; on-screen coordinates are derived
+/// on demand (see `HeroFrameStore.screenRect(for:)`).
+let dayContentSpace = "dayContent"
+
 enum HeroPhase {
     case idle
     case openFlying
@@ -32,6 +38,18 @@ struct HeroCellInfo: Equatable {
 /// mutate it in place without invalidating the SwiftUI body.
 final class HeroFrameStore {
     var cells: [String: HeroCellInfo] = [:]
+    /// Writable-space scroll offset of the day page (contentOffset.y plus the
+    /// top content inset), updated every scroll frame. Cells report their
+    /// frames in the content coordinate space; these two values convert them
+    /// back to on-screen coordinates at the moments a flight needs them.
+    var contentScrollOffset: CGFloat = 0
+    var contentTopInset: CGFloat = 0
+
+    /// The on-screen rect for a content-space frame.
+    func screenRect(for rect: CGRect) -> CGRect {
+        DayContentCoordinates.screenRect(
+            for: rect, scrollOffset: contentScrollOffset, topInset: contentTopInset)
+    }
 }
 
 struct HeroCellFrameKey: PreferenceKey {
@@ -237,7 +255,7 @@ struct HeroOverlayView: View {
                     heroFlightBottomBorder = source.bottomBorder
                     heroFlightRadius = source.cornerRadius
                     openedCornerGeometry = source.cornerGeometry
-                    heroFlightRect = source.rect
+                    heroFlightRect = frameStore.screenRect(for: source.rect)
                 } else {
                     heroFlightBorder = 0
                     heroFlightBottomBorder = 0
@@ -315,7 +333,7 @@ struct HeroOverlayView: View {
         cardOpacity = 0
         withAnimation(.easeOut(duration: 0.4)) { sessionOpacity = 0 }
         withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-            heroFlightRect = dest.rect
+            heroFlightRect = frameStore.screenRect(for: dest.rect)
             heroFlightBorder = dest.border
             heroFlightBottomBorder = dest.bottomBorder
             heroFlightRadius = dest.cornerRadius

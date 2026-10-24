@@ -72,10 +72,18 @@ nonisolated enum WaterfallLayoutPolicy {
         )
     }
 
-    static func shouldLoadImage(frame: CGRect, viewport: CGRect) -> Bool {
+    /// How many viewport heights a loaded cell may drift away before its
+    /// image is released. Larger retains more images; smaller re-requests
+    /// more often.
+    static let unloadScreens: CGFloat = 2.5
+
+    /// Image-existence gating with hysteresis: an unloaded cell requests its
+    /// image within one screen of the viewport; a loaded cell keeps it until
+    /// it drifts past `unloadScreens` screens.
+    static func shouldLoadImage(frame: CGRect, viewport: CGRect, isLoaded: Bool = false) -> Bool {
         guard !frame.isEmpty, !viewport.isEmpty else { return false }
-        // One screen of prefetch on either side, without retaining the whole day.
-        return frame.intersects(viewport.insetBy(dx: 0, dy: -viewport.height))
+        let reach = viewport.height * (isLoaded ? unloadScreens : 1)
+        return frame.intersects(viewport.insetBy(dx: 0, dy: -reach))
     }
 
     struct Anchor: Equatable {
