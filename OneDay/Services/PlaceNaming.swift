@@ -7,7 +7,7 @@ import Foundation
 /// pure and unit-testable; `LocationResolver` bridges a `CLPlacemark` here.
 /// `countryCode` carries no display name, so an all-nil set of the other
 /// fields counts as "no result".
-struct PlaceFields: Codable, Equatable, Sendable {
+nonisolated struct PlaceFields: Codable, Equatable, Sendable {
     var areaOfInterest: String?
     var thoroughfare: String?
     var subLocality: String?
@@ -15,6 +15,9 @@ struct PlaceFields: Codable, Equatable, Sendable {
     var administrativeArea: String?
     var country: String?
     var countryCode: String?
+    /// GeoNames and English placemarks cannot use Japanese suffix heuristics.
+    var usesDefaultHierarchy: Bool?
+    var chineseNames: PlaceHierarchy?
 
     var isEmpty: Bool {
         areaOfInterest == nil && thoroughfare == nil && subLocality == nil
@@ -25,7 +28,7 @@ struct PlaceFields: Codable, Equatable, Sendable {
 // MARK: - Hierarchy
 
 /// One display level of a place, finest to coarsest.
-enum PlaceLevel: Int, CaseIterable, Comparable, Sendable {
+nonisolated enum PlaceLevel: Int, CaseIterable, Comparable, Sendable {
     case poi = 0
     case street = 1
     case district = 2
@@ -38,7 +41,7 @@ enum PlaceLevel: Int, CaseIterable, Comparable, Sendable {
 
 /// A place's names normalized into display levels. Countries put names in
 /// different placemark fields, so the mapping is country-specific.
-struct PlaceHierarchy: Equatable, Sendable {
+nonisolated struct PlaceHierarchy: Codable, Equatable, Sendable {
     let poi: String?
     let street: String?
     let district: String?
@@ -76,15 +79,123 @@ enum PlaceLineStatus: Equatable, Sendable {
 /// Pure place-naming rules shared by every surface of the app so one photo
 /// always carries one name: preview bottom, photo back, day page stops,
 /// cover, and history.
-enum PlaceNaming {
+nonisolated enum PlaceNaming {
     /// Resolved answers are reused for coordinates within this distance.
     static let reuseMeters: Double = 50
     /// Initial request plus three retries (2 s / 8 s / 30 s backoff).
     static let maxGeocodeAttempts = 4
+    static let loadingTitle = "……"
+    static let cacheVersion = 4
+
+    enum Resolution: Equatable, Sendable {
+        case resolved(PlaceFields)
+        case noResult
+        case failed
+    }
+
+    /// Only two definitive empty results may become a persistent negative
+    /// cache entry. A provider's network error must not hide the other result.
+    static func combinedResolution(_ primary: Resolution, _ secondary: Resolution) -> Resolution {
+        if case .resolved = primary { return primary }
+        if case .resolved = secondary { return secondary }
+        if primary == .failed || secondary == .failed { return .failed }
+        return .noResult
+    }
+
+    /// GeoNames supplies a final city/town, not a temporary loading label.
+    /// Keep detailed online names and evaluate the offline index only if needed.
+    static func withGeoNamesFallback(
+        _ resolution: Resolution, lookup: () -> PlaceFields?
+    ) -> Resolution {
+        switch resolution {
+        case .resolved(let fields):
+            guard fields.areaOfInterest == nil, fields.thoroughfare == nil,
+                  fields.subLocality == nil, fields.locality == nil else { return resolution }
+            guard let offline = lookup(), let city = offline.locality, !city.isEmpty else { return resolution }
+            var merged = fields
+            merged.locality = city
+            merged.country = fields.country ?? offline.country
+            merged.countryCode = fields.countryCode ?? offline.countryCode
+            return .resolved(merged)
+        case .noResult, .failed:
+            guard let offline = lookup(), let city = offline.locality, !city.isEmpty else { return resolution }
+            return .resolved(offline)
+        }
+    }
+
+    static func resolveWithRetry(
+        lookup: @Sendable () async -> Resolution,
+        canRetry: @Sendable () async -> Bool = { true },
+        wait: @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+    ) async -> Resolution {
+        for attempt in 1...maxGeocodeAttempts {
+            guard !Task.isCancelled else { return .failed }
+            let result = await lookup()
+            guard !Task.isCancelled else { return .failed }
+            guard result == .failed, let delay = retryDelay(afterAttempt: attempt) else { return result }
+            guard await canRetry() else { return .failed }
+            do { try await wait(delay) }
+            catch { return .failed }
+        }
+        return .failed
+    }
+
+    /// Background refinement must not erase a usable city or replace it with
+    /// a coarser/equally precise spelling. Translation may fill an empty line.
+    static func refinedPlace(_ current: StopPlace, with candidate: Resolution) -> StopPlace {
+        guard case .resolved(let next) = candidate, !next.isEmpty else {
+            if case .resolved = current { return current }
+            return .unavailable
+        }
+        guard case .resolved(let previous) = current else { return .resolved(next) }
+        let oldHierarchy = hierarchy(for: previous)
+        let newHierarchy = hierarchy(for: next)
+        let oldLevel = finestLevel(withNameIn: oldHierarchy) ?? .country
+        let newLevel = finestLevel(withNameIn: newHierarchy) ?? .country
+        if newLevel < oldLevel { return .resolved(next) }
+        if newLevel == oldLevel, previous.chineseNames == nil, next.chineseNames != nil,
+           oldHierarchy.name(at: oldLevel) == newHierarchy.name(at: newLevel) {
+            return .resolved(next)
+        }
+        return current
+    }
+
+    struct TitleLines: Equatable {
+        let primary: String
+        let chinese: String?
+
+        init(_ text: String) {
+            let lines = text.split(separator: "\n", maxSplits: 1).map(String.init)
+            primary = lines.first ?? text
+            chinese = lines.count > 1 ? lines[1] : nil
+        }
+
+        /// Single-line contexts (the map's location track) prefer the Chinese
+        /// translation over the native/English name.
+        var chinesePreferred: String { chinese ?? primary }
+    }
+
+    static func bilingualTitle(_ primary: String, chinese: String?) -> String {
+        guard let chinese = chinese?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !chinese.isEmpty, chinese != primary,
+              chinese.range(of: "\\p{Han}", options: .regularExpression) != nil else { return primary }
+        return "\(primary)\n\(chinese)"
+    }
+
+    static func attachingChineseNames(_ chinese: PlaceFields, to primary: PlaceFields) -> PlaceFields {
+        guard chinese.countryCode == nil || primary.countryCode == nil
+                || chinese.countryCode == primary.countryCode else { return primary }
+        var result = primary
+        var translated = chinese
+        translated.usesDefaultHierarchy = primary.usesDefaultHierarchy
+        result.chineseNames = hierarchy(for: translated)
+        return result
+    }
 
     // MARK: Hierarchy mapping
 
     static func hierarchy(for fields: PlaceFields) -> PlaceHierarchy {
+        if fields.usesDefaultHierarchy == true { return defaultHierarchy(fields) }
         switch fields.countryCode?.uppercased() {
         case "CN": return chineseHierarchy(fields)
         case "JP": return japaneseHierarchy(fields)
@@ -233,21 +344,39 @@ enum PlaceNaming {
                 return .loading
             case .unavailable:
                 return .unavailable
-            case .resolved:
+            case .resolved(let fields):
                 guard let h = hierarchies[index] else { return .unavailable }
                 if let poi = h.poi, !poi.isEmpty {
-                    return .title(poi)
+                    return .title(bilingualTitle(poi, chinese: fields.chineseNames?.poi))
                 }
                 let previous = hierarchies[..<index].compactMap { $0 }.last
                 let next = hierarchies[(index + 1)...].lazy.compactMap { $0 }.first
                 let neighbor = previous ?? next
                 let target = neighbor.map { targetLevel(for: [h, $0]) } ?? .street
                 if let name = fallbackName(at: target, in: h) {
-                    return .title(name)
+                    let level = PlaceLevel.allCases.first { h.name(at: $0) == name }
+                    return .title(bilingualTitle(
+                        name, chinese: level.flatMap { fields.chineseNames?.name(at: $0) }))
                 }
                 return .unavailable
             }
         }
+    }
+
+    /// Merge adjacent equal names as soon as they resolve, independently of
+    /// unrelated loading stops. Revisits and unnamed stops remain separate.
+    static func stopGroups(for titles: [StopTitle]) -> [[Int]] {
+        var groups: [[Int]] = []
+        for index in titles.indices {
+            if let last = groups.last?.last,
+               case .title(let previous) = titles[last],
+               case .title(let current) = titles[index], previous == current {
+                groups[groups.count - 1].append(index)
+            } else {
+                groups.append([index])
+            }
+        }
+        return groups
     }
 
     private static func targetLevel(for hierarchies: [PlaceHierarchy]) -> PlaceLevel {
@@ -356,8 +485,9 @@ enum PlaceNaming {
     /// A cached "no result" stays valid for one week, then the coordinate is
     /// retried.
     static func noResultIsFresh(
-        savedAt: Date, now: Date, ttl: TimeInterval = 7 * 24 * 3600
+        savedAt: Date, now: Date, ttl: TimeInterval = 7 * 24 * 3600,
+        storedVersion: Int = cacheVersion
     ) -> Bool {
-        now.timeIntervalSince(savedAt) < ttl
+        storedVersion == cacheVersion && now.timeIntervalSince(savedAt) < ttl
     }
 }

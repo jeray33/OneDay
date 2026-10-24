@@ -78,4 +78,24 @@ final class OfflinePlaceIndexTests: XCTestCase {
         let geneva = index.nearest(latitude: 46.20, longitude: 6.15)!
         XCTAssertEqual(OfflinePlaceIndex.displayName(for: geneva, languageCode: "en", script: nil), "Genève")
     }
+
+    func testBundledGeoNamesFallbackFeedsForeignStopTitlesAndMerging() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("OneDay/Resources/GeoNamesCities.dat")
+        let index = try XCTUnwrap(OfflinePlaceIndex.load(from: url))
+        let coordinates = [(48.8584, 2.2945), (48.8606, 2.3376), (43.6950, 7.2700)]
+        let states = try coordinates.map { latitude, longitude -> PlaceNaming.StopPlace in
+            let place = try XCTUnwrap(index.nearest(latitude: latitude, longitude: longitude))
+            let fields = PlaceFields(
+                locality: OfflinePlaceIndex.displayName(for: place, languageCode: "zh", script: "Hans"),
+                countryCode: place.countryCode)
+            guard case .resolved(let resolved) = PlaceNaming.withGeoNamesFallback(.failed, lookup: { fields })
+            else { throw NSError(domain: "GeoNamesFallbackTest", code: 1) }
+            return .resolved(resolved)
+        }
+        let titles = PlaceNaming.stopTitles(for: states)
+        XCTAssertEqual(titles, [.title("巴黎"), .title("巴黎"), .title("尼斯")])
+        XCTAssertEqual(PlaceNaming.stopGroups(for: titles), [[0, 1], [2]])
+    }
 }

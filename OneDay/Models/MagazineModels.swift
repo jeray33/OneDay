@@ -3,7 +3,7 @@ import CoreLocation
 
 /// One grid photo and its scroll anchor, shared with preview restoration.
 struct MagazineBlock: Identifiable {
-    let id = UUID()
+    var id = UUID()
     var items: [PhotoItem]
 }
 
@@ -53,7 +53,7 @@ enum TimeBand: Int, CaseIterable {
 }
 
 struct MagazineSection: Identifiable {
-    let id = UUID()
+    var id = UUID()
     let band: TimeBand
     let timeText: String
     var placeName: String?

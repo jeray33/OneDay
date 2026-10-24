@@ -20,6 +20,8 @@ struct PhotoFrameView: View {
     var cornerRadius: CGFloat = 0
     /// Keep the full cell geometry when an off-screen waterfall image unloads.
     var loadsImage: Bool = true
+    /// Cached text measurement makes virtual layout independent of cell views.
+    var measuredCaptionHeight: CGFloat? = nil
 
     private let captionFontSize: CGFloat = 12
 
@@ -43,6 +45,7 @@ struct PhotoFrameView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity)
+                    .frame(height: measuredCaptionHeight)
             }
         }
         .frame(width: width)

@@ -12,8 +12,10 @@ final class PlaceSectionCardTests: XCTestCase {
     func testGeocodingChangesNeitherIdentityNorColor() {
         let pending = card()
         let resolved = card(name: "西湖")
-        XCTAssertEqual(pending.title, "定位中…")
+        XCTAssertEqual(pending.title, "……")
+        XCTAssertTrue(pending.isLoading)
         XCTAssertEqual(resolved.title, "西湖")
+        XCTAssertFalse(resolved.isLoading)
         XCTAssertEqual(pending.id, resolved.id)
         XCTAssertEqual(pending.paletteIndex, resolved.paletteIndex)
         XCTAssertEqual(pending.color, resolved.color)
@@ -46,6 +48,7 @@ final class PlaceSectionCardTests: XCTestCase {
         XCTAssertEqual(card(name: "西湖").paletteIndex,
                        card(name: "杭州市西湖区", time: "09:20").paletteIndex)
         XCTAssertEqual(card(name: "地点 1").id, card().id)
+        XCTAssertFalse(card(name: "地点 1").isLoading)
     }
 
     func testPaletteRemainsLightForDarkText() {

@@ -20,6 +20,7 @@ final class DayViewModel {
     private(set) var itemsRevision = UUID()
     var selected: PhotoItem? {
         didSet {
+            schedulePlacePresentation()
             guard selected == nil,
                   pendingClassificationRefresh || pendingSourceItems != nil else { return }
             // Let the hero flight finish restoring its source cell first.
@@ -519,13 +520,11 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Refreshes only body-derived colors, places, and captions.
     fileprivate func reprepareAfterFilterChange(generation: UUID) async {
-        await computePageColor(generation: generation)
-        guard filterPreparationID == generation else { return }
+        async let color: Void = computePageColor(generation: generation)
+        async let captions: Void = loadPhotoCaptions(generation: generation)
         await resolveSegmentPlaces(generation: generation)
-        guard filterPreparationID == generation else { return }
-        await resolvePlaces(generation: generation)
-        guard filterPreparationID == generation else { return }
-        await loadPhotoCaptions(generation: generation)
+        if isCurrentFilterPreparation(generation) { await resolvePlaces(generation: generation) }
+        _ = await (color, captions)
     }
 
     // MARK: Preparation (places, pastel color, and captions)
@@ -536,14 +535,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         classifyDayImages()
         let generation = filterPreparationID
         guard isCurrentFilterPreparation(generation) else { return }
-        await computePageColor(generation: generation)
-        guard isCurrentFilterPreparation(generation) else { return }
-        rebuildSections()
+        rebuildSections(animated: false)
+        async let color: Void = computePageColor(generation: generation)
+        async let captions: Void = loadPhotoCaptions(generation: generation)
         await resolveSegmentPlaces(generation: generation)
-        guard isCurrentFilterPreparation(generation) else { return }
-        await resolvePlaces(generation: generation)
-        guard isCurrentFilterPreparation(generation) else { return }
-        await loadPhotoCaptions(generation: generation)
+        if isCurrentFilterPreparation(generation) { await resolvePlaces(generation: generation) }
+        _ = await (color, captions)
     }
 
     private func classifyDayImages() {
@@ -810,6 +807,72 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// Reverse-geocoded place per route segment, keyed by segment id. A
     /// missing entry means the stop is still resolving.
     private var segmentPlaces: [String: PlaceNaming.StopPlace] = [:]
+    @ObservationIgnored private var segmentPlaceLocations: [String: CLLocation] = [:]
+    @ObservationIgnored private var routePlaceRequestID = UUID()
+    @ObservationIgnored private var routeRefinementTask: Task<Void, Never>?
+    @ObservationIgnored private var placePresentationTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingSegmentPlaces: [String: PlaceNaming.StopPlace] = [:]
+    @ObservationIgnored private var placeInteraction = DayPlaceInteractionState()
+    @ObservationIgnored private var dayViewActive = false
+    @ObservationIgnored var beforePlacePresentation: (() -> Void)?
+    private(set) var placesLayoutRevision = UUID()
+
+    func resumePlaceUpdates() {
+        dayViewActive = true
+        schedulePlacePresentation()
+    }
+
+    func stopPlaceUpdates() {
+        dayViewActive = false
+        routeRefinementTask?.cancel()
+        routeRefinementTask = nil
+        placePresentationTask?.cancel()
+        placePresentationTask = nil
+        beforePlacePresentation = nil
+        placeInteraction = DayPlaceInteractionState()
+    }
+
+    func setPlaceInteraction(_ activity: DayPlaceInteractionState.Activity, active: Bool) {
+        placeInteraction.set(activity, active: active)
+        schedulePlacePresentation()
+    }
+
+    private func stagePlace(_ resolution: LocationResolver.Resolution, for id: String) {
+        let current = pendingSegmentPlaces[id] ?? segmentPlaces[id] ?? .loading
+        let next = PlaceNaming.refinedPlace(current, with: resolution)
+        guard next != current else { return }
+        pendingSegmentPlaces[id] = next
+        schedulePlacePresentation()
+    }
+
+    private func schedulePlacePresentation() {
+        placePresentationTask?.cancel()
+        placePresentationTask = nil
+        guard dayViewActive, placeInteraction.isIdle, selected == nil,
+              !pendingSegmentPlaces.isEmpty else { return }
+        placePresentationTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(180)) }
+            catch { return }
+            guard let self, self.dayViewActive, self.placeInteraction.isIdle,
+                  self.selected == nil, !Task.isCancelled else { return }
+            let next = self.segmentPlaces.merging(self.pendingSegmentPlaces) { _, new in new }
+            self.pendingSegmentPlaces.removeAll()
+            let nextStops = Self.mergedStops(for: self.routeSegments, places: next)
+            let changesLayout = nextStops != self.routeStops
+            if changesLayout { self.beforePlacePresentation?() }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                self.segmentPlaces = next
+                self.recomputeRouteDerived()
+                if changesLayout {
+                    self.placesLayoutRevision = UUID()
+                    self.applyPlaceNames()
+                }
+            }
+            self.placePresentationTask = nil
+        }
+    }
 
     /// Every route fact derived from the body items and the resolved stop
     /// names. Recomputed whenever either changes (`recomputeRouteDerived`)
@@ -862,9 +925,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     var routeSegments: [RouteSegment] { routeFacts().segments }
 
     /// A displayed route stop. Consecutive segments that resolve to the exact
-    /// same title merge into one stop; consecutive unresolvable stops merge
-    /// into one placeholder.
-    struct RouteStop: Identifiable {
+    /// same title merge as they resolve. Unnamed stops retain their identities.
+    struct RouteStop: Identifiable, Equatable {
         enum NameState: Equatable {
             case loading
             case resolved(String)
@@ -876,8 +938,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let itemIDs: [String]
 
         var name: String? {
-            if case .resolved(let title) = nameState { return title }
-            return nil
+            switch nameState {
+            case .resolved(let title): return title
+            case .loading, .unavailable: return nil
+            }
         }
     }
 
@@ -891,36 +955,28 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     ) -> [RouteStop] {
         guard !segments.isEmpty else { return [] }
         let titles = PlaceNaming.stopTitles(for: segments.map { places[$0.id] ?? .loading })
-        var stops: [RouteStop] = []
-        for (segment, title) in zip(segments, titles) {
+        return PlaceNaming.stopGroups(for: titles).map { indices in
+            let first = indices[0]
             let state: RouteStop.NameState
-            switch title {
+            switch titles[first] {
             case .loading: state = .loading
             case .title(let name): state = .resolved(name)
             case .unavailable: state = .unavailable
             }
-            if let last = stops.last, let lastName = last.name, case .resolved(let name) = state,
-               lastName == name {
-                stops[stops.count - 1] = RouteStop(id: last.id, nameState: last.nameState,
-                                                   itemIDs: last.itemIDs + segment.itemIDs)
-            } else {
-                stops.append(RouteStop(id: segment.id, nameState: state,
-                                       itemIDs: segment.itemIDs))
-            }
+            return RouteStop(id: segments[first].id, nameState: state,
+                             itemIDs: indices.flatMap { segments[$0].itemIDs })
         }
-        return stops
     }
 
     /// Fully materialized stop names for the map banner:
-    /// resolved titles, "定位中…" while resolving, and "地点 N" only once the
-    /// geocoder has definitively failed for that stop this session.
+    /// resolved titles and distinct loading/failure placeholders.
     var routeStopDisplayNames: [String] { routeFacts().displayNames }
 
     private static func displayNames(for stops: [RouteStop]) -> [String] {
         stops.enumerated().map { index, stop in
             switch stop.nameState {
             case .resolved(let title): return title
-            case .loading: return "定位中…"
+            case .loading: return PlaceNaming.loadingTitle
             case .unavailable: return "地点 \(index + 1)"
             }
         }
@@ -940,21 +996,69 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         return nil
     }
 
-    /// Resolves every route stop's place once, then applies the resulting
-    /// titles to the already-built sections.
+    /// Foreign seeds come entirely from local GeoNames/cache work. Online
+    /// refinement then runs independently at background priority.
     private func resolveSegmentPlaces(generation: UUID? = nil) async {
         let segments = routeSegments
-        guard !segments.isEmpty else { return }
-        for segment in segments where segmentPlaces[segment.id] == nil {
-            guard isCurrentFilterPreparation(generation) else { return }
-            let loc = CLLocation(latitude: segment.coordinate.latitude,
-                                 longitude: segment.coordinate.longitude)
-            let resolution = await LocationResolver.shared.place(for: loc, priority: .pageContent)
-            guard isCurrentFilterPreparation(generation) else { return }
-            segmentPlaces[segment.id] = PlaceNaming.StopPlace(resolution)
-            recomputeRouteDerived()
+        guard !segments.isEmpty, isCurrentFilterPreparation(generation) else { return }
+        let requestID = UUID()
+        routeRefinementTask?.cancel()
+        pendingSegmentPlaces.removeAll()
+        routePlaceRequestID = requestID
+        let targets = segments.map {
+            (id: $0.id, location: CLLocation(
+                latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude))
         }
-        applyPlaceNames()
+        for target in targets {
+            if let old = segmentPlaceLocations[target.id],
+               old.distance(from: target.location) > PlaceNaming.reuseMeters {
+                segmentPlaces[target.id] = nil
+            }
+            segmentPlaceLocations[target.id] = target.location
+        }
+
+        let resolver = LocationResolver.shared
+        let seeds = await resolver.initialDayPlaces(for: targets.map(\.location))
+        guard isCurrentFilterPreparation(generation), routePlaceRequestID == requestID else { return }
+        for (target, seed) in zip(targets, seeds) {
+            if let fields = seed.fields { stagePlace(.resolved(fields), for: target.id) }
+        }
+        let pending = zip(targets, seeds).filter { $0.1.needsOnline }
+        guard !pending.isEmpty else { return }
+        routeRefinementTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.routePlaceRequestID == requestID { self.routeRefinementTask = nil }
+            }
+            var next = 0
+            await withTaskGroup(of: (String, LocationResolver.Resolution).self) { group in
+                @MainActor func enqueueNext() {
+                    guard !Task.isCancelled, next < pending.count else { return }
+                    let (target, seed) = pending[next]
+                    next += 1
+                    group.addTask {
+                        let resolution: LocationResolver.Resolution
+                        if seed.isForeign {
+                            resolution = await resolver.refineForeignPlace(for: target.location, initial: seed.fields)
+                        } else {
+                            resolution = await resolver.placeWithRetries(
+                                for: target.location, priority: .pageContent, allowsOfflineFallback: true)
+                        }
+                        return (target.id, resolution)
+                    }
+                }
+                for _ in 0..<min(4, pending.count) { enqueueNext() }
+                for await (id, resolution) in group {
+                    guard self.isCurrentFilterPreparation(generation),
+                          self.routePlaceRequestID == requestID, self.dayViewActive else {
+                        group.cancelAll()
+                        break
+                    }
+                    self.stagePlace(resolution, for: id)
+                    enqueueNext()
+                }
+            }
+        }
     }
 
     /// Re-applies resolved stop titles to the sections. When same-titled
@@ -962,9 +1066,23 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// rebuilt without animation; otherwise only the headings update in place
     /// so the layout and scroll position stay untouched.
     private func applyPlaceNames() {
-        let newSections = DaySectionComposer.compose(
+        var newSections = DaySectionComposer.compose(
             allItems,
             policy: titleSegmentation, places: placeGroups())
+        let oldSections = Dictionary(uniqueKeysWithValues: sections.compactMap { section in
+            section.blocks.first?.items.first.map { ($0.id, section.id) }
+        })
+        let oldBlocks = Dictionary(uniqueKeysWithValues: sections.flatMap(\.blocks).compactMap { block in
+            block.items.first.map { ($0.id, block.id) }
+        })
+        for section in newSections.indices {
+            if let first = newSections[section].blocks.first?.items.first,
+               let id = oldSections[first.id] { newSections[section].id = id }
+            for block in newSections[section].blocks.indices {
+                if let first = newSections[section].blocks[block].items.first,
+                   let id = oldBlocks[first.id] { newSections[section].blocks[block].id = id }
+            }
+        }
 
         guard newSections.count == sections.count,
               zip(newSections, sections).allSatisfy({ new, old in

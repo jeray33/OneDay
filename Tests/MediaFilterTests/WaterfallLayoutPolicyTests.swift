@@ -2,6 +2,102 @@ import XCTest
 @testable import MediaFilter
 
 final class WaterfallLayoutPolicyTests: XCTestCase {
+    func testVirtualized480ItemDayOnlySelectsNearbyCells() {
+        let heights = (0..<480).map { CGFloat(90 + ($0 * 73) % 280) }
+        let result = plan(heights, columns: 3)
+        let index = WaterfallLayoutPolicy.VisibilityIndex(frames: result.frames)
+        for y: CGFloat in [0, 8_000, 20_000, result.size.height - 600] {
+            let viewport = CGRect(x: 0, y: y, width: result.size.width, height: 600)
+            let window = WaterfallLayoutPolicy.renderWindow(for: viewport)
+            let visible = index.indices(in: window)
+            XCTAssertLessThan(visible.count, 60)
+            XCTAssertEqual(visible, result.frames.indices.filter { result.frames[$0].intersects(window) })
+            XCTAssertEqual(result.size.height, result.frames.map(\.maxY).max())
+        }
+    }
+
+    func testVisibilityIndexMatchesFullScanAcrossAllColumnCounts() {
+        for columns in 1...6 {
+            let result = plan((0..<480).map { CGFloat(40 + ($0 * 31) % 500) }, columns: columns)
+            let index = WaterfallLayoutPolicy.VisibilityIndex(frames: result.frames)
+            for y in stride(from: CGFloat(-600), through: result.size.height + 600, by: 271) {
+                let viewport = CGRect(x: 0, y: y, width: result.size.width, height: 700)
+                XCTAssertEqual(index.indices(in: viewport),
+                               result.frames.indices.filter { result.frames[$0].intersects(viewport) })
+            }
+        }
+    }
+
+    func testPinnedPreviewCellSurvivesOutsideTheWindow() {
+        let result = plan(Array(repeating: 100, count: 480))
+        let index = WaterfallLayoutPolicy.VisibilityIndex(frames: result.frames)
+        let viewport = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let visible = index.indices(in: viewport, pinned: [479, -1, 999])
+        XCTAssertTrue(visible.contains(479))
+        XCTAssertFalse(visible.contains(-1))
+        XCTAssertFalse(visible.contains(999))
+        XCTAssertEqual(visible, visible.sorted())
+    }
+
+    func testQuantizedWindowCoversViewportAndSmallScrollsReuseIt() {
+        let viewport = CGRect(x: 0, y: 610, width: 400, height: 600)
+        let window = WaterfallLayoutPolicy.renderWindow(for: viewport)
+        XCTAssertTrue(window.contains(viewport))
+        XCTAssertEqual(window, WaterfallLayoutPolicy.renderWindow(for: viewport.offsetBy(dx: 0, dy: 100)))
+        XCTAssertNotEqual(window, WaterfallLayoutPolicy.renderWindow(for: viewport.offsetBy(dx: 0, dy: 310)))
+        XCTAssertEqual(WaterfallLayoutPolicy.renderWindow(for: .zero), .zero)
+    }
+
+    func testPhotoMetricsKeepPosterGeometryIndependentOfCaptionAndLoading() {
+        let plain = WaterfallLayoutPolicy.photoMetrics(width: 160, aspectRatio: 1.5, border: 5, captionHeight: nil)
+        let caption = WaterfallLayoutPolicy.photoMetrics(width: 160, aspectRatio: 1.5, border: 5, captionHeight: 28)
+        XCTAssertEqual(plain.cardHeight, 110)
+        XCTAssertEqual(caption.cardHeight, plain.cardHeight)
+        XCTAssertEqual(caption.height, 144)
+        XCTAssertEqual(WaterfallLayoutPolicy.photoMetrics(
+            width: 160, aspectRatio: .nan, border: 5, captionHeight: nil).height, 160)
+    }
+
+    func testWindowHysteresisAvoidsCellChurnAndStillCoversFastJumps() {
+        var retained = CGRect.zero
+        var changes = 0
+        for y: CGFloat in [599, 601, 599, 601, 590, 610, 1_300, 30_000, 0] {
+            let viewport = CGRect(x: 0, y: y, width: 400, height: 600)
+            let next = WaterfallLayoutPolicy.renderWindow(for: viewport)
+            if WaterfallLayoutPolicy.shouldReplaceRenderWindow(retained, with: next) {
+                retained = next
+                changes += 1
+            }
+            XCTAssertTrue(retained.contains(viewport.insetBy(dx: 0, dy: -290)))
+        }
+        XCTAssertEqual(changes, 4)
+        XCTAssertTrue(WaterfallLayoutPolicy.shouldReplaceRenderWindow(
+            retained, with: CGRect(x: 0, y: 0, width: 800, height: 2_100)))
+    }
+
+    func testMixedCardsCaptionsAndOneColumnKeepOffscreenPositionsAvailable() {
+        let heights: [CGFloat] = [240, 100, 134, 320, 600, 140]
+        for columns in 1...6 {
+            let result = plan(heights, columns: columns)
+            let index = WaterfallLayoutPolicy.VisibilityIndex(frames: result.frames)
+            let viewport = CGRect(x: 0, y: result.frames[4].minY, width: result.size.width, height: 200)
+            XCTAssertTrue(index.indices(in: viewport).contains(4))
+            XCTAssertEqual(result.frames.count, heights.count)
+            XCTAssertEqual(result.frames.map(\.height), heights)
+        }
+    }
+
+    func testOffscreenCenterAndTopTargetsDoNotNeedInstantiatedCells() {
+        let viewport = CGRect(x: 0, y: 1_080, width: 400, height: 600)
+        let target = CGRect(x: 112, y: 20_000, width: 100, height: 200)
+        XCTAssertEqual(DayContentCoordinates.targetOffset(
+            for: target, viewport: viewport, currentOffset: 1_000, anchor: 0.5), 19_720)
+        XCTAssertEqual(DayContentCoordinates.targetOffset(
+            for: target, viewport: viewport, currentOffset: 1_000, anchor: 0), 19_920)
+        XCTAssertNil(DayContentCoordinates.targetOffset(
+            for: .zero, viewport: viewport, currentOffset: 1_000, anchor: 0.5))
+    }
+
     private func plan(
         _ heights: [CGFloat], columns: Int = 2, width: CGFloat = 100,
         horizontal: CGFloat = 12, vertical: CGFloat = 8

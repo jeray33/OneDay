@@ -99,6 +99,17 @@ final class PlaceNamingTests: XCTestCase {
         XCTAssertEqual(PlaceNaming.photoTitle(hongKong), "中環 · Hong Kong")
     }
 
+    // MARK: TitleLines
+
+    func testChinesePreferredTitleUsesTranslationWhenPresent() {
+        XCTAssertEqual(PlaceNaming.TitleLines("Kyoto\n京都").chinesePreferred, "京都")
+        XCTAssertEqual(PlaceNaming.TitleLines("San Francisco").chinesePreferred, "San Francisco")
+        // A Chinese-only title stays as-is; the ellipsis placeholder is untouched.
+        XCTAssertEqual(PlaceNaming.TitleLines("中環").chinesePreferred, "中環")
+        XCTAssertEqual(PlaceNaming.TitleLines(PlaceNaming.loadingTitle).chinesePreferred,
+                       PlaceNaming.loadingTitle)
+    }
+
     // MARK: photoTitle
 
     func testPhotoTitlePrefersPOIAndFallsBackThroughLevels() {
@@ -172,6 +183,207 @@ final class PlaceNamingTests: XCTestCase {
                        [.unavailable, .unavailable])
     }
 
+    func testLoadingUsesOnlyAnEllipsisAndDoesNotInventAName() {
+        XCTAssertEqual(PlaceNaming.loadingTitle, "……")
+        XCTAssertEqual(titles([.loading, .loading]), [.loading, .loading])
+        XCTAssertEqual(names([.loading, .unavailable]), [nil, nil])
+    }
+
+    func testPreciseResultReplacesLoadingWithoutChangingOrder() {
+        let initial = titles([.loading, .loading, .resolved(asakusa)])
+        let updated = titles([.resolved(yiheyuan), .loading, .resolved(asakusa)])
+        XCTAssertEqual(initial[0], .loading)
+        XCTAssertEqual(updated[0], .title("颐和园"))
+        XCTAssertEqual(initial[1...], updated[1...])
+    }
+
+    func testResolvedNeighborsMergeWithoutWaitingForOtherStops() {
+        let partial: [PlaceNaming.StopTitle] = [.title("颐和园"), .title("颐和园"), .loading]
+        XCTAssertEqual(PlaceNaming.stopGroups(for: partial), [[0, 1], [2]])
+    }
+
+    func testCompletedPreciseNeighborsMergeWithoutReordering() {
+        let complete: [PlaceNaming.StopTitle] = [
+            .title("颐和园"), .title("颐和园"), .title("三里屯"), .title("颐和园")
+        ]
+        XCTAssertEqual(PlaceNaming.stopGroups(for: complete), [[0, 1], [2], [3]])
+    }
+
+    func testLoadingAndUnavailableStopsNeverMergeOrBridgeARevisit() {
+        let pending: [PlaceNaming.StopTitle] = [
+            .title("北京市"), .loading, .loading,
+            .unavailable, .unavailable, .title("北京市")
+        ]
+        XCTAssertEqual(PlaceNaming.stopGroups(for: pending), [[0], [1], [2], [3], [4], [5]])
+        XCTAssertEqual(PlaceNaming.stopGroups(for: []), [])
+    }
+
+    func testDomesticAndForeignNamesFollowTheSameMergeRule() {
+        for city in [beijingCity, shanghaiCity,
+                     fields(locality: "San Francisco", country: "United States", countryCode: "US"),
+                     fields(locality: "京都市", country: "日本", countryCode: "JP"),
+                     fields(locality: "Paris", country: "France", countryCode: "FR")] {
+            let result = titles([.resolved(city), .resolved(city), .loading])
+            XCTAssertEqual(PlaceNaming.stopGroups(for: result), [[0, 1], [2]])
+            guard case .title(let name) = result[0] else { return XCTFail("Missing city name") }
+            XCTAssertFalse(name.contains("（"))
+        }
+    }
+
+    func testProviderFailureMustNotBecomeAWeekLongEmptyCacheHit() {
+        XCTAssertEqual(PlaceNaming.combinedResolution(.noResult, .failed), .failed)
+        XCTAssertEqual(PlaceNaming.combinedResolution(.failed, .noResult), .failed)
+        XCTAssertEqual(PlaceNaming.combinedResolution(.failed, .failed), .failed)
+        XCTAssertEqual(PlaceNaming.combinedResolution(.noResult, .noResult), .noResult)
+        for first in [PlaceNaming.Resolution.failed, .noResult] {
+            XCTAssertEqual(PlaceNaming.combinedResolution(first, .resolved(shibuya)), .resolved(shibuya))
+        }
+        XCTAssertEqual(PlaceNaming.combinedResolution(.resolved(yiheyuan), .failed), .resolved(yiheyuan))
+    }
+
+    func testGeoNamesResolvesBothEmptyAndFailedOnlineLookups() {
+        let paris = fields(locality: "巴黎", country: "法国", countryCode: "FR")
+        for result in [PlaceNaming.Resolution.noResult, .failed] {
+            XCTAssertEqual(PlaceNaming.withGeoNamesFallback(result) { paris }, .resolved(paris))
+        }
+    }
+
+    func testGeoNamesDoesNotOverrideDetailedOnlineNamesOrLoadTheIndex() {
+        for place in [yiheyuan, shibuya, sanFrancisco, beijingCity] {
+            let result = PlaceNaming.withGeoNamesFallback(.resolved(place)) {
+                XCTFail("Detailed online results must not query the offline index")
+                return nil
+            }
+            XCTAssertEqual(result, .resolved(place))
+        }
+    }
+
+    func testGeoNamesFillsCountryOnlyHitsWithoutChangingOnlineFields() {
+        let online = fields(administrativeArea: "Île-de-France", country: "法国", countryCode: "FR")
+        let offline = fields(locality: "巴黎", country: "France", countryCode: "FR")
+        XCTAssertEqual(PlaceNaming.withGeoNamesFallback(.resolved(online)) { offline },
+                       .resolved(fields(locality: "巴黎", administrativeArea: "Île-de-France",
+                                        country: "法国", countryCode: "FR")))
+        XCTAssertEqual(online.locality, nil)
+    }
+
+    func testMissingGeoNamesCoveragePreservesTheOriginalOutcome() {
+        for result in [PlaceNaming.Resolution.noResult, .failed, .resolved(fields(country: "法国"))] {
+            XCTAssertEqual(PlaceNaming.withGeoNamesFallback(result) { nil }, result)
+            XCTAssertEqual(PlaceNaming.withGeoNamesFallback(result) { PlaceFields() }, result)
+        }
+    }
+
+    func testGeoNamesTitlesHaveNoBracketsAndMergeWithTheSameRules() {
+        let paris = fields(locality: "巴黎", country: "法国", countryCode: "FR")
+        let fallback = PlaceNaming.withGeoNamesFallback(.failed) { paris }
+        guard case .resolved(let place) = fallback else { return XCTFail("GeoNames did not resolve") }
+        let titles = titles([.resolved(place), .resolved(place), .loading, .resolved(place)])
+        XCTAssertEqual(titles, [.title("巴黎"), .title("巴黎"), .loading, .title("巴黎")])
+        XCTAssertEqual(PlaceNaming.stopGroups(for: titles), [[0, 1], [2], [3]])
+        XCTAssertEqual(PlaceNaming.loadingTitle, "……")
+    }
+
+    private actor LookupScript {
+        let results: [PlaceNaming.Resolution]
+        private(set) var attempts = 0
+        private(set) var delays: [TimeInterval] = []
+
+        init(_ results: [PlaceNaming.Resolution]) { self.results = results }
+
+        func lookup() -> PlaceNaming.Resolution {
+            let result = results[min(attempts, results.count - 1)]
+            attempts += 1
+            return result
+        }
+
+        func wait(_ delay: TimeInterval) { delays.append(delay) }
+    }
+
+    func testTransientFailuresActuallyRetryAndPublishSuccess() async {
+        let script = LookupScript([.failed, .failed, .resolved(shibuya)])
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: { await script.lookup() }, wait: { await script.wait($0) })
+        let attempts = await script.attempts
+        let delays = await script.delays
+        XCTAssertEqual(result, .resolved(shibuya))
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(delays, [2, 8])
+    }
+
+    func testAvailableGeoNamesResultEndsLoadingWithoutUnnecessaryRetryDelays() async {
+        let script = LookupScript([.failed])
+        let paris = fields(locality: "巴黎", country: "法国", countryCode: "FR")
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: {
+                let online = await script.lookup()
+                return PlaceNaming.withGeoNamesFallback(online) { paris }
+            },
+            wait: { await script.wait($0) })
+        let attempts = await script.attempts
+        let delays = await script.delays
+        XCTAssertEqual(result, .resolved(paris))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertTrue(delays.isEmpty)
+    }
+
+    func testRetriesStopAfterFourAttempts() async {
+        let script = LookupScript([.failed])
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: { await script.lookup() }, wait: { await script.wait($0) })
+        let attempts = await script.attempts
+        let delays = await script.delays
+        XCTAssertEqual(result, .failed)
+        XCTAssertEqual(attempts, 4)
+        XCTAssertEqual(delays, [2, 8, 30])
+    }
+
+    func testDefinitiveEmptyResultStopsLoadingWithoutRetrying() async {
+        let script = LookupScript([.noResult])
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: { await script.lookup() }, wait: { await script.wait($0) })
+        let attempts = await script.attempts
+        let delays = await script.delays
+        XCTAssertEqual(result, .noResult)
+        XCTAssertEqual(attempts, 1)
+        XCTAssertTrue(delays.isEmpty)
+    }
+
+    func testExhaustedSharedBudgetDoesNotWaitThroughAnotherRetryCycle() async {
+        let script = LookupScript([.failed])
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: { await script.lookup() }, canRetry: { false },
+            wait: { await script.wait($0) })
+        let attempts = await script.attempts
+        let delays = await script.delays
+        XCTAssertEqual(result, .failed)
+        XCTAssertEqual(attempts, 1)
+        XCTAssertTrue(delays.isEmpty)
+    }
+
+    func testCancellationDuringBackoffStopsFurtherLookups() async {
+        let script = LookupScript([.failed])
+        let result = await PlaceNaming.resolveWithRetry(
+            lookup: { await script.lookup() },
+            wait: { _ in throw CancellationError() })
+        let attempts = await script.attempts
+        XCTAssertEqual(result, .failed)
+        XCTAssertEqual(attempts, 1)
+    }
+
+    func testAlreadyCancelledTaskDoesNotStartALookup() async {
+        let script = LookupScript([.resolved(yiheyuan)])
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await PlaceNaming.resolveWithRetry(
+                lookup: { await script.lookup() }, wait: { await script.wait($0) })
+        }
+        let result = await task.value
+        let attempts = await script.attempts
+        XCTAssertEqual(result, .failed)
+        XCTAssertEqual(attempts, 0)
+    }
+
     // MARK: Geometry
 
     func testRepresentativeCoordinateIsARealMemberClosestToCentroid() {
@@ -227,5 +439,6 @@ final class PlaceNamingTests: XCTestCase {
         XCTAssertTrue(PlaceNaming.noResultIsFresh(savedAt: now, now: now))
         XCTAssertTrue(PlaceNaming.noResultIsFresh(savedAt: now.addingTimeInterval(-6 * 24 * 3600), now: now))
         XCTAssertFalse(PlaceNaming.noResultIsFresh(savedAt: now.addingTimeInterval(-8 * 24 * 3600), now: now))
+        XCTAssertFalse(PlaceNaming.noResultIsFresh(savedAt: now, now: now, storedVersion: 3))
     }
 }

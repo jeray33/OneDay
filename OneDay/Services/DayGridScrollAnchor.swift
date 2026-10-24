@@ -9,6 +9,16 @@ nonisolated enum DayContentCoordinates {
     static func contentRect(for rect: CGRect, scrollOffset: CGFloat, topInset: CGFloat) -> CGRect {
         rect.offsetBy(dx: 0, dy: scrollOffset - topInset)
     }
+
+    static func targetOffset(
+        for rect: CGRect, viewport: CGRect, currentOffset: CGFloat, anchor: CGFloat
+    ) -> CGFloat? {
+        guard !rect.isEmpty, !viewport.isEmpty else { return nil }
+        let fraction = min(max(anchor, 0), 1)
+        let target = currentOffset + rect.minY + rect.height * fraction
+            - viewport.minY - viewport.height * fraction
+        return target.isFinite ? max(0, target) : nil
+    }
 }
 
 nonisolated struct DayGridLayoutRevision: Equatable {
@@ -29,6 +39,31 @@ nonisolated struct DayGridLayoutRevision: Equatable {
     var cardPhotoFallbacks: [String: String] = [:]
     var segmentationForm: String = "title"
     var placeCardFlow: PlaceCardFlow = .separated
+    var contentRevision: UUID? = nil
+    var titleSize: CGFloat = 0
+    var titleFont: String = ""
+    var placeCardRatio: String = ""
+    var placesRevision: UUID? = nil
+}
+
+/// Results are staged while any interaction owns the page's position.
+nonisolated struct DayPlaceInteractionState {
+    enum Activity { case scrolling, pinching, scrubbing, transitioning }
+    private var scrolling = false
+    private var pinching = false
+    private var scrubbing = false
+    private var transitioning = false
+
+    var isIdle: Bool { !scrolling && !pinching && !scrubbing && !transitioning }
+
+    mutating func set(_ activity: Activity, active: Bool) {
+        switch activity {
+        case .scrolling: scrolling = active
+        case .pinching: pinching = active
+        case .scrubbing: scrubbing = active
+        case .transitioning: transitioning = active
+        }
+    }
 }
 
 /// A non-observable reference, so per-scroll measurements don't invalidate the
@@ -43,6 +78,22 @@ nonisolated final class DayGridAnchorTracker {
     private var frames: [String: CGRect] = [:]
     private var pendingAnchor: WaterfallLayoutPolicy.Anchor?
     private var requestedReveal = false
+    private var explicitPlaceAnchor = false
+    private var capturedOffset: CGFloat?
+    private var capturedRevision: DayGridLayoutRevision?
+
+    /// Capture before SwiftUI can clamp/adjust its offset for the new content.
+    func capturePlaceAnchor(viewport: CGRect, offset: CGFloat) {
+        guard let revision else { return }
+        let photos = Set(revision.itemIDs)
+        pendingAnchor = WaterfallLayoutPolicy.anchor(
+            frames: frames.filter { photos.contains($0.key) }, viewport: viewport)
+            ?? WaterfallLayoutPolicy.anchor(frames: frames, viewport: viewport)
+        explicitPlaceAnchor = pendingAnchor != nil
+        capturedOffset = explicitPlaceAnchor ? offset : nil
+        capturedRevision = explicitPlaceAnchor ? revision : nil
+        requestedReveal = false
+    }
 
     func update(
         frames newFrames: [String: CGRect], revision newRevision: DayGridLayoutRevision,
@@ -58,14 +109,22 @@ nonisolated final class DayGridAnchorTracker {
               revision.category == newRevision.category else {
             pendingAnchor = nil
             requestedReveal = false
+            explicitPlaceAnchor = false
+            capturedOffset = nil
+            capturedRevision = nil
             return nil
         }
-        if revision != newRevision {
+        if explicitPlaceAnchor, capturedRevision == newRevision { return nil }
+        if revision != newRevision, !explicitPlaceAnchor {
             pendingAnchor = nil
             requestedReveal = false
+            capturedOffset = nil
+            capturedRevision = nil
             if revision.arrangement == .waterfall || newRevision.arrangement == .waterfall
                 || revision.sideSpacing != newRevision.sideSpacing
                 || revision.segmentationForm != newRevision.segmentationForm
+                || revision.sections != newRevision.sections
+                || revision.placesRevision != newRevision.placesRevision
                 || !revision.placeCardIDs.isEmpty || !newRevision.placeCardIDs.isEmpty {
                 // A removed card cannot serve as a return anchor.
                 let survivingIDs = Set(newRevision.itemIDs + newRevision.placeCardIDs)
@@ -87,12 +146,20 @@ nonisolated final class DayGridAnchorTracker {
                 }
             }
         }
+        if explicitPlaceAnchor, let anchor = pendingAnchor,
+           !Set(newRevision.itemIDs + newRevision.placeCardIDs).contains(anchor.id),
+           let photo = revision.cardPhotoFallbacks[anchor.id] {
+            pendingAnchor = .init(id: photo, minY: anchor.minY)
+        }
         guard let anchor = pendingAnchor else { return nil }
         if let target = WaterfallLayoutPolicy.restoredOffset(
-            anchor: anchor, frames: newFrames, currentOffset: offset
+            anchor: anchor, frames: newFrames, currentOffset: capturedOffset ?? offset
         ) {
             pendingAnchor = nil
             requestedReveal = false
+            explicitPlaceAnchor = false
+            capturedOffset = nil
+            capturedRevision = nil
             return abs(target - offset) > 1 ? .offset(target) : nil
         }
         // LazyVGrid may not yet have instantiated the waterfall anchor when

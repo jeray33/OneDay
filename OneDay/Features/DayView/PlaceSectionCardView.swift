@@ -13,11 +13,20 @@ struct PlaceSectionCardView: View {
         let sizing = PlaceSectionCard.Sizing(width: width, ratio: ratio)
         let color = card.color
         VStack(alignment: .leading, spacing: sizing.spacing) {
-            Text(card.title)
+            Group {
+                if card.isLoading {
+                    PlaceLoadingDots()
+                } else {
+                    PlaceNameText(
+                        text: card.title,
+                        secondaryFont: font.font(max(9, sizing.titleFontSize(preferred: titleSize) * 0.68)),
+                        primaryLineLimit: PlaceNaming.TitleLines(card.title).chinese == nil
+                            ? sizing.titleLineLimit : max(1, sizing.titleLineLimit - 1))
+                }
+            }
                 .font(font.font(sizing.titleFontSize(preferred: titleSize)))
                 .lineLimit(sizing.titleLineLimit)
                 .minimumScaleFactor(0.7)
-                .opacity(card.placeName == nil ? 0.5 : 1)
             if !card.timeText.isEmpty {
                 Text(sizing.wrapsTime
                      ? card.timeText.replacingOccurrences(of: " – ", with: "\n")

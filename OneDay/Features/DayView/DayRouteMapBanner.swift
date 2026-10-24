@@ -13,7 +13,7 @@ struct DayRouteMapBanner: View {
     let locations: [CLLocation]
     /// Route stop centroids (one dot per stop) to avoid hundreds of dots.
     let stopCoordinates: [CLLocationCoordinate2D]
-    /// Display names for each stop (resolved titles, or "定位中…" / "地点 N"
+    /// Display names for each stop (resolved titles, or "……" / "地点 N"
     /// placeholders), used to render the location track text below the map.
     let stopNames: [String]
     let mapStyle: RouteMapStyle
@@ -125,7 +125,17 @@ struct DayRouteMapBanner: View {
     }
 
     private var trackText: some View {
-        Text(stopNames.joined(separator: " → "))
+        PlaceTrackFlow {
+            ForEach(Array(stopNames.enumerated()), id: \.offset) { index, title in
+                HStack(alignment: .top, spacing: 6) {
+                    // One line per stop; foreign names show their Chinese
+                    // translation instead of a bilingual stack.
+                    Text(PlaceNaming.TitleLines(title).chinesePreferred)
+                        .lineLimit(1)
+                    if index < stopNames.count - 1 { Text("→") }
+                }
+            }
+        }
             .font(Theme.serif(12, weight: .regular))
             .foregroundStyle(Theme.ink)
             .multilineTextAlignment(.leading)

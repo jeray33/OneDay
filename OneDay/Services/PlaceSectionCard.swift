@@ -42,7 +42,8 @@ nonisolated struct PlaceSectionCard: Identifiable, Equatable {
     let paletteIndex: Int
 
     var id: String { Self.identifier(for: stopID) }
-    var title: String { placeName ?? "定位中…" }
+    var title: String { placeName ?? PlaceNaming.loadingTitle }
+    var isLoading: Bool { placeName == nil }
     var color: Pastel { Self.palette[paletteIndex] }
 
     init(stopID: String, firstPhotoID: String, placeName: String?, timeText: String,

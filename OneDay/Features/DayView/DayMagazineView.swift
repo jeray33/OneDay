@@ -47,6 +47,7 @@ struct DayMagazineView: View {
     // open request are shared with the overlay.
     @State private var frameStore = HeroFrameStore()
     @State private var gridAnchorTracker = DayGridAnchorTracker()
+    @State private var waterfallViewport = WaterfallViewport()
     @State private var heroRequest: PhotoItem?
     @State private var fixedHeaderHeight: CGFloat = 0
     @State private var headerTitleVisible = false
@@ -193,6 +194,17 @@ struct DayMagazineView: View {
                 .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, inset in
                     frameStore.contentTopInset = inset
                 }
+                .onScrollGeometryChange(for: CGRect.self) { geometry in
+                    let visible = CGRect(
+                        x: 0, y: fixedHeaderHeight, width: geo.size.width,
+                        height: max(0, geo.size.height - fixedHeaderHeight - bottomBarHeight))
+                    return WaterfallLayoutPolicy.renderWindow(for: DayContentCoordinates.contentRect(
+                        for: visible,
+                        scrollOffset: geometry.contentOffset.y + geometry.contentInsets.top,
+                        topInset: geometry.contentInsets.top))
+                } action: { _, window in
+                    waterfallViewport.updateWindow(window)
+                }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     // The card's top rest is exactly `coverSpace`, so the
                     // title must already show there, not only past it.
@@ -207,6 +219,7 @@ struct DayMagazineView: View {
                                      coverHeight: coverHeight, travel: coverSpace)
                 }
                 .onScrollPhaseChange { oldPhase, newPhase, context in
+                    model.setPlaceInteraction(.scrolling, active: newPhase != .idle)
                     scrollPerformance.setScrolling(newPhase != .idle)
                     snapPhotoCard(from: oldPhase, to: newPhase,
                                   geometry: context.geometry, travel: coverSpace)
@@ -274,14 +287,15 @@ struct DayMagazineView: View {
                     scrubber.updateSectionTops(tops.values.sorted())
                 }
                 .onChange(of: fixedHeaderHeight) { _, _ in
+                    installPlaceAnchorCapture(viewportSize: geo.size)
                     recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
                 }
                 .onChange(of: bottomBarHeight) { _, _ in
+                    installPlaceAnchorCapture(viewportSize: geo.size)
                     recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
                 }
                 .onChange(of: model.previewCurrentID) { _, id in
-                    guard model.selected != nil, let id,
-                          let blockID = model.blockID(forItemID: id) else { return }
+                    guard model.selected != nil, let id else { return }
                     // Only scroll when the target cell is off screen, so
                     // closing the preview preserves a visible cell's position.
                     // Cell frames are content-space; convert before testing.
@@ -293,7 +307,13 @@ struct DayMagazineView: View {
                     }
                     var t = Transaction()
                     t.disablesAnimations = true
-                    withTransaction(t) { proxy.scrollTo(blockID, anchor: .center) }
+                    withTransaction(t) {
+                        if model.gridArrangement == .waterfall, let cell = frameStore.cells[id] {
+                            scrollToGridFrame(cell.rect, viewportSize: geo.size, anchor: 0.5)
+                        } else if let blockID = model.blockID(forItemID: id) {
+                            proxy.scrollTo(blockID, anchor: .center)
+                        }
+                    }
                 }
                 .environment(\.colorScheme, model.pageColorScheme)
 
@@ -304,6 +324,22 @@ struct DayMagazineView: View {
                                 request: $heroRequest)
               }
               .coordinateSpace(name: heroCoordinateSpace)
+              .onAppear {
+                  model.resumePlaceUpdates()
+                  installPlaceAnchorCapture(viewportSize: geo.size)
+              }
+              .onChange(of: geo.size) { _, _ in installPlaceAnchorCapture(viewportSize: geo.size) }
+              .onChange(of: scrubber.isScrubbing) { _, active in
+                  model.setPlaceInteraction(.scrubbing, active: active)
+              }
+              .onChange(of: scrollDisabled || scrollFrozen, initial: true) { _, active in
+                  model.setPlaceInteraction(.transitioning, active: active)
+              }
+              .backgroundPreferenceValue(WaterfallGeometryKey.self) { geometry in
+                  Color.clear
+                      .preference(key: HeroCellFrameKey.self, value: geometry.cells)
+                      .preference(key: PlaceCardFrameKey.self, value: geometry.cards)
+              }
               .onPreferenceChange(HeroCellFrameKey.self) { frameStore.cells = $0 }
               .backgroundPreferenceValue(HeroCellFrameKey.self) { cells in
                   Color.clear.preference(
@@ -344,15 +380,16 @@ struct DayMagazineView: View {
                       if model.gridArrangement == .waterfall, model.selected != nil,
                          let id = model.previewCurrentID,
                          let rect = snapshot.frames[id],
-                         !contentViewport.contains(CGPoint(x: rect.midX, y: rect.midY)),
-                         let blockID = model.blockID(forItemID: id) {
-                          proxy.scrollTo(blockID, anchor: .center)
+                         !contentViewport.contains(CGPoint(x: rect.midX, y: rect.midY)) {
+                          scrollToGridFrame(rect, viewportSize: geo.size, anchor: 0.5)
                       }
                       switch adjustment {
                       case .offset(let offset):
                           scrollPosition.scrollTo(y: offset)
                       case .reveal(let id):
-                          if let blockID = model.blockID(forItemID: id) {
+                          if model.gridArrangement == .waterfall, let rect = snapshot.frames[id] {
+                              scrollToGridFrame(rect, viewportSize: geo.size, anchor: 0)
+                          } else if let blockID = model.blockID(forItemID: id) {
                               proxy.scrollTo(blockID, anchor: .top)
                           } else if model.sections.contains(where: { $0.placeCard?.id == id }) {
                               proxy.scrollTo(id, anchor: .top)
@@ -376,7 +413,10 @@ struct DayMagazineView: View {
             }
             await model.prepare()
         }
-        .onDisappear { scrollPerformance.setScrolling(false) }
+        .onDisappear {
+            scrollPerformance.setScrolling(false)
+            model.stopPlaceUpdates()
+        }
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
@@ -401,6 +441,7 @@ struct DayMagazineView: View {
     private var columnPinchGesture: some Gesture {
         MagnificationGesture()
             .onChanged { scale in
+                model.setPlaceInteraction(.pinching, active: true)
                 pinchScale = scale
                 let ratio = scale / pinchBaseline
                 if ratio < 0.75 {
@@ -426,6 +467,7 @@ struct DayMagazineView: View {
             .onEnded { _ in
                 pinchScale = 1.0
                 pinchBaseline = 1.0
+                model.setPlaceInteraction(.pinching, active: false)
             }
     }
 
@@ -512,7 +554,12 @@ struct DayMagazineView: View {
                 section.placeCard.map { ($0.id, $0.firstPhotoID) }
             }),
             segmentationForm: model.placeSegmentationForm.rawValue,
-            placeCardFlow: model.placeCardFlow
+            placeCardFlow: model.placeCardFlow,
+            contentRevision: model.itemsRevision,
+            titleSize: model.sectionTitleSize.size,
+            titleFont: model.coverDateFont.rawValue,
+            placeCardRatio: model.placeCardRatio.rawValue,
+            placesRevision: model.placesLayoutRevision
         )
     }
 
@@ -545,14 +592,36 @@ struct DayMagazineView: View {
         let finalCellWidth = sizing.cellWidth
         let frameAlignment: Alignment = count == 1 ? .center : .leading
         if model.gridArrangement == .waterfall {
-            WaterfallLayout(
+            let border = max((alignedGridBorderBase(for: count) * model.borderWidth.scale).rounded(), 0)
+            VirtualWaterfallGrid(
+                entries: entries,
+                descriptors: entries.map { entry in
+                    switch entry {
+                    case .photo(let photo):
+                        WaterfallItemDescriptor(
+                            id: photo.id, content: .photo(
+                                aspect: photo.item.aspectRatio, version: photo.item.contentVersion,
+                                caption: model.showPhotoCaptions ? photo.item.caption : nil))
+                    case .placeCard(let card):
+                        WaterfallItemDescriptor(
+                            id: card.id, content: .decoration(
+                                height: PlaceSectionCard.Sizing(width: finalCellWidth, ratio: model.placeCardRatio).height))
+                    }
+                },
                 columnCount: count, columnWidth: finalCellWidth,
                 horizontalSpacing: horizontalSpacing,
-                verticalSpacing: model.gridVerticalSpacing
-            ) {
-                ForEach(entries) { entry in
-                    gridEntryCell(entry, width: finalCellWidth, viewportSize: viewportSize,
-                                  marksPlaceCards: marksPlaceCards, idEveryPhoto: true)
+                verticalSpacing: model.gridVerticalSpacing,
+                border: border, cornerRadius: model.photoCornerRadius.value,
+                viewport: waterfallViewport,
+                pinnedIDs: Set([heroHiddenID, heroRequest?.id].compactMap { $0 }),
+                marksPlaceCards: marksPlaceCards,
+                layoutRevision: gridLayoutRevision(viewportWidth: viewportSize.width)
+            ) { entry, metrics in
+                switch entry {
+                case .photo(let photo):
+                    photoGridCell(photo.item, width: finalCellWidth, virtualMetrics: metrics)
+                case .placeCard(let card):
+                    placeCardCell(card, width: finalCellWidth)
                 }
             }
             .padding(.horizontal, horizontalInset)
@@ -595,7 +664,7 @@ struct DayMagazineView: View {
     @ViewBuilder
     private func gridEntryCell(
         _ entry: DayGridEntry, width: CGFloat, viewportSize: CGSize,
-        marksPlaceCards: Bool = false, idEveryPhoto: Bool = false
+        marksPlaceCards: Bool = false
     ) -> some View {
         switch entry {
         case .photo(let photo):
@@ -607,23 +676,19 @@ struct DayMagazineView: View {
             ) { loadsImage in
                 photoGridCell(photo.item, width: width, loadsImage: loadsImage)
             }
-            if idEveryPhoto || photo.startsBlock {
+            if photo.startsBlock {
                 cell.id(photo.blockID)
             } else {
                 cell
             }
         case .placeCard(let card):
-            PlaceSectionCardView(
-                card: card, width: width, ratio: model.placeCardRatio, font: model.coverDateFont,
-                titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
-                shadowLevel: model.photoShadow
-            )
+            placeCardCell(card, width: width)
             .id(card.id)
             .background {
                 GeometryReader { geometry in
                     Color.clear.preference(
                         key: PlaceCardFrameKey.self,
-                        value: [card.id: geometry.frame(in: .named(heroCoordinateSpace))]
+                        value: [card.id: geometry.frame(in: .named(dayContentSpace))]
                     )
                     .preference(
                         key: SectionTopKey.self,
@@ -634,8 +699,16 @@ struct DayMagazineView: View {
         }
     }
 
+    private func placeCardCell(_ card: PlaceSectionCard, width: CGFloat) -> some View {
+        PlaceSectionCardView(
+            card: card, width: width, ratio: model.placeCardRatio, font: model.coverDateFont,
+            titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
+            shadowLevel: model.photoShadow)
+    }
+
     private func photoGridCell(
-        _ item: PhotoItem, width: CGFloat, loadsImage: Bool = true
+        _ item: PhotoItem, width: CGFloat, loadsImage: Bool = true,
+        virtualMetrics: WaterfallLayoutPolicy.CellMetrics? = nil
     ) -> some View {
         let count = min(max(model.gridColumnCount, 1), 6)
         let border = max(
@@ -654,9 +727,10 @@ struct DayMagazineView: View {
             shadowLevel: model.photoShadow,
             showCaption: model.showPhotoCaptions,
             cornerRadius: model.photoCornerRadius.value,
-            loadsImage: loadsImage
+            loadsImage: loadsImage,
+            measuredCaptionHeight: virtualMetrics?.captionHeight
         )
-        .heroCell(id: item.id, hiddenID: heroHiddenID)
+        .heroCell(id: item.id, hiddenID: heroHiddenID, reportsGeometry: virtualMetrics == nil)
         .onTapGesture { heroRequest = item }
         .contextMenu {
             Button {
@@ -773,6 +847,31 @@ struct DayMagazineView: View {
         !scrollDisabled && pinchScale == 1 && model.selected == nil
     }
 
+    /// Virtualized targets need no off-screen SwiftUI view or block scroll ID.
+    private func scrollToGridFrame(_ rect: CGRect, viewportSize: CGSize, anchor: CGFloat) {
+        let viewport = DayContentCoordinates.contentRect(
+            for: CGRect(x: 0, y: fixedHeaderHeight, width: viewportSize.width,
+                        height: max(0, viewportSize.height - fixedHeaderHeight - bottomBarHeight)),
+            scrollOffset: frameStore.contentScrollOffset, topInset: frameStore.contentTopInset)
+        if let target = DayContentCoordinates.targetOffset(
+            for: rect, viewport: viewport,
+            currentOffset: frameStore.contentScrollOffset, anchor: anchor) {
+            scrollPosition.scrollTo(y: target)
+        }
+    }
+
+    private func installPlaceAnchorCapture(viewportSize: CGSize) {
+        model.beforePlacePresentation = {
+            let viewport = DayContentCoordinates.contentRect(
+                for: CGRect(
+                    x: 0, y: fixedHeaderHeight, width: viewportSize.width,
+                    height: max(0, viewportSize.height - fixedHeaderHeight - bottomBarHeight)),
+                scrollOffset: frameStore.contentScrollOffset, topInset: frameStore.contentTopInset)
+            gridAnchorTracker.capturePlaceAnchor(
+                viewport: viewport, offset: frameStore.contentScrollOffset)
+        }
+    }
+
     /// Jumps the content to a scrubber progress. Targets are derived purely
     /// from offset differences, so they stay correct regardless of the
     /// scroll view's offset convention.
@@ -827,7 +926,7 @@ struct DayMagazineView: View {
     @ViewBuilder
     private func sectionHeader(_ section: MagazineSection) -> some View {
         if section.placeHeading != nil || section.placeHeadingPending {
-            sectionHeading(section.placeHeading ?? "定位中…",
+            sectionHeading(section.placeHeading ?? PlaceNaming.loadingTitle,
                            size: model.sectionTitleSize.size,
                            visible: true)
                 .opacity(section.placeHeading == nil ? 0.35 : 1)
@@ -843,10 +942,10 @@ struct DayMagazineView: View {
     }
 
     private func sectionHeading(_ title: String, size: CGFloat, visible: Bool) -> some View {
-        Text(title)
+        PlaceNameText(
+            text: title, secondaryFont: model.coverDateFont.font(max(12, size * 0.62)))
             .font(model.coverDateFont.font(size))
             .foregroundStyle(Theme.ink)
-            .lineLimit(1)
             .minimumScaleFactor(0.4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .opacity(visible ? 1 : 0)
@@ -1094,7 +1193,7 @@ private struct ContentTopKey: PreferenceKey {
 }
 
 /// Section-top positions in content space (stable while scrolling).
-private struct SectionTopKey: PreferenceKey {
+struct SectionTopKey: PreferenceKey {
     static var defaultValue: [String: CGFloat] = [:]
     static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
         value.merge(nextValue()) { _, new in new }

@@ -99,6 +99,18 @@ nonisolated struct OfflinePlaceIndex: Sendable {
 
     // MARK: Display name
 
+    /// Native/local name first, a genuine Han alternate second. No translated
+    /// city is attached to a more precise POI or street.
+    static func dayFields(for place: Place, script: String?) -> PlaceFields {
+        let chinese = place.hanNames.isEmpty ? nil
+            : displayName(for: place, languageCode: "zh", script: script)
+        return PlaceFields(
+            locality: place.name, countryCode: place.countryCode, usesDefaultHierarchy: true,
+            chineseNames: chinese.map {
+                PlaceHierarchy(poi: nil, street: nil, district: nil, city: $0, region: nil, country: nil)
+            })
+    }
+
     /// The name in the user's language: a Han name for Chinese (converted to
     /// the requested script), otherwise GeoNames' local name.
     static func displayName(for place: Place, languageCode: String, script: String?) -> String {

@@ -97,10 +97,10 @@ extension EnvironmentValues {
 extension View {
     /// PhotoFrameView reports the actual image card, excluding any caption.
     /// Hide the complete cell while preserving its layout slot.
-    func heroCell(id: String, hiddenID: String?) -> some View {
+    func heroCell(id: String, hiddenID: String?, reportsGeometry: Bool = true) -> some View {
         self
             .opacity(id == hiddenID ? 0 : 1)
-            .environment(\.heroSourceID, id)
+            .environment(\.heroSourceID, reportsGeometry ? id : nil)
     }
 }
 

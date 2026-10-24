@@ -57,6 +57,20 @@ final class DayGridScrollAnchorTests: XCTestCase {
         XCTAssertNil(update(tracker, frames(-100, 80), revision(), offset: 1_220))
     }
 
+    func testContentEditReflowWaitsForCurrentGeometryAndRetainsAnchor() {
+        let tracker = DayGridAnchorTracker()
+        var original = revision()
+        original.contentRevision = UUID()
+        update(tracker, frames(), original)
+        var edited = original
+        edited.contentRevision = UUID()
+        // Virtual grids temporarily withdraw old-origin geometry while the
+        // new global layout is measured, including preceding section heights.
+        XCTAssertEqual(update(tracker, [:], edited), .reveal("a"))
+        XCTAssertEqual(update(tracker, frames(820, 1_100), edited), .offset(1_700))
+        XCTAssertNil(update(tracker, frames(820, 1_100), edited, offset: 1_700))
+    }
+
     func testSwitchingToWaterfallKeepsTheSamePhotoAtTheSameScreenHeight() {
         let tracker = DayGridAnchorTracker()
         update(tracker, frames(), revision(arrangement: .aligned))
