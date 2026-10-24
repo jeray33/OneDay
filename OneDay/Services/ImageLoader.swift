@@ -313,7 +313,8 @@ nonisolated final class ImageLoader: @unchecked Sendable {
     /// Pass `highQuality: true` when the image is scaled up on screen (e.g. the
     /// tunnel rewind), so it stays sharp instead of pixelating.
     func thumbnail(asset: PHAsset, size: CGSize, highQuality: Bool = false,
-                   contentMode: PHImageContentMode = .aspectFill) async -> UIImage? {
+                   contentMode: PHImageContentMode = .aspectFill,
+                   allowsNetworkAccess: Bool = true) async -> UIImage? {
         let quality: LoadQuality = highQuality ? .highQuality : .fast
         return await requestImage(asset: asset,
                                   targetSize: pixelSize(for: size,
@@ -321,7 +322,17 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                                                         contentMode: contentMode),
                                   contentMode: contentMode,
                                   quality: quality,
-                                  allowsNetworkAccess: true)
+                                  allowsNetworkAccess: allowsNetworkAccess)
+    }
+
+    /// High-quality frame at an exact pixel target. Mirrors the preview
+    /// page's progressive-stream second stage, so both share one cache entry.
+    func previewFrame(asset: PHAsset, targetPixelSize: CGSize) async -> UIImage? {
+        await requestImage(asset: asset,
+                           targetSize: targetPixelSize,
+                           contentMode: .aspectFit,
+                           quality: .highQuality,
+                           allowsNetworkAccess: true)
     }
 
     /// Loads a bounded batch while preserving the input order. Exact duplicate

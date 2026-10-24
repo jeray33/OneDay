@@ -635,13 +635,21 @@ struct PreviewPageView: View {
 
     private func load(targetSize: CGSize) async {
         if displayedAspectRatio == nil { displayedAspectRatio = item.aspectRatio }
+        // A previously cached frame (an earlier preview of this photo) shows
+        // instantly; the progressive stream then upgrades it: a cheap
+        // degraded pass first, then the exact high-quality frame.
+        if image == nil, let cached = ImageLoader.shared.bestCachedImage(
+            for: item.asset, contentMode: .aspectFit) {
+            image = cached
+            imageVersion = item.contentVersion
+        }
         let scale = UIScreen.main.scale
         let pixelSize = CGSize(width: targetSize.width * scale, height: targetSize.height * scale)
         for await frame in ImageLoader.shared.stream(
             asset: item.asset,
             targetSize: pixelSize,
             contentMode: .aspectFit,
-            highQuality: true
+            progressive: true
         ) {
             guard !Task.isCancelled else { return }
             image = frame

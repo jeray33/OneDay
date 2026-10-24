@@ -3,6 +3,189 @@ import Combine
 import Photos
 import UIKit
 
+/// Per-frame drag presentation state for the preview: the live translation and
+/// the staging shrink. A reference object, because drag frames must not
+/// re-evaluate the host body or rebuild the page TabView — only the leaves
+/// that read this state (the pinned drag overlay and the chrome fades) update
+/// while a finger moves. Eligibility flags that flip once per interaction stay
+/// plain `@State` on the host.
+@MainActor @Observable
+final class PreviewDragState {
+    /// Damped translation of the active vertical drag.
+    var offset: CGSize = .zero
+    /// Extra shrink applied while the delete-staging animation runs.
+    var stagingScale: CGFloat = 1
+    /// Whether the previewed photo refuses deletion, captured when a drag
+    /// starts; the guards below mirror the old per-drag checks.
+    var isRestricted = false
+
+    /// 0…1 progress of a pull-down (dismiss) drag.
+    var dragProgress: CGFloat { min(max(offset.height, 0) / 320, 1) }
+    /// 0…1 progress of a pull-up (delete) drag.
+    var deleteProgress: CGFloat {
+        guard !isRestricted else { return 0 }
+        return min(max(-offset.height, 0) / 280, 1)
+    }
+    /// 0…1 fade of the cannot-delete hint.
+    var restrictedHintProgress: CGFloat {
+        guard isRestricted else { return 0 }
+        return min(max(-offset.height, 0) / 64, 1)
+    }
+    /// Chrome (bars, info) fade driven by either drag direction.
+    var controlsOpacity: Double {
+        let progress = max(dragProgress, deleteProgress)
+        return Double(max(0, 1 - progress * 2))
+    }
+    /// Card scale combining both drag directions with the staging shrink.
+    var scale: CGFloat {
+        let base = 1 - dragProgress * 0.18 - deleteProgress * 0.45
+        return max(0.08, base) * stagingScale
+    }
+}
+
+/// Derived item collections for one preview session, rebuilt exactly when the
+/// day's items or the staged deletions change — never per frame or per body
+/// evaluation — so the host's reads (current item, neighbors, staged items)
+/// stay O(1) instead of rescanning the day.
+@MainActor @Observable
+final class PreviewItemsIndex {
+    private(set) var visible: [PhotoItem] = []
+    private(set) var visibleByID: [String: PhotoItem] = [:]
+    private(set) var visibleIndexByID: [String: Int] = [:]
+    private(set) var allByID: [String: PhotoItem] = [:]
+
+    init(allItems: [PhotoItem] = [], pendingDeleteIDs: [String] = []) {
+        rebuild(allItems: allItems, pendingDeleteIDs: pendingDeleteIDs)
+    }
+
+    func rebuild(allItems: [PhotoItem], pendingDeleteIDs: [String]) {
+        let pending = Set(pendingDeleteIDs)
+        var visible: [PhotoItem] = []
+        var visibleByID: [String: PhotoItem] = [:]
+        var visibleIndexByID: [String: Int] = [:]
+        var allByID: [String: PhotoItem] = [:]
+        for item in allItems {
+            allByID[item.id] = item
+            guard !pending.contains(item.id) else { continue }
+            visibleIndexByID[item.id] = visible.count
+            visibleByID[item.id] = item
+            visible.append(item)
+        }
+        self.visible = visible
+        self.visibleByID = visibleByID
+        self.visibleIndexByID = visibleIndexByID
+        self.allByID = allByID
+    }
+}
+
+/// Fades the preview backdrop as the photo is pulled down. Reading the drag
+/// state here, rather than in the host body, keeps drag frames from
+/// re-evaluating the host or the page TabView.
+private struct DragDimmedBackdrop<Content: View>: View {
+    let drag: PreviewDragState
+    let sessionOpacity: Double
+    let content: Content
+
+    var body: some View {
+        content.opacity(sessionOpacity * Double(1 - drag.dragProgress))
+    }
+}
+
+/// Hosts a piece of preview chrome (top bar, bottom info, action controls)
+/// whose visibility follows the live drag. As with the backdrop, reading the
+/// drag state here keeps drag frames off the host body and the page TabView.
+private struct DragFadedChrome<Content: View>: View {
+    let drag: PreviewDragState
+    /// Chrome is fully hidden regardless of drag (zoom or flip active).
+    let hidden: Bool
+    /// The non-drag visibility factor: sessionOpacity (× cardOpacity).
+    let visibleOpacity: Double
+    let fadeDuration: Double
+    /// Optional hit-test predicate over the live drag state; the caller bakes
+    /// its non-drag conditions into the returned Bool. Nil leaves hit testing
+    /// untouched.
+    var hitTest: ((PreviewDragState) -> Bool)? = nil
+    let content: Content
+
+    var body: some View {
+        let faded = content
+            .opacity((hidden ? 0 : drag.controlsOpacity) * visibleOpacity)
+            .animation(.easeInOut(duration: fadeDuration), value: hidden)
+        if let hitTest {
+            faded.allowsHitTesting(hitTest(drag))
+        } else {
+            faded
+        }
+    }
+}
+
+/// The cannot-delete hint, fading in with the damped up-drag. Reads the drag
+/// state directly so the per-frame fade never touches the host body.
+private struct DeleteRestrictionHintView: View {
+    let drag: PreviewDragState
+    let sessionOpacity: Double
+    let color: Color
+    let topPadding: CGFloat
+    let icon: String
+    let text: String
+
+    var body: some View {
+        if drag.restrictedHintProgress > 0.01 {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .bold))
+                Text(text)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.top, topPadding)
+            .opacity(drag.restrictedHintProgress * sessionOpacity)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// The pinned page shown while a vertical drag is active: the only
+/// page-sized view that follows the drag translation and scale frame by
+/// frame. The TabView stays hidden for the duration.
+private struct VerticalDragOverlayPage: View {
+    let drag: PreviewDragState
+    let item: PhotoItem
+    let model: DayViewModel
+    let cardOpacity: Double
+    let isZoomed: Bool
+    let flipAngle: Double
+    let chromeHidden: Bool
+    let swipeEffectConfig: SwipePreviewEffectConfig
+    let cornerGeometry: PhotoCornerGeometry?
+    let onZoomChanged: (Bool) -> Void
+    let onFlipRequest: () -> Void
+    let onFlipBackRequest: () -> Void
+
+    var body: some View {
+        PreviewPageView(
+            item: item,
+            model: model,
+            onZoomChanged: onZoomChanged,
+            photoOffsetX: drag.offset.width,
+            photoOffsetY: drag.offset.height,
+            photoScale: drag.scale,
+            infoOpacity: chromeHidden ? 0 : drag.controlsOpacity,
+            isZoomed: isZoomed,
+            flipAngle: flipAngle,
+            swipeEffectConfig: swipeEffectConfig,
+            onFlipRequest: onFlipRequest,
+            onFlipBackRequest: onFlipBackRequest,
+            cornerGeometry: cornerGeometry)
+        .opacity(cardOpacity)
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
 struct PhotoPreviewView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: DayViewModel
@@ -28,11 +211,14 @@ struct PhotoPreviewView: View {
     @AppStorage(PreviewBackground.storageKey) private var savedBackground = PreviewBackground.day.rawValue
 
     @State private var selection: String
+    /// Derived item collections, rebuilt only when the day's items or the
+    /// staged deletions change; the reads below stay O(1).
+    @State private var itemsIndex: PreviewItemsIndex
     // Reuse page preloads without blanking the stationary footer on selection.
     @State private var previewPlaces: [String: String] = [:]
     @State private var livePhotoVisitID = UUID()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var dragOffset: CGSize = .zero
+    @State private var dragState = PreviewDragState()
     @State private var isZoomed = false
     @State private var sharingContent: PreparedPhotoShare?
     @State private var sharePreparationID: UUID?
@@ -45,7 +231,6 @@ struct PhotoPreviewView: View {
     @State private var isMutatingHidden = false
     @State private var pendingDeleteIDs: [String] = []
     @State private var showPendingDelete = false
-    @State private var stagingDeleteScale: CGFloat = 1
     @State private var isStagingDelete = false
     @State private var isClosing = false
     @State private var flipAngle: Double = 0
@@ -67,6 +252,8 @@ struct PhotoPreviewView: View {
     @State private var interactionPolicy = PreviewInteractionPolicy()
     @State private var interactionRecoveryID = UUID()
     @State private var dragCancellationTask: Task<Void, Never>?
+    @State private var membershipTask: Task<Void, Never>?
+    @State private var prefetchTask: Task<Void, Never>?
     @State private var stagingTask: Task<Void, Never>?
     @State private var undoTask: Task<Void, Never>?
     @State private var flipTask: Task<Void, Never>?
@@ -106,19 +293,21 @@ struct PhotoPreviewView: View {
         self.onSelectionChanged = onSelectionChanged
         self.onClose = onClose
         _selection = State(initialValue: current.id)
+        // The host is recreated during hero animations. Seed in constant time;
+        // build the full session index once on appearance.
+        _itemsIndex = State(initialValue: PreviewItemsIndex(allItems: [current]))
     }
 
     private var allItems: [PhotoItem] { model.allItems }
-    private var visibleItems: [PhotoItem] {
-        allItems.filter { !pendingDeleteIDs.contains($0.id) }
-    }
-    private var currentItem: PhotoItem? { visibleItems.first { $0.id == selection } }
+    /// The derived collections live in `itemsIndex` (rebuilt only when the
+    /// day's items or the staged deletions change), so these reads stay O(1).
+    private var visibleItems: [PhotoItem] { itemsIndex.visible }
+    private var currentItem: PhotoItem? { itemsIndex.visibleByID[selection] }
     private var pendingDeleteItems: [PhotoItem] {
-        pendingDeleteIDs.compactMap { id in allItems.first { $0.id == id } }
+        pendingDeleteIDs.compactMap { itemsIndex.allByID[$0] }
     }
     private var pendingDeleteLastItem: PhotoItem? {
-        guard let lastID = pendingDeleteIDs.last else { return nil }
-        return allItems.first { $0.id == lastID }
+        pendingDeleteIDs.last.flatMap { itemsIndex.allByID[$0] }
     }
 
     /// Capabilities of the currently previewed photo; permissive when there is
@@ -131,27 +320,8 @@ struct PhotoPreviewView: View {
     private var isDeleteRestricted: Bool {
         !currentItemCapabilities.canDelete || PhotoRotationService.shared.isSaving(selection)
     }
-    /// 0…1 opacity for the "cannot delete" hint, driven by the damped drag.
-    private var deleteRestrictionHintProgress: Double {
-        guard isDeleteRestricted else { return 0 }
-        return min(max(-dragOffset.height, 0) / 64, 1)
-    }
-
-    private var dragProgress: CGFloat {
-        min(max(dragOffset.height, 0) / 320, 1)
-    }
-    private var deleteProgress: CGFloat {
-        guard !isDeleteRestricted else { return 0 }
-        return min(max(-dragOffset.height, 0) / 280, 1)
-    }
-    private var activeScale: CGFloat {
-        let base = 1 - dragProgress * 0.18 - deleteProgress * 0.45
-        return max(0.08, base) * stagingDeleteScale
-    }
-    private var controlsOpacity: Double {
-        let progress = max(dragProgress, deleteProgress)
-        return Double(max(0, 1 - progress * 2))
-    }
+    // The drag-driven progress, scale and chrome fade now live on `dragState`
+    // (see `PreviewDragState` above), read only by the drag leaf views.
     private var swipeEffectConfig: SwipePreviewEffectConfig {
         SwipePreviewEffectConfig(
             yawEnabled: swipeYawEnabled,
@@ -231,12 +401,11 @@ struct PhotoPreviewView: View {
             }
         }
         .ignoresSafeArea()
-        .opacity(sessionOpacity * Double(1 - dragProgress))
     }
 
-    private func previewContent(size: CGSize) -> some View {
+    private func previewPresentation(size: CGSize) -> some View {
         ZStack {
-            previewBackdrop
+            DragDimmedBackdrop(drag: dragState, sessionOpacity: sessionOpacity, content: previewBackdrop)
 
             TabView(selection: $selection) {
                 ForEach(visibleItems) { item in
@@ -247,7 +416,10 @@ struct PhotoPreviewView: View {
                         photoOffsetX: 0,
                         photoOffsetY: 0,
                         photoScale: 1,
-                        infoOpacity: (isZoomed || isFlipActive) ? 0 : controlsOpacity,
+                        // A vertical drag hides the whole TabView (its opacity
+                        // below) and the pinned overlay owns the live fade, so
+                        // pages never need a drag-driven value here.
+                        infoOpacity: (isZoomed || isFlipActive) ? 0 : 1,
                         isZoomed: isZoomed,
                         flipAngle: flipAngle,
                         swipeEffectConfig: swipeEffectConfig,
@@ -301,8 +473,25 @@ struct PhotoPreviewView: View {
         // disable while a vertical drag is in progress.
         .coordinateSpace(name: "previewInteraction")
         .simultaneousGesture(dismissDrag(in: size))
-        .overlay(alignment: .top) { topBar }
-        .overlay(alignment: .top) { deleteRestrictionHint }
+        .overlay(alignment: .top) {
+            DragFadedChrome(drag: dragState,
+                            hidden: isZoomed || isFlipActive,
+                            visibleOpacity: sessionOpacity,
+                            fadeDuration: 0.22,
+                            content: topBar)
+        }
+        .overlay(alignment: .top) {
+            DeleteRestrictionHintView(
+                drag: dragState,
+                sessionOpacity: sessionOpacity,
+                color: controlsColor,
+                topPadding: topSafeAreaInset() + 56,
+                icon: PhotoRotationService.shared.isSaving(selection)
+                    ? "arrow.trianglehead.2.clockwise" : "person.2.fill",
+                text: PhotoRotationService.shared.isSaving(selection)
+                    ? "旋转保存中，请稍后再删除"
+                    : (currentItem?.isForeignShared == true ? "他人共享的照片不能删除" : "这张照片不能删除"))
+        }
         .overlay(alignment: .top) { toastView }
         .overlay(alignment: .bottom) { bottomControls }
         // A sibling of TabView and of its dismiss recognizer: a slider drag
@@ -323,6 +512,7 @@ struct PhotoPreviewView: View {
                 items: pendingDeleteItems,
                 onCancel: {
                     pendingDeleteIDs.removeAll()
+                    rebuildItemsIndex()
                     showPendingDelete = false
                     performDismiss()
                 },
@@ -344,11 +534,16 @@ struct PhotoPreviewView: View {
         } message: {
             Text("每次顺时针旋转 90°，直接更新原照片，不生成副本。更改会随 iCloud 照片同步；原始内容仍可在系统“照片”中恢复。")
         }
+    }
+
+    private func previewLifecycle(size: CGSize) -> some View {
+        previewPresentation(size: size)
         .onAppear {
             isPreviewVisible = true
+            rebuildItemsIndex()
             onSelectionChanged(selection)
             refreshTagAlbums()
-            refreshMembership()
+            prefetchNeighborPages(size: size)
             ensureValidSelectionAfterFiltering()
             PhotoRotationService.shared.reconcilePendingEdits { model.refreshEditedAsset($0) }
             showPendingRotationFailure()
@@ -378,18 +573,25 @@ struct PhotoPreviewView: View {
             videoPlayback.close()
             isPreviewVisible = false
             cancelSharePreparation()
+            membershipTask?.cancel()
+            prefetchTask?.cancel()
             recoverFromInterruption(notifySelection: false)
         }
         .onChange(of: currentItem?.contentVersion) { _, _ in
             videoPlayback.pause()
             cancelSharePreparation()
+            refreshMembership()
         }
+    }
+
+    private func previewContent(size: CGSize) -> some View {
+        previewLifecycle(size: size)
         .onChange(of: selection) {
             // A vertical dismiss drag pins `selection` back to its start every
-            // frame; running the resets below then would zero `dragOffset` and
-            // fight the live drag, making the card snap to full size and shake
-            // (issues when dragging up/down then sideways). Skip entirely while
-            // vertically locked.
+            // frame; running the resets below then would zero the drag state
+            // and fight the live drag, making the card snap to full size and
+            // shake (issues when dragging up/down then sideways). Skip
+            // entirely while vertically locked.
             guard !isVerticalDragLocked else { return }
             livePhotoVisitID = UUID()
             // Defer committing the page to the grid until a drag settles, so
@@ -398,7 +600,7 @@ struct PhotoPreviewView: View {
                 onSelectionChanged(selection)
             }
             isZoomed = false
-            dragOffset = .zero
+            dragState.offset = .zero
             flipAngle = 0
             isFlipTransitioning = false
             if pendingSwipeSettleHaptic {
@@ -408,10 +610,16 @@ struct PhotoPreviewView: View {
                 feedback.impactOccurred(intensity: 0.55)
             }
             refreshMembership()
+            prefetchNeighborPages(size: size)
             showPendingRotationFailure()
         }
-        .onChange(of: pendingDeleteIDs) {
+        .onChange(of: model.allItems) {
+            rebuildItemsIndex()
             ensureValidSelectionAfterFiltering()
+            prefetchNeighborPages(size: size)
+        }
+        .onChange(of: size) {
+            prefetchNeighborPages(size: size)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -516,39 +724,52 @@ struct PhotoPreviewView: View {
     }
 
     private var bottomInfo: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            if let item = currentItem {
-                PreviewInfoView(item: item,
-                                place: item.location == nil ? nil : previewPlaces[item.id]) {
-                    requestFlip(toBack: true)
+        DragFadedChrome(
+            drag: dragState,
+            hidden: isZoomed || isFlipActive,
+            visibleOpacity: sessionOpacity * cardOpacity,
+            fadeDuration: 0.16,
+            hitTest: { drag in
+                !isZoomed && !isFlipActive && !isClosing
+                    && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
+                    && drag.controlsOpacity > 0.15 && sessionOpacity * cardOpacity > 0.15
+            },
+            content: VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                if let item = currentItem {
+                    PreviewInfoView(item: item,
+                                    place: item.location == nil ? nil : previewPlaces[item.id]) {
+                        requestFlip(toBack: true)
+                    }
                 }
             }
-        }
-        .padding(.bottom, bottomSafeAreaInset() + 12)
-        .ignoresSafeArea()
-        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity * cardOpacity)
-        .animation(.easeInOut(duration: 0.16), value: isZoomed || isFlipActive)
-        .allowsHitTesting(!isZoomed && !isFlipActive && !isClosing
-                         && !isVerticalDragLocked && !isStagingDelete && undoItemID == nil
-                         && controlsOpacity > 0.15 && sessionOpacity * cardOpacity > 0.15)
+            .padding(.bottom, bottomSafeAreaInset() + 12)
+            .ignoresSafeArea()
+            .animation(.easeInOut(duration: 0.16), value: isZoomed || isFlipActive))
     }
 
     private var bottomControls: some View {
-        VStack(spacing: 8) {
-            if model.showAlbumTagBar {
-                albumTagBar
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 24)))
+        DragFadedChrome(
+            drag: dragState,
+            hidden: isZoomed || isFlipActive,
+            visibleOpacity: sessionOpacity,
+            fadeDuration: 0.22,
+            hitTest: { drag in
+                !(isZoomed || isFlipActive)
+                    && max(drag.dragProgress, drag.deleteProgress) < 0.15
+                    && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete
+            },
+            content: VStack(spacing: 8) {
+                if model.showAlbumTagBar {
+                    albumTagBar
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 24)))
+                }
+                bottomActionBar
             }
-            bottomActionBar
-        }
-        .padding(.bottom, bottomSafeAreaInset() + 10)
-        .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
-        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
-        .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
-        .animation(PreviewTagBarTransition.animation(reduceMotion: reduceMotion), value: model.showAlbumTagBar)
-        .allowsHitTesting(!(isZoomed || isFlipActive) && max(dragProgress, deleteProgress) < 0.15
-                          && !isMutatingAlbum && !isMutatingHidden && !isStagingDelete)
+            .padding(.bottom, bottomSafeAreaInset() + 10)
+            .offset(y: (isZoomed || isFlipActive) ? 18 : 0)
+            .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
+            .animation(PreviewTagBarTransition.animation(reduceMotion: reduceMotion), value: model.showAlbumTagBar))
     }
 
     @ViewBuilder
@@ -609,6 +830,7 @@ struct PhotoPreviewView: View {
                     dragSequence = UUID()
                     dragStartSelection = selection
                     deleteRestrictionWarned = false
+                    dragState.isRestricted = isDeleteRestricted
                 }
                 let t = value.translation
                 if abs(t.width) > 12, abs(t.width) > abs(t.height) {
@@ -625,21 +847,22 @@ struct PhotoPreviewView: View {
                     }
                 }
                 if isVerticalDragLocked {
+                    dragState.isRestricted = isDeleteRestricted
                     if isDeleteRestricted, t.height < 0 {
                         // Photos that must not be deleted (e.g. shared by a
                         // friend) rubber-band instead of staging: damped
                         // travel, no shrink, a warning buzz at the limit.
-                        dragOffset = CGSize(width: t.width * 0.35,
-                                            height: max(t.height * 0.32, -90))
-                        if -dragOffset.height > 64, !deleteRestrictionWarned {
+                        dragState.offset = CGSize(width: t.width * 0.35,
+                                                  height: max(t.height * 0.32, -90))
+                        if -dragState.offset.height > 64, !deleteRestrictionWarned {
                             deleteRestrictionWarned = true
                             let feedback = UINotificationFeedbackGenerator()
                             feedback.prepare()
                             feedback.notificationOccurred(.warning)
                         }
                     } else {
-                        dragOffset = CGSize(width: value.translation.width * 0.35,
-                                            height: value.translation.height)
+                        dragState.offset = CGSize(width: value.translation.width * 0.35,
+                                                  height: value.translation.height)
                     }
                     if let dragStartSelection, selection != dragStartSelection {
                         selection = dragStartSelection
@@ -695,7 +918,7 @@ struct PhotoPreviewView: View {
                     isClosing = true
                     // Keep the dragged card shown (via verticalDragOverlay) so the
                     // flight layer takes over from its exact on-screen position.
-                    onClose(dragOffset, activeScale, selection)
+                    onClose(dragState.offset, dragState.scale, selection)
                 }
             }
     }
@@ -705,7 +928,7 @@ struct PhotoPreviewView: View {
     }
 
     private func resetDrag(animated: Bool, notifySelection: Bool = true) {
-        if let id = verticalDragItemID, visibleItems.contains(where: { $0.id == id }) {
+        if let id = verticalDragItemID, itemsIndex.visibleByID[id] != nil {
             selection = id
         }
         dragStartSelection = nil
@@ -714,8 +937,8 @@ struct PhotoPreviewView: View {
         verticalDragItemID = nil
         deleteRestrictionWarned = false
         withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.2) : nil) {
-            dragOffset = .zero
-            stagingDeleteScale = 1
+            dragState.offset = .zero
+            dragState.stagingScale = 1
         }
         if notifySelection, !isClosing, currentItem != nil {
             onSelectionChanged(selection)
@@ -838,7 +1061,6 @@ struct PhotoPreviewView: View {
         .padding(.horizontal, 16)
         .padding(.top, topSafeAreaInset() + 8)
         .offset(y: (isZoomed || isFlipActive) ? -14 : 0)
-        .opacity(((isZoomed || isFlipActive) ? 0 : controlsOpacity) * sessionOpacity)
         .animation(.easeInOut(duration: 0.22), value: isZoomed || isFlipActive)
     }
 
@@ -904,29 +1126,6 @@ struct PhotoPreviewView: View {
                     try? await Task.sleep(nanoseconds: 1_600_000_000)
                     withAnimation(.easeIn(duration: 0.25)) { toastText = nil }
                 }
-        }
-    }
-
-    /// Fades in while the user tries to up-swipe-delete a photo that cannot be
-    /// deleted (e.g. shared by a friend), alongside the rubber-band drag.
-    @ViewBuilder
-    private var deleteRestrictionHint: some View {
-        if deleteRestrictionHintProgress > 0.01 {
-            HStack(spacing: 5) {
-                Image(systemName: PhotoRotationService.shared.isSaving(selection) ? "arrow.trianglehead.2.clockwise" : "person.2.fill")
-                    .font(.system(size: 11, weight: .bold))
-                Text(PhotoRotationService.shared.isSaving(selection)
-                     ? "旋转保存中，请稍后再删除"
-                     : (currentItem?.isForeignShared == true ? "他人共享的照片不能删除" : "这张照片不能删除"))
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            .foregroundStyle(controlsColor)
-            .padding(.horizontal, 14)
-            .frame(height: 32)
-            .background(.ultraThinMaterial, in: Capsule())
-            .padding(.top, topSafeAreaInset() + 56)
-            .opacity(deleteRestrictionHintProgress * sessionOpacity)
-            .allowsHitTesting(false)
         }
     }
 
@@ -1011,12 +1210,46 @@ struct PhotoPreviewView: View {
     }
 
     private func refreshMembership() {
+        membershipTask?.cancel()
+        membershipIDs = []
         guard let item = currentItem else {
-            membershipIDs = []
             return
         }
-        let realAlbums = tagAlbums.filter { $0.id != AlbumInfo.hiddenAlbumID }
-        membershipIDs = model.albumIDs(containing: item, among: realAlbums)
+        let id = item.id
+        let version = item.contentVersion
+        let asset = item.asset
+        let albumIDs = tagAlbums.map(\.id).filter { $0 != AlbumInfo.hiddenAlbumID }
+        let service = PhotoActionService.shared
+        membershipTask = Task { @MainActor in
+            let query = Task.detached(priority: .userInitiated) {
+                service.albumIDs(containing: asset, among: albumIDs)
+            }
+            let result = await withTaskCancellationHandler {
+                await query.value
+            } onCancel: {
+                query.cancel()
+            }
+            guard !Task.isCancelled, isPreviewVisible, selection == id,
+                  currentItem?.contentVersion == version else { return }
+            membershipIDs = result
+        }
+    }
+
+    private func rebuildItemsIndex() {
+        itemsIndex.rebuild(allItems: allItems, pendingDeleteIDs: pendingDeleteIDs)
+    }
+
+    private func prefetchNeighborPages(size: CGSize) {
+        prefetchTask?.cancel()
+        guard let index = itemsIndex.visibleIndexByID[selection], !visibleItems.isEmpty else { return }
+        let assets = (max(0, index - 2)...min(visibleItems.count - 1, index + 2))
+            .filter { $0 != index }
+            .map { visibleItems[$0].asset }
+        let scale = UIScreen.main.scale
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        prefetchTask = Task {
+            await ImageLoader.shared.preload(assets: assets, targetSize: target)
+        }
     }
 
     private func toggleCurrentPhoto(in album: AlbumInfo) async {
@@ -1026,22 +1259,26 @@ struct PhotoPreviewView: View {
         }
         guard !isMutatingAlbum, let item = currentItem else { return }
         isMutatingAlbum = true
-        defer { isMutatingAlbum = false }
+        membershipTask?.cancel()
+        defer {
+            isMutatingAlbum = false
+            refreshMembership()
+        }
 
         if membershipIDs.contains(album.id) {
             let ok = await model.removeFromAlbum(album, item: item)
-            guard ok else { return }
+            guard ok, selection == item.id else { return }
             membershipIDs.remove(album.id)
         } else {
             let ok = await model.addToAlbum(album, item: item)
-            guard ok else { return }
+            guard ok, selection == item.id else { return }
             membershipIDs.insert(album.id)
             advanceToNextPhoto()
         }
     }
 
     private func advanceToNextPhoto() {
-        guard let idx = visibleItems.firstIndex(where: { $0.id == selection }),
+        guard let idx = itemsIndex.visibleIndexByID[selection],
               idx + 1 < visibleItems.count else { return }
         withAnimation(.easeInOut(duration: 0.28)) {
             selection = visibleItems[idx + 1].id
@@ -1083,7 +1320,7 @@ struct PhotoPreviewView: View {
               item.sharedCapabilities.canDelete, !PhotoRotationService.shared.isSaving(item.id) else { return }
         if pendingDeleteIDs.contains(item.id) {
             advanceAfterStaging(from: item.id)
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragOffset = .zero }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragState.offset = .zero }
             isVerticalDragLocked = false
             verticalDragItemID = nil
             return
@@ -1096,8 +1333,8 @@ struct PhotoPreviewView: View {
             }
         }
         withAnimation(.easeIn(duration: 0.3)) {
-            dragOffset = CGSize(width: dragOffset.width, height: -360)
-            stagingDeleteScale = 0.08
+            dragState.offset = CGSize(width: dragState.offset.width, height: -360)
+            dragState.stagingScale = 0.08
         }
         do { try await Task.sleep(nanoseconds: 320_000_000) }
         catch { return }
@@ -1106,9 +1343,10 @@ struct PhotoPreviewView: View {
         feedback.prepare()
         feedback.impactOccurred(intensity: 0.7)
         pendingDeleteIDs.append(item.id)
+        rebuildItemsIndex()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-            dragOffset = .zero
-            stagingDeleteScale = 1
+            dragState.offset = .zero
+            dragState.stagingScale = 1
         }
         advanceAfterStaging(from: item.id)
         isStagingDelete = false
@@ -1117,19 +1355,10 @@ struct PhotoPreviewView: View {
     }
 
     private func advanceAfterStaging(from currentID: String) {
-        let ids = allItems.map(\.id)
+        let ids = model.gridItemIDs
         guard let currentIndex = ids.firstIndex(of: currentID) else { return }
-
-        func pick(indices: [Int]) -> String? {
-            for i in indices where !pendingDeleteIDs.contains(ids[i]) {
-                return ids[i]
-            }
-            return nil
-        }
-
-        let forward = Array((currentIndex + 1)..<ids.count)
-        let backward = Array((0..<currentIndex).reversed())
-        let targetID = pick(indices: forward) ?? pick(indices: backward)
+        let targetID = ids[(currentIndex + 1)...].first { itemsIndex.visibleByID[$0] != nil }
+            ?? ids[..<currentIndex].last { itemsIndex.visibleByID[$0] != nil }
         guard let targetID else {
             showPendingDelete = true
             return
@@ -1151,6 +1380,7 @@ struct PhotoPreviewView: View {
             try await PhotoActionService.shared.delete(targetItems.map(\.asset))
             model.removeItems(ids: deletedIDs)
             pendingDeleteIDs.removeAll { deletedIDs.contains($0) }
+            rebuildItemsIndex()
             showPendingDelete = false
             performDismiss()
         } catch {
@@ -1163,7 +1393,7 @@ struct PhotoPreviewView: View {
             if !pendingDeleteIDs.isEmpty { showPendingDelete = true }
             return
         }
-        if !visibleItems.contains(where: { $0.id == selection }) {
+        if itemsIndex.visibleByID[selection] == nil {
             selection = visibleItems[0].id
         }
     }
@@ -1172,25 +1402,20 @@ struct PhotoPreviewView: View {
     private var verticalDragOverlay: some View {
         if isVerticalDragLocked,
            let lockedID = verticalDragItemID,
-           let item = visibleItems.first(where: { $0.id == lockedID }) {
-            PreviewPageView(
+           let item = itemsIndex.visibleByID[lockedID] {
+            VerticalDragOverlayPage(
+                drag: dragState,
                 item: item,
                 model: model,
-                onZoomChanged: { isZoomed = $0 },
-                photoOffsetX: dragOffset.width,
-                photoOffsetY: dragOffset.height,
-                photoScale: activeScale,
-                infoOpacity: (isZoomed || isFlipActive) ? 0 : controlsOpacity,
+                cardOpacity: cardOpacity,
                 isZoomed: isZoomed,
                 flipAngle: flipAngle,
+                chromeHidden: isZoomed || isFlipActive,
                 swipeEffectConfig: swipeEffectConfig,
+                cornerGeometry: cornerGeometry(item.id),
+                onZoomChanged: { isZoomed = $0 },
                 onFlipRequest: { requestFlip(toBack: true) },
-                onFlipBackRequest: { requestFlip(toBack: false) },
-                cornerGeometry: cornerGeometry(item.id)
-            )
-            .opacity(cardOpacity)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
+                onFlipBackRequest: { requestFlip(toBack: false) })
         }
     }
 
@@ -1199,7 +1424,7 @@ struct PhotoPreviewView: View {
     @ViewBuilder
     private var undoRestoreOverlay: some View {
         if let undoID = undoItemID,
-           let item = allItems.first(where: { $0.id == undoID }) {
+           let item = itemsIndex.allByID[undoID] {
             PreviewPageView(
                 item: item,
                 model: model,
@@ -1225,7 +1450,7 @@ struct PhotoPreviewView: View {
         guard scenePhase == .active, isSessionOpen, !isClosing,
               undoItemID == nil, !isStagingDelete,
               let lastID = pendingDeleteIDs.last,
-              allItems.contains(where: { $0.id == lastID }) else { return }
+              itemsIndex.allByID[lastID] != nil else { return }
         undoItemID = lastID
         undoOffset = CGSize(width: 0, height: -360)
         undoScale = 0.08
@@ -1243,6 +1468,7 @@ struct PhotoPreviewView: View {
             feedback.prepare()
             feedback.impactOccurred(intensity: 0.7)
             pendingDeleteIDs.removeAll { $0 == lastID }
+            rebuildItemsIndex()
             selection = lastID
             undoItemID = nil
         }

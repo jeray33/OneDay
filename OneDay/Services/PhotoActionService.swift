@@ -66,10 +66,13 @@ final class PhotoActionService {
     }
 
     /// Album ids among `albumIDs` that currently contain `asset`.
-    func albumIDs(containing asset: PHAsset, among albumIDs: [String]) -> Set<String> {
+    /// Nonisolated: PhotoKit fetches are thread-safe, and the preview pages
+    /// query membership off the main thread.
+    nonisolated func albumIDs(containing asset: PHAsset, among albumIDs: [String]) -> Set<String> {
         guard !albumIDs.isEmpty else { return [] }
         var result = Set<String>()
         for id in albumIDs {
+            guard !Task.isCancelled else { return result }
             guard let collection = collection(identifier: id) else { continue }
             let options = PHFetchOptions()
             options.predicate = NSPredicate(format: "localIdentifier == %@", asset.localIdentifier)
@@ -106,7 +109,7 @@ final class PhotoActionService {
         return albums.sorted { $0.title.localizedCompare($1.title) == .orderedAscending }
     }
 
-    private func collection(identifier: String) -> PHAssetCollection? {
+    private nonisolated func collection(identifier: String) -> PHAssetCollection? {
         PHAssetCollection.fetchAssetCollections(
             withLocalIdentifiers: [identifier], options: nil
         ).firstObject

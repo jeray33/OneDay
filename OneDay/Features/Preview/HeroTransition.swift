@@ -1,6 +1,9 @@
 import SwiftUI
 import UIKit
 import Photos
+import os
+
+private let previewPerformanceLogger = Logger(subsystem: "OneDay", category: "PreviewPerformance")
 
 /// Shared coordinate space that both the photo grid cells and the preview card
 /// measure themselves in, so the flight layer can hand off between them without
@@ -212,14 +215,15 @@ struct HeroOverlayView: View {
                           let card = frames[openID] else { return }
                     startOpenFlight(to: card)
                 }
-                .task(id: model.allItems.first(where: { $0.id == model.previewCurrentID })?.contentVersion) {
+                .task(id: heroImageRequestKey) {
                     guard let id = model.previewCurrentID,
                           let item = model.allItems.first(where: { $0.id == id }) else { return }
-                    if let img = await ImageLoader.shared.thumbnail(
-                        asset: item.asset,
-                        size: CGSize(width: 1000, height: 1000),
-                        highQuality: true,
-                        contentMode: .aspectFit) {
+                    // The exact request the preview page's progressive stream
+                    // makes for its final frame, so both share one cache entry.
+                    let scale = UIScreen.main.scale
+                    let target = CGSize(width: screen.width * scale, height: screen.height * scale)
+                    if let img = await ImageLoader.shared.previewFrame(
+                        asset: item.asset, targetPixelSize: target) {
                         guard !Task.isCancelled, model.previewCurrentID == id else { return }
                         heroImage = img
                         loadedHeroVersion = item.contentVersion
@@ -235,45 +239,62 @@ struct HeroOverlayView: View {
         }
     }
 
+    /// Restarts the hero image request when the previewed photo or its
+    /// content changes; content versions alone are not unique across assets.
+    private var heroImageRequestKey: String? {
+        guard let id = model.previewCurrentID,
+              let item = model.allItems.first(where: { $0.id == id }) else { return nil }
+        return "\(item.id)|\(item.contentVersion)"
+    }
+
     private func open(_ item: PhotoItem) {
         guard heroPhase == .idle else { return }
+        let started = CFAbsoluteTimeGetCurrent()
         let source = frameStore.cells[item.id].flatMap { $0.contentVersion == item.contentVersion ? $0 : nil }
-        heroImage = nil
-        loadedHeroVersion = nil
-        Task {
-            let img = await ImageLoader.shared.thumbnail(
-                asset: item.asset,
-                size: CGSize(width: 1000, height: 1000),
-                highQuality: true,
-                contentMode: .aspectFit)
-            await MainActor.run {
-                heroOpenID = item.id
+        // Take off immediately with the exact pixels the grid is showing; the
+        // high-quality frame lands from the session's own load task below.
+        let cached = ImageLoader.shared.bestCachedImage(for: item.asset)
+        heroOpenID = item.id
+        heroImage = cached
+        loadedHeroVersion = cached == nil ? nil : item.contentVersion
+        if let source {
+            heroFlightBorder = source.border
+            heroFlightBottomBorder = source.bottomBorder
+            heroFlightRadius = source.cornerRadius
+            openedCornerGeometry = source.cornerGeometry
+            heroFlightRect = frameStore.screenRect(for: source.rect)
+        } else {
+            heroFlightBorder = 0
+            heroFlightBottomBorder = 0
+            heroFlightRect = CGRect(x: screenCenter().x - 40, y: screenCenter().y - 40,
+                                    width: 80, height: 80)
+            openedCornerGeometry = PhotoCornerGeometry(
+                referenceWidth: max(screen.width - 40, 1),
+                cornerRadius: model.photoCornerRadius.value
+            )
+            heroFlightRadius = openedCornerGeometry?.radius(for: heroFlightRect.size) ?? 0
+        }
+        heroDidLandOpen = false
+        sessionOpacity = 0
+        cardOpacity = 0
+        cardFrames = [:]
+        heroPhase = .openFlying
+        model.previewCurrentID = item.id
+        model.selected = item
+        previewPerformanceLogger.debug("Takeoff prepared in \((CFAbsoluteTimeGetCurrent() - started) * 1000) ms, cached: \(cached != nil)")
+
+        if cached == nil {
+            // Nothing cached for this photo (e.g. its cell was scrolled away):
+            // a small local frame still makes the flight start quickly.
+            Task { @MainActor in
+                let img = await ImageLoader.shared.thumbnail(
+                    asset: item.asset,
+                    size: CGSize(width: 320, height: 320),
+                    contentMode: .aspectFit,
+                    allowsNetworkAccess: false)
+                guard !Task.isCancelled, heroOpenID == item.id, heroImage == nil else { return }
                 heroImage = img
                 loadedHeroVersion = img == nil ? nil : item.contentVersion
-                if let source {
-                    heroFlightBorder = source.border
-                    heroFlightBottomBorder = source.bottomBorder
-                    heroFlightRadius = source.cornerRadius
-                    openedCornerGeometry = source.cornerGeometry
-                    heroFlightRect = frameStore.screenRect(for: source.rect)
-                } else {
-                    heroFlightBorder = 0
-                    heroFlightBottomBorder = 0
-                    heroFlightRect = CGRect(x: screenCenter().x - 40, y: screenCenter().y - 40,
-                                            width: 80, height: 80)
-                    openedCornerGeometry = PhotoCornerGeometry(
-                        referenceWidth: max(screen.width - 40, 1),
-                        cornerRadius: model.photoCornerRadius.value
-                    )
-                    heroFlightRadius = openedCornerGeometry?.radius(for: heroFlightRect.size) ?? 0
-                }
-                heroDidLandOpen = false
-                sessionOpacity = 0
-                cardOpacity = 0
-                cardFrames = [:]
-                heroPhase = .openFlying
-                model.previewCurrentID = item.id
-                model.selected = item
             }
         }
     }
