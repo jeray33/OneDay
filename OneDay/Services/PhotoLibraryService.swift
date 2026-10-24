@@ -4,7 +4,7 @@ import os
 
 private nonisolated let captureLog = Logger(subsystem: "OneDay", category: "CaptureClock")
 
-struct TodayInHistoryEntry: Identifiable {
+struct TodayInHistoryEntry: Identifiable, Equatable {
     let date: Date
     let year: Int
     let placeText: String?
@@ -12,6 +12,20 @@ struct TodayInHistoryEntry: Identifiable {
     let totalMediaCount: Int
 
     var id: Date { date }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.date == rhs.date && lhs.year == rhs.year && lhs.placeText == rhs.placeText
+            && lhs.totalMediaCount == rhs.totalMediaCount && lhs.photos.count == rhs.photos.count
+            && zip(lhs.photos, rhs.photos).allSatisfy {
+                $0.id == $1.id && $0.contentVersion == $1.contentVersion
+                    && $0.sharedSource == $1.sharedSource && $0.captureTimeZone == $1.captureTimeZone
+            }
+    }
+}
+
+struct TodayInHistorySnapshot {
+    let entries: [TodayInHistoryEntry]
+    let itemsByDate: [Date: [PhotoItem]]
 }
 
 @MainActor
@@ -210,101 +224,93 @@ final class PhotoLibraryService {
     /// contributed by the owner are excluded, regardless of body display settings.
     func todayInHistory(
         referenceDate: Date = Date(),
-        photoLimit: Int = 3
-    ) async -> [TodayInHistoryEntry] {
+        photoLimit: Int = 3,
+        preserving previous: [TodayInHistoryEntry] = []
+    ) async -> TodayInHistorySnapshot {
         let shared = await SharedAlbumCache.shared.current()
-        let (groups, sharedIDs, zoneByID) = await Task.detached(priority: .userInitiated) { [shared] () -> ([(Date, Int, [PHAsset], [PHAsset])], Set<String>, [String: TimeZone]) in
-            let options = PHFetchOptions()
-            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-            let result = PHAsset.fetchAssets(with: options)
-
+        let started = CFAbsoluteTimeGetCurrent()
+        let query = Task.detached(priority: .userInitiated) { [shared] () -> [(Date, [PhotoItem])] in
             let clock = CaptureClock.current()
             let calendar = clock.calendar
-            var assetsByDate: [Date: [PHAsset]] = [:]
-            var seen = Set<String>()
-
-            var general: [PHAsset] = []
-            var ownCaptures = OwnCaptureIndex()
-            result.enumerateObjects { asset, _, _ in
-                ownCaptures.add(asset)
-                if DayMediaScope.isSupported(asset.mediaType) { general.append(asset) }
+            func boundary(ascending: Bool) -> Date? {
+                let options = PHFetchOptions()
+                options.fetchLimit = 1
+                options.predicate = NSPredicate(
+                    format: "creationDate != nil AND (mediaType == %d OR mediaType == %d)",
+                    PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+                options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: ascending)]
+                return PHAsset.fetchAssets(with: options).firstObject?.creationDate
             }
-            // This pass already reads the whole own library, so match here
-            // instead of relying on the snapshot's background scan.
-            let candidates = shared.foreignSharedAssets
-            let ownCopies = ownCaptures.ownContributionIDs(among: candidates)
-            let sharedToMerge = candidates.filter { !ownCopies.contains($0.localIdentifier) }
-            let sharedIDs = Set(sharedToMerge.map(\.localIdentifier))
-            // Day keys come from the same population as every other entry
-            // point (own library plus all shared-album captures).
-            let population = general + shared.sharedAssets.filter { DayMediaScope.isSupported($0.mediaType) }
-            var dayByID: [String: Date] = [:]
-            var zoneByID: [String: TimeZone] = [:]
-            for (asset, entry) in zip(population, clock.days(for: population)) {
-                if dayByID[asset.localIdentifier] == nil, let day = entry.day {
-                    dayByID[asset.localIdentifier] = day
-                    zoneByID[asset.localIdentifier] = entry.zone
-                }
+            let sharedDates = shared.sharedAssets.compactMap(\.creationDate)
+            guard let earliest = ([boundary(ascending: true)].compactMap { $0 } + sharedDates).min(),
+                  let latest = ([boundary(ascending: false)].compactMap { $0 } + sharedDates).max()
+            else { return [] }
+            let margin = clock.isEnabled ? CaptureClock.fetchMargin : 0
+            let days = HistorySelectionPolicy.matchingDays(
+                referenceDate: referenceDate,
+                earliest: earliest.addingTimeInterval(-margin),
+                latest: latest.addingTimeInterval(margin), calendar: calendar)
+            var groups: [(Date, [PhotoItem])] = []
+            for day in days {
+                guard !Task.isCancelled else { return [] }
+                groups.append((day, Self.dayItems(on: day, shared: shared, clock: clock)))
             }
-
-            func consider(_ asset: PHAsset) {
-                guard DayMediaScope.isSupported(asset.mediaType) else { return }
-                let key = dayByID[asset.localIdentifier] ?? clock.days(for: [asset]).first?.day
-                guard let day = DayMediaScope.historyDay(
-                        forDayKey: key, referenceDate: referenceDate, calendar: calendar
-                      ) else { return }
-                guard seen.insert(asset.localIdentifier).inserted else { return }
-                assetsByDate[day, default: []].append(asset)
-            }
-
-            general.forEach(consider)
-
-            // Shared-album photos are invisible to the general fetch; merge them.
-            for asset in sharedToMerge {
-                consider(asset)
-            }
-
-            let mapped = assetsByDate.keys.sorted(by: >).map { date in
-                let allAssets = assetsByDate[date] ?? []
-                let selected = allAssets
-                    .shuffled()
-                    .prefix(min(photoLimit, allAssets.count))
-                    .sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
-                let year = calendar.component(.year, from: date)
-                return (date, year, allAssets, Array(selected))
-            }
-            return (mapped, sharedIDs, zoneByID)
-        }.value
-
-        func items(_ assets: [PHAsset]) -> [PhotoItem] {
-            var built = PhotoItem.build(from: assets, sharedIDs: sharedIDs)
-            for index in built.indices {
-                if let zone = zoneByID[assets[index].localIdentifier] {
-                    built[index].captureTimeZone = zone
-                }
-            }
-            return built
+            return groups
         }
-
+        let groups = await withTaskCancellationHandler {
+            await query.value
+        } onCancel: {
+            query.cancel()
+        }
+        let previousByDate = Dictionary(uniqueKeysWithValues: previous.map { ($0.date, $0) })
         var entries: [TodayInHistoryEntry] = []
-        for (date, year, allAssets, selectedAssets) in groups {
-            let allItems = items(allAssets)
-            let placeText = await PhotoRoute.placeText(for: allItems)
+        var itemsByDate: [Date: [PhotoItem]] = [:]
+        for (date, fetched) in groups {
+            let items = fetched.filter { !$0.isOwnSharedContribution }
+            guard !items.isEmpty else { continue }
+            let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            let selectedIDs = HistorySelectionPolicy.selectedIDs(
+                previous: previousByDate[date]?.photos.map(\.id) ?? [],
+                available: items.map(\.id), limit: photoLimit)
+            itemsByDate[date] = items
             entries.append(TodayInHistoryEntry(
-                date: date,
-                year: year,
-                placeText: placeText,
-                photos: items(selectedAssets),
-                totalMediaCount: allAssets.count
-            ))
+                date: date, year: Calendar.current.component(.year, from: date),
+                placeText: previousByDate[date]?.placeText,
+                photos: selectedIDs.compactMap { byID[$0] }, totalMediaCount: items.count))
         }
-        return entries
+        captureLog.debug("History photos ready in \((CFAbsoluteTimeGetCurrent() - started) * 1000) ms; entries: \(entries.count)")
+        return TodayInHistorySnapshot(entries: entries, itemsByDate: itemsByDate)
+    }
+
+    func resolveHistoryPlaces(
+        in snapshot: TodayInHistorySnapshot,
+        onUpdate: @MainActor (TodayInHistoryEntry) -> Void
+    ) async {
+        let started = CFAbsoluteTimeGetCurrent()
+        for entry in snapshot.entries {
+            guard !Task.isCancelled else { return }
+            let placeText = await PhotoRoute.placeText(for: snapshot.itemsByDate[entry.date] ?? [])
+            guard !Task.isCancelled else { return }
+            guard placeText != entry.placeText else { continue }
+            onUpdate(TodayInHistoryEntry(
+                date: entry.date, year: entry.year, placeText: placeText,
+                photos: entry.photos, totalMediaCount: entry.totalMediaCount))
+        }
+        captureLog.debug("History places ready in \((CFAbsoluteTimeGetCurrent() - started) * 1000) ms")
     }
 
     func items(on day: Date) async -> [PhotoItem] {
         let shared = await SharedAlbumCache.shared.current()
-        return await Task.detached(priority: .userInitiated) { [shared] () -> [PhotoItem] in
-            let clock = CaptureClock.current()
+        return await Task.detached(priority: .userInitiated) {
+            Self.dayItems(on: day, shared: shared, clock: CaptureClock.current())
+        }.value
+    }
+
+    /// One fetch/assignment path for day pages and history, including the
+    /// capture-local margin, neighbor zones and own shared-copy matching.
+    private nonisolated static func dayItems(
+        on day: Date, shared: SharedAlbumCache.Snapshot, clock: CaptureClock
+    ) -> [PhotoItem] {
             let calendar = clock.calendar
             let start = calendar.startOfDay(for: day)
             guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
@@ -373,6 +379,5 @@ final class PhotoLibraryService {
                 items[index].captureTimeZone = zoneByID[sorted[index].localIdentifier] ?? clock.deviceZone
             }
             return items
-        }.value
     }
 }

@@ -33,6 +33,8 @@ struct RootView: View {
     @State private var historyLoading = false
     @State private var historyReferenceDay: Date?
     @State private var historyPreparationID = UUID()
+    @State private var historyTask: Task<Void, Never>?
+    @State private var historyCache: [Date: [TodayInHistoryEntry]] = [:]
     @State private var dayNavigationRequestID = UUID()
     @State private var sourceRefreshRequestID = UUID()
     @State private var tunnelNeedsUpdate = false
@@ -165,6 +167,7 @@ struct RootView: View {
         }
         .onChange(of: dayModel?.date) { _, newDate in
             guard let newDate else {
+                historyTask?.cancel()
                 historyEntries = []
                 historyLoading = false
                 historyReferenceDay = nil
@@ -181,6 +184,9 @@ struct RootView: View {
             if newPhase == .day, let date = dayModel?.date {
                 refreshDayContext(for: date)
             } else if newPhase != .day {
+                historyTask?.cancel()
+                historyPreparationID = UUID()
+                historyReferenceDay = nil
                 dayNavigationRequestID = UUID()
                 navigationDaysLoading = false
                 sourceRefreshRequestID = UUID()
@@ -660,21 +666,43 @@ struct RootView: View {
         }
     }
 
-    private func prepareTodayInHistoryIfNeeded(for day: Date) {
+    private func prepareTodayInHistoryIfNeeded(for day: Date, force: Bool = false) {
         let referenceDate = Calendar.current.startOfDay(for: day)
-        guard historyReferenceDay != referenceDate else { return }
+        guard force || historyReferenceDay != referenceDate else { return }
+        historyTask?.cancel()
+        let sameReference = historyReferenceDay == referenceDate
         historyReferenceDay = referenceDate
-        historyEntries = []
-        historyLoading = true
+        if !sameReference {
+            historyEntries = historyCache[referenceDate] ?? []
+        }
+        historyLoading = historyCache[referenceDate] == nil && historyEntries.isEmpty
 
         let requestID = UUID()
         historyPreparationID = requestID
-        Task {
-            let entries = await PhotoLibraryService.shared.todayInHistory(referenceDate: referenceDate)
-            guard historyPreparationID == requestID,
+        let previous = historyEntries
+        historyTask = Task {
+            let snapshot = await PhotoLibraryService.shared.todayInHistory(
+                referenceDate: referenceDate, preserving: previous)
+            guard !Task.isCancelled, phase == .day, historyPreparationID == requestID,
                   historyReferenceDay == referenceDate else { return }
-            historyEntries = entries
+            if historyEntries != snapshot.entries { historyEntries = snapshot.entries }
             historyLoading = false
+            cacheHistory(referenceDate)
+            await PhotoLibraryService.shared.resolveHistoryPlaces(in: snapshot) { entry in
+                guard !Task.isCancelled, phase == .day, historyPreparationID == requestID,
+                      historyReferenceDay == referenceDate,
+                      let index = historyEntries.firstIndex(where: { $0.date == entry.date }),
+                      historyEntries[index] != entry else { return }
+                historyEntries[index] = entry
+                cacheHistory(referenceDate)
+            }
+        }
+    }
+
+    private func cacheHistory(_ referenceDate: Date) {
+        historyCache[referenceDate] = historyEntries
+        if historyCache.count > 12, let key = historyCache.keys.first(where: { $0 != referenceDate }) {
+            historyCache.removeValue(forKey: key)
         }
     }
 
@@ -682,10 +710,9 @@ struct RootView: View {
         navigationDaysLoaded = false
         navigationDaysLoading = false
         dayNavigationRequestID = UUID()
-        historyReferenceDay = nil
-        historyPreparationID = UUID()
         guard phase == .day, let model = dayModel else { return }
-        refreshDayContext(for: model.date)
+        prepareTodayInHistoryIfNeeded(for: model.date, force: true)
+        loadNavigationDaysIfNeeded()
         let requestID = UUID()
         sourceRefreshRequestID = requestID
         let sourceRevision = model.sourceRevision

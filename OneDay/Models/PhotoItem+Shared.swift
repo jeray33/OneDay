@@ -17,7 +17,7 @@ extension PhotoItem {
     ///   the `.typeCloudShared` bit and no `.typeUserLibrary` bit. That combination
     ///   is the most reliable approximation of "non-self photos from the
     ///   Shared Photo Library" available through the public API.
-    static func isSharedLibraryOrigin(_ asset: PHAsset) -> Bool {
+    nonisolated static func isSharedLibraryOrigin(_ asset: PHAsset) -> Bool {
         let st = asset.sourceType
         return st.contains(.typeCloudShared) && !st.contains(.typeUserLibrary)
     }
@@ -41,7 +41,7 @@ extension PhotoItem {
     /// timestamp matches the user's own library, i.e. photos the user
     /// contributed themselves (see `SharedAlbumCache.Snapshot`). This drives the
     /// contributor-match filter so the user's own uploads can be hidden.
-    static func build(
+    nonisolated static func build(
         from asset: PHAsset,
         sharedIDs: Set<String> = [],
         ownContributionIDs: Set<String> = []
@@ -62,7 +62,7 @@ extension PhotoItem {
 
     /// Bulk variant: prefer over `map { PhotoItem.build(from: $0, sharedIDs:) }`
     /// to keep the call site compact and the shared detection in one place.
-    static func build(
+    nonisolated static func build(
         from assets: [PHAsset],
         sharedIDs: Set<String> = [],
         ownContributionIDs: Set<String> = []

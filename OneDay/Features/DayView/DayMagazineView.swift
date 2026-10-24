@@ -1,6 +1,7 @@
 import Photos
 import SwiftUI
 import UIKit
+import os
 
 struct DayMagazineView: View {
     var model: DayViewModel
@@ -33,6 +34,7 @@ struct DayMagazineView: View {
 
     @Namespace private var previewNamespace
     @State private var coverScroll = PhotoCoverScrollState()
+    @State private var scrollPerformance = DayScrollPerformanceProbe()
 
     @State private var shouldRevealContent = false
     @State private var pinchScale: CGFloat = 1.0
@@ -205,6 +207,7 @@ struct DayMagazineView: View {
                                      coverHeight: coverHeight, travel: coverSpace)
                 }
                 .onScrollPhaseChange { oldPhase, newPhase, context in
+                    scrollPerformance.setScrolling(newPhase != .idle)
                     snapPhotoCard(from: oldPhase, to: newPhase,
                                   geometry: context.geometry, travel: coverSpace)
                 }
@@ -373,6 +376,7 @@ struct DayMagazineView: View {
             }
             await model.prepare()
         }
+        .onDisappear { scrollPerformance.setScrolling(false) }
         .sheet(item: albumPickerBinding) { item in
             AlbumPickerSheet(item: item, model: model, onFinish: {})
         }
@@ -1031,6 +1035,48 @@ private struct DayGridSnapshotKey: PreferenceKey {
 }
 
 // MARK: - Scroll tracking
+
+/// Opt-in debug sampling only. Instruments remains the source of truth for
+/// rendering hitches; this log makes repeated device runs easy to compare.
+@MainActor
+private final class DayScrollPerformanceProbe: NSObject {
+    private let logger = Logger(subsystem: "OneDay", category: "ScrollPerformance")
+    private var link: CADisplayLink?
+    private var lastTimestamp: CFTimeInterval = 0
+    private var frames = 0
+    private var slowFrames = 0
+    private var worstGap: CFTimeInterval = 0
+
+    func setScrolling(_ active: Bool) {
+        #if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-OneDayPerformanceTrace") else { return }
+        if active {
+            guard link == nil else { return }
+            lastTimestamp = 0
+            frames = 0
+            slowFrames = 0
+            worstGap = 0
+            let displayLink = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            displayLink.add(to: .main, forMode: .common)
+            link = displayLink
+        } else if let link {
+            link.invalidate()
+            self.link = nil
+            logger.debug("Scroll samples: \(self.frames), slow intervals: \(self.slowFrames), worst: \(self.worstGap * 1000) ms")
+        }
+        #endif
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        defer { lastTimestamp = link.timestamp }
+        guard lastTimestamp > 0 else { return }
+        let gap = link.timestamp - lastTimestamp
+        let budget = max(link.targetTimestamp - link.timestamp, 1.0 / 120)
+        frames += 1
+        if gap > budget * 1.5 { slowFrames += 1 }
+        worstGap = max(worstGap, gap)
+    }
+}
 
 private struct ContentScrollBoundsKey: PreferenceKey {
     static var defaultValue: CGRect? = nil

@@ -613,7 +613,7 @@ struct PhotoPreviewView: View {
             prefetchNeighborPages(size: size)
             showPendingRotationFailure()
         }
-        .onChange(of: model.allItems) {
+        .onChange(of: model.itemsRevision) {
             rebuildItemsIndex()
             ensureValidSelectionAfterFiltering()
             prefetchNeighborPages(size: size)

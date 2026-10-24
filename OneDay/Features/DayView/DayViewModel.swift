@@ -12,10 +12,12 @@ final class DayViewModel {
         didSet {
             gridItemIDs = allItems.map(\.id)
             gridCaptions = allItems.map(\.caption)
+            itemsRevision = UUID()
         }
     }
     private(set) var gridItemIDs: [String] = []
     private(set) var gridCaptions: [String?] = []
+    private(set) var itemsRevision = UUID()
     var selected: PhotoItem? {
         didSet {
             guard selected == nil,
@@ -640,16 +642,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let items = allItems
         guard !items.isEmpty else { return }
 
-        var captionsByID: [String: String] = [:]
-        for item in items {
-            guard isCurrentFilterPreparation(generation) else { return }
-            if let caption = await PhotoCaptionManager.shared.caption(
-                for: item.asset, embeddedFallback: false) {
-                captionsByID[item.id] = caption
-            }
-        }
+        let captionsByID = await captionBatch(items, embeddedFallback: false)
+        guard isCurrentFilterPreparation(generation) else { return }
         if !captionsByID.isEmpty {
-            guard isCurrentFilterPreparation(generation) else { return }
             applyCaptions(captionsByID)
         }
 
@@ -659,29 +654,34 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         guard !pending.isEmpty else { return }
 
-        var embedded: [String: String] = [:]
+        let embedded = await captionBatch(pending, embeddedFallback: true)
+        guard !embedded.isEmpty, isCurrentFilterPreparation(generation) else { return }
+        applyCaptions(embedded)
+    }
+
+    private func captionBatch(_ items: [PhotoItem], embeddedFallback: Bool) async -> [String: String] {
+        var captions: [String: String] = [:]
         var next = 0
         await withTaskGroup(of: (String, String?).self) { group in
             @MainActor func enqueueNext() {
-                guard !Task.isCancelled, next < pending.count else { return }
-                let item = pending[next]
+                guard !Task.isCancelled, next < items.count else { return }
+                let item = items[next]
                 let id = item.id
                 let asset = item.asset
                 next += 1
                 group.addTask {
                     let caption = await PhotoCaptionManager.shared.caption(
-                        for: asset, allowsNetworkAccess: false)
+                        for: asset, embeddedFallback: embeddedFallback, allowsNetworkAccess: false)
                     return (id, caption)
                 }
             }
-            for _ in 0..<min(4, pending.count) { enqueueNext() }
+            for _ in 0..<min(4, items.count) { enqueueNext() }
             for await (id, caption) in group {
-                if let caption { embedded[id] = caption }
+                if let caption { captions[id] = caption }
                 enqueueNext()
             }
         }
-        guard !embedded.isEmpty, isCurrentFilterPreparation(generation) else { return }
-        applyCaptions(embedded)
+        return captions
     }
 
     /// Propagates found captions into the body items, the unfiltered source,

@@ -62,9 +62,9 @@ final class PhotoCaptionManager {
 
         guard embeddedFallback else { return nil }
         // A miss is never persisted, so a caption added in Photos shows up on
-        // the next read; within a session, though, an asset already checked at
-        // this content version is never re-read.
-        if embeddedChecked[id] == asset.contentVersion { return nil }
+        // the next read. A local-only miss must not suppress a later explicit
+        // request that allows downloading the embedded metadata.
+        if !allowsNetworkAccess, embeddedChecked[id] == asset.contentVersion { return nil }
 
         if let embedded = await Self.embeddedCaption(
             for: asset, allowsNetworkAccess: allowsNetworkAccess) {
@@ -72,7 +72,7 @@ final class PhotoCaptionManager {
             store(embedded, for: id)
             return embedded
         }
-        embeddedChecked[id] = asset.contentVersion
+        if !allowsNetworkAccess { embeddedChecked[id] = asset.contentVersion }
         return nil
     }
 

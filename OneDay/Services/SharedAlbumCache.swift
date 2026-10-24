@@ -46,6 +46,7 @@ actor SharedAlbumCache {
     private var snapshot: Snapshot?
     private var loadTask: Task<Snapshot, Never>?
     private var isRefreshing = false
+    private var pendingLibraryRefresh = false
     private var debounceTask: Task<Void, Never>?
 
     /// How long the library must stay quiet after a change before we recompute.
@@ -100,7 +101,7 @@ actor SharedAlbumCache {
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.refreshQuietPeriod)
             guard !Task.isCancelled else { return }
-            await self?.triggerFullRefresh()
+            await self?.triggerFullRefresh(notifyLibraryChange: true)
         }
     }
 
@@ -108,17 +109,36 @@ actor SharedAlbumCache {
     /// scan for contributor matching) in the background and swaps it in. Used
     /// both for phase 2 of the first load and for library-change refreshes.
     /// Coalesces: a refresh already in flight is not duplicated.
-    private func triggerFullRefresh() {
-        guard !isRefreshing else { return }
+    private func triggerFullRefresh(notifyLibraryChange: Bool = false) {
+        guard !isRefreshing else {
+            pendingLibraryRefresh = pendingLibraryRefresh || notifyLibraryChange
+            return
+        }
         isRefreshing = true
         Task {
             let fresh = await Task.detached(priority: .utility) { Self.compute() }.value
+            let changed = snapshot.map { !Self.sameSnapshot($0, fresh) } ?? true
             snapshot = fresh
             isRefreshing = false
-            // Notify after the debounced snapshot is ready, not on classification
-            // or each intermediate PhotoKit change during iCloud synchronization.
-            NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
+            // Cold phase 2 is often identical. Real library changes must still
+            // notify even when only non-shared assets changed.
+            if notifyLibraryChange || changed {
+                NotificationCenter.default.post(name: .photoLibraryContentChanged, object: nil)
+            }
+            if pendingLibraryRefresh {
+                pendingLibraryRefresh = false
+                triggerFullRefresh(notifyLibraryChange: true)
+            }
         }
+    }
+
+    private nonisolated static func sameSnapshot(_ a: Snapshot, _ b: Snapshot) -> Bool {
+        guard a.sharedAssetIDs == b.sharedAssetIDs,
+              a.ownContributionIDs == b.ownContributionIDs else { return false }
+        let versions = Dictionary(uniqueKeysWithValues: a.sharedAssets.map {
+            ($0.localIdentifier, $0.contentVersion)
+        })
+        return b.sharedAssets.allSatisfy { versions[$0.localIdentifier] == $0.contentVersion }
     }
 
     // MARK: - Computation

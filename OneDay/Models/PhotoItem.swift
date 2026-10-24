@@ -1,7 +1,7 @@
 import Photos
 import CoreLocation
 
-struct PhotoItem: Identifiable, Hashable {
+nonisolated struct PhotoItem: Identifiable, Hashable {
     /// How the asset reached this device out of a shared space.
     enum SharedSource: Hashable {
         /// Lives in an iCloud Shared Album (membership comes from the actual
