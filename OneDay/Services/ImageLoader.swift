@@ -46,67 +46,268 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         let images: [UIImage?]
     }
 
+    // MARK: - Request bookkeeping
+
+    /// One single-shot PhotoKit request shared by identical waiters.
     private final class PendingRequest {
         var requestID: PHImageRequestID?
+        let asset: PHAsset
+        let targetSize: CGSize
+        let contentMode: PHImageContentMode
         var completions: [UUID: (UIImage?) -> Void]
 
-        init(token: UUID, completion: @escaping (UIImage?) -> Void) {
+        init(asset: PHAsset,
+             targetSize: CGSize,
+             contentMode: PHImageContentMode,
+             token: UUID,
+             completion: @escaping (UIImage?) -> Void) {
+            self.asset = asset
+            self.targetSize = targetSize
+            self.contentMode = contentMode
             completions = [token: completion]
         }
     }
 
-    static let shared = ImageLoader()
-    private let manager = PHCachingImageManager()
-    private let memoryCache = NSCache<NSString, UIImage>()
-    private let requestLock = NSLock()
-    private var pendingRequests: [String: PendingRequest] = [:]
-
-    private init() {
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
-        memoryCache.countLimit = 240
+    /// One streaming PhotoKit request shared by any number of consumers.
+    /// Every delivered frame reaches every live continuation; the underlying
+    /// request is cancelled only when the last consumer goes away.
+    private final class StreamRequest {
+        var requestID: PHImageRequestID?
+        var continuations: [UUID: AsyncStream<UIImage>.Continuation] = [:]
     }
 
+    /// Bookkeeping for one cached image, so the best cached version of an
+    /// asset can be found without probing keys for every size.
+    private struct AssetIndexEntry {
+        let key: String
+        let contentVersion: String
+        let mode: PHImageContentMode
+        let pixelArea: Int
+    }
+
+    static let shared = ImageLoader()
+    private let manager = PHCachingImageManager()
+
+    // Tiered caches. Analysis samples, grid thumbnails and full-quality
+    // previews have very different footprints; one shared cache let small
+    // samples evict the images the user was actually looking at (and vice
+    // versa), thrashing during scrolls.
+    private let smallCache = NSCache<NSString, UIImage>()
+    private let thumbnailCache = NSCache<NSString, UIImage>()
+    private let largeCache = NSCache<NSString, UIImage>()
+
+    private let requestLock = NSLock()
+    private var pendingRequests: [String: PendingRequest] = [:]
+    private var streamRequests: [String: StreamRequest] = [:]
+    private var assetIndex: [String: [AssetIndexEntry]] = [:]
+
+    private init() {
+        smallCache.countLimit = 256
+        smallCache.totalCostLimit = 32 * 1024 * 1024
+        thumbnailCache.countLimit = 700
+        thumbnailCache.totalCostLimit = 128 * 1024 * 1024
+        largeCache.countLimit = 16
+        largeCache.totalCostLimit = 192 * 1024 * 1024
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            // Preview-sized images are the most expensive to hold and the
+            // cheapest to reload; drop them first.
+            self?.largeCache.removeAllObjects()
+        }
+    }
+
+    // MARK: - Streams
+
+    /// Delivers best-available frames for `asset`.
+    ///
+    /// - `highQuality` requests only the final, exact frame.
+    /// - `progressive` first streams opportunistic frames (a cheap degraded
+    ///   pass, then the full-size fast resize) and follows with one
+    ///   exact-size high-quality frame when the fast pass fell short of the
+    ///   target, typically for iCloud originals. `highQuality` is ignored
+    ///   when `progressive` is set.
+    ///
+    /// Identical concurrent requests share a single PhotoKit call, and
+    /// cached results are delivered synchronously.
     func stream(asset: PHAsset,
                 targetSize: CGSize,
                 contentMode: PHImageContentMode = .aspectFill,
-                highQuality: Bool = false) -> AsyncStream<UIImage> {
-        AsyncStream { continuation in
-            let quality: LoadQuality = highQuality ? .highQuality : .opportunistic
-            let key = requestKey(asset: asset,
-                                 targetSize: targetSize,
-                                 contentMode: contentMode,
-                                 quality: quality,
-                                 allowsNetworkAccess: true)
-            if let cached = memoryCache.object(forKey: key as NSString) {
-                continuation.yield(cached)
-                continuation.finish()
-                return
-            }
+                highQuality: Bool = false,
+                progressive: Bool = false) -> AsyncStream<UIImage> {
+        if progressive {
+            return progressiveStream(asset: asset, targetSize: targetSize,
+                                     contentMode: contentMode)
+        }
+        return sharedStream(asset: asset, targetSize: targetSize,
+                            contentMode: contentMode,
+                            quality: highQuality ? .highQuality : .opportunistic,
+                            allowsNetworkAccess: true)
+    }
 
-            let options = PHImageRequestOptions()
-            options.isNetworkAccessAllowed = true
-            options.deliveryMode = highQuality ? .highQualityFormat : .opportunistic
-            options.resizeMode = .fast
-            let requestID = manager.requestImage(for: asset,
-                                                 targetSize: targetSize,
-                                                 contentMode: contentMode,
-                                                 options: options) { image, info in
-                if let image { continuation.yield(image) }
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
-                let failed = info?[PHImageErrorKey] != nil
-                if let image, !isDegraded {
-                    self.store(image, forKey: key)
+    private func progressiveStream(asset: PHAsset,
+                                   targetSize: CGSize,
+                                   contentMode: PHImageContentMode) -> AsyncStream<UIImage> {
+        AsyncStream { continuation in
+            let task = Task {
+                var lastFrame: UIImage?
+                for await frame in self.sharedStream(
+                    asset: asset, targetSize: targetSize, contentMode: contentMode,
+                    quality: .opportunistic, allowsNetworkAccess: true
+                ) {
+                    lastFrame = frame
+                    continuation.yield(frame)
                 }
-                if !isDegraded || cancelled || failed {
+                guard !Task.isCancelled else {
                     continuation.finish()
+                    return
                 }
+                // The fast pass usually already covers the target for local
+                // photos; only chase the exact resize when it fell short.
+                let expected = Self.expectedSize(forAsset: asset,
+                                                 targetSize: targetSize,
+                                                 contentMode: contentMode)
+                let fastPassComplete = lastFrame.map { Self.frame($0, covers: expected) } ?? false
+                if !fastPassComplete,
+                   let sharp = await self.requestImage(
+                    asset: asset, targetSize: targetSize, contentMode: contentMode,
+                    quality: .highQuality, allowsNetworkAccess: true) {
+                    continuation.yield(sharp)
+                }
+                continuation.finish()
             }
-            continuation.onTermination = { @Sendable _ in
-                self.manager.cancelImageRequest(requestID)
-            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
+
+    private func sharedStream(asset: PHAsset,
+                              targetSize: CGSize,
+                              contentMode: PHImageContentMode,
+                              quality: LoadQuality,
+                              allowsNetworkAccess: Bool) -> AsyncStream<UIImage> {
+        let key = requestKey(asset: asset, targetSize: targetSize,
+                             contentMode: contentMode, quality: quality,
+                             allowsNetworkAccess: allowsNetworkAccess)
+        if let cached = cachedImage(forKey: key) {
+            return AsyncStream { continuation in
+                continuation.yield(cached)
+                continuation.finish()
+            }
+        }
+        let token = UUID()
+        return AsyncStream { continuation in
+            continuation.onTermination = { @Sendable [weak self] _ in
+                self?.detachStreamConsumer(key: key, token: token)
+            }
+            self.attachStreamConsumer(
+                key: key, token: token, continuation: continuation, asset: asset,
+                targetSize: targetSize, contentMode: contentMode,
+                quality: quality, allowsNetworkAccess: allowsNetworkAccess)
+        }
+    }
+
+    private func attachStreamConsumer(key: String,
+                                      token: UUID,
+                                      continuation: AsyncStream<UIImage>.Continuation,
+                                      asset: PHAsset,
+                                      targetSize: CGSize,
+                                      contentMode: PHImageContentMode,
+                                      quality: LoadQuality,
+                                      allowsNetworkAccess: Bool) {
+        requestLock.lock()
+        if let cached = cachedImage(forKey: key) {
+            requestLock.unlock()
+            continuation.yield(cached)
+            continuation.finish()
+            return
+        }
+        if let existing = streamRequests[key] {
+            existing.continuations[token] = continuation
+            requestLock.unlock()
+            return
+        }
+        let entry = StreamRequest()
+        entry.continuations[token] = continuation
+        streamRequests[key] = entry
+        requestLock.unlock()
+
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = allowsNetworkAccess
+        options.deliveryMode = deliveryMode(for: quality)
+        options.resizeMode = quality == .highQuality ? .exact : .fast
+        options.isSynchronous = false
+        let requestID = manager.requestImage(
+            for: asset, targetSize: targetSize, contentMode: contentMode, options: options
+        ) { image, info in
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            let failed = info?[PHImageErrorKey] != nil
+            let finished = !isDegraded || cancelled || failed
+            let storeable = image != nil && finished && !cancelled && !failed
+            self.deliverStreamResult(
+                key: key, image: image, finished: finished, storeable: storeable,
+                asset: asset, targetSize: targetSize, contentMode: contentMode)
+        }
+        requestLock.lock()
+        if let entry = streamRequests[key] {
+            entry.requestID = requestID
+            requestLock.unlock()
+        } else {
+            requestLock.unlock()
+            manager.cancelImageRequest(requestID)
+        }
+    }
+
+    /// Delivers one PhotoKit callback to every live consumer of the request.
+    private func deliverStreamResult(key: String,
+                                     image: UIImage?,
+                                     finished: Bool,
+                                     storeable: Bool,
+                                     asset: PHAsset,
+                                     targetSize: CGSize,
+                                     contentMode: PHImageContentMode) {
+        if storeable, let image {
+            store(image, forKey: key, asset: asset, targetSize: targetSize,
+                  contentMode: contentMode)
+        }
+        requestLock.lock()
+        guard let entry = streamRequests[key] else {
+            requestLock.unlock()
+            return
+        }
+        let continuations = Array(entry.continuations.values)
+        if finished {
+            streamRequests.removeValue(forKey: key)
+        }
+        requestLock.unlock()
+        for continuation in continuations {
+            if let image { continuation.yield(image) }
+            if finished { continuation.finish() }
+        }
+    }
+
+    /// One consumer went away. The shared request is cancelled only when it
+    /// was the last one.
+    private func detachStreamConsumer(key: String, token: UUID) {
+        requestLock.lock()
+        guard let entry = streamRequests[key] else {
+            requestLock.unlock()
+            return
+        }
+        entry.continuations.removeValue(forKey: token)
+        if entry.continuations.isEmpty {
+            let requestID = entry.requestID
+            streamRequests.removeValue(forKey: key)
+            requestLock.unlock()
+            if let requestID { manager.cancelImageRequest(requestID) }
+        } else {
+            requestLock.unlock()
+        }
+    }
+
+    // MARK: - Single-shot thumbnails
 
     /// Single-shot thumbnail for photo-derived colors and preview images.
     /// Pass `highQuality: true` when the image is scaled up on screen (e.g. the
@@ -190,6 +391,55 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         }
     }
 
+    // MARK: - Prefetch
+
+    /// Loads one opportunistic frame per asset with exactly the parameters a
+    /// progressive stream's first stage uses, so later streams hit the memory
+    /// cache. Warms the photos surrounding the one being previewed. (The
+    /// caching manager's own `startCachingImages` cannot match per-asset
+    /// aspect-fit target sizes, so warming goes through the shared loader.)
+    func preload(assets: [PHAsset], targetSize: CGSize,
+                 contentMode: PHImageContentMode = .aspectFit) async {
+        guard !assets.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for asset in assets {
+                group.addTask(priority: .utility) {
+                    _ = await self.requestImage(
+                        asset: asset, targetSize: targetSize, contentMode: contentMode,
+                        quality: .opportunistic, allowsNetworkAccess: true)
+                }
+            }
+        }
+    }
+
+    // MARK: - Cached lookup
+
+    /// The largest image already cached for this asset's current content
+    /// version, or nil. Synchronous: lets a hero flight or preview start from
+    /// the exact pixels the grid is showing instead of waiting for a fresh
+    /// PhotoKit request. Pass a `contentMode` to prefer cached images that
+    /// were requested with it (e.g. `.aspectFit` for previews).
+    func bestCachedImage(for asset: PHAsset,
+                         contentMode: PHImageContentMode? = nil) -> UIImage? {
+        requestLock.lock()
+        let entries = assetIndex[asset.localIdentifier] ?? []
+        let version = asset.contentVersion
+        var candidates = entries.filter { $0.contentVersion == version }
+        if let contentMode {
+            let preferred = candidates.filter { $0.mode == contentMode }
+            if !preferred.isEmpty { candidates = preferred }
+        }
+        candidates.sort { $0.pixelArea > $1.pixelArea }
+        let keys = candidates.map(\.key)
+        requestLock.unlock()
+        for key in keys {
+            if let image = cachedImage(forKey: key) { return image }
+        }
+        return nil
+    }
+
+    // MARK: - Live photo / video
+
     /// Only deliver the final current-version resource. Termination cancels iCloud work too.
     func livePhotoStream(asset: PHAsset, targetSize: CGSize) -> AsyncStream<PHLivePhoto> {
         AsyncStream { continuation in
@@ -265,7 +515,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                              contentMode: contentMode,
                              quality: quality,
                              allowsNetworkAccess: allowsNetworkAccess)
-        if let cached = memoryCache.object(forKey: key as NSString) { return cached }
+        if let cached = cachedImage(forKey: key) { return cached }
 
         let token = UUID()
         return await withTaskCancellationHandler {
@@ -297,7 +547,7 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                                  token: UUID,
                                  completion: @escaping (UIImage?) -> Void) {
         requestLock.lock()
-        if let cached = memoryCache.object(forKey: key as NSString) {
+        if let cached = cachedImage(forKey: key) {
             requestLock.unlock()
             completion(cached)
             return
@@ -307,16 +557,16 @@ nonisolated final class ImageLoader: @unchecked Sendable {
             requestLock.unlock()
             return
         }
-        pendingRequests[key] = PendingRequest(token: token, completion: completion)
+        pendingRequests[key] = PendingRequest(asset: asset,
+                                              targetSize: targetSize,
+                                              contentMode: contentMode,
+                                              token: token,
+                                              completion: completion)
         requestLock.unlock()
 
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = allowsNetworkAccess
-        switch quality {
-        case .fast: options.deliveryMode = .fastFormat
-        case .opportunistic: options.deliveryMode = .opportunistic
-        case .highQuality: options.deliveryMode = .highQualityFormat
-        }
+        options.deliveryMode = deliveryMode(for: quality)
         options.resizeMode = quality == .highQuality ? .exact : .fast
         options.isSynchronous = false
 
@@ -344,8 +594,6 @@ nonisolated final class ImageLoader: @unchecked Sendable {
     }
 
     private func completeRequest(key: String, image: UIImage?) {
-        if let image { store(image, forKey: key) }
-
         requestLock.lock()
         guard let pending = pendingRequests.removeValue(forKey: key) else {
             requestLock.unlock()
@@ -355,6 +603,10 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         let requestID = pending.requestID
         requestLock.unlock()
 
+        if let image {
+            store(image, forKey: key, asset: pending.asset,
+                  targetSize: pending.targetSize, contentMode: pending.contentMode)
+        }
         if let requestID { manager.cancelImageRequest(requestID) }
         for callback in callbacks { callback(image) }
     }
@@ -377,6 +629,76 @@ nonisolated final class ImageLoader: @unchecked Sendable {
         }
     }
 
+    private func deliveryMode(for quality: LoadQuality) -> PHImageRequestOptionsDeliveryMode {
+        switch quality {
+        case .fast: return .fastFormat
+        case .opportunistic: return .opportunistic
+        case .highQuality: return .highQualityFormat
+        }
+    }
+
+    // MARK: - Caches
+
+    private enum CacheTier {
+        case small      // colour/sharpness analysis samples
+        case thumbnail  // grid and tunnel thumbnails
+        case large      // preview and hero frames
+    }
+
+    private static func cacheTier(forPixelSize size: CGSize) -> CacheTier {
+        let maxDimension = max(size.width, size.height)
+        if maxDimension <= 320 { return .small }
+        if maxDimension <= 1024 { return .thumbnail }
+        return .large
+    }
+
+    private func cache(for tier: CacheTier) -> NSCache<NSString, UIImage> {
+        switch tier {
+        case .small: return smallCache
+        case .thumbnail: return thumbnailCache
+        case .large: return largeCache
+        }
+    }
+
+    /// A key encodes the requested pixel size, so it can only ever live in
+    /// one tier; probing all three keeps lookups simple and safe.
+    private func cachedImage(forKey key: String) -> UIImage? {
+        largeCache.object(forKey: key as NSString)
+            ?? thumbnailCache.object(forKey: key as NSString)
+            ?? smallCache.object(forKey: key as NSString)
+    }
+
+    private func store(_ image: UIImage,
+                       forKey key: String,
+                       asset: PHAsset,
+                       targetSize: CGSize,
+                       contentMode: PHImageContentMode) {
+        let tier = Self.cacheTier(forPixelSize: targetSize)
+        cache(for: tier).setObject(image, forKey: key as NSString,
+                                   cost: Self.decodedCost(of: image))
+        let id = asset.localIdentifier
+        let entry = AssetIndexEntry(key: key,
+                                    contentVersion: asset.contentVersion,
+                                    mode: contentMode,
+                                    pixelArea: Int(targetSize.width * targetSize.height))
+        requestLock.lock()
+        var entries = assetIndex[id] ?? []
+        if !entries.contains(where: { $0.key == key }) {
+            entries.append(entry)
+            assetIndex[id] = entries
+        }
+        requestLock.unlock()
+    }
+
+    private static func decodedCost(of image: UIImage) -> Int {
+        if let cgImage = image.cgImage {
+            return cgImage.bytesPerRow * cgImage.height
+        }
+        let width = image.size.width * image.scale
+        let height = image.size.height * image.scale
+        return Int(width * height * 4)
+    }
+
     private func requestKey(asset: PHAsset,
                             targetSize: CGSize,
                             contentMode: PHImageContentMode,
@@ -384,7 +706,9 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                             allowsNetworkAccess: Bool) -> String {
         let width = Int(targetSize.width.rounded())
         let height = Int(targetSize.height.rounded())
-        return "\(asset.contentVersion)|\(width)x\(height)|\(contentMode.rawValue)|\(quality.rawValue)|\(allowsNetworkAccess)"
+        // The asset identifier keeps two assets that happen to share a
+        // content version from ever sharing a cache entry.
+        return "\(asset.localIdentifier)|\(asset.contentVersion)|\(width)x\(height)|\(contentMode.rawValue)|\(quality.rawValue)|\(allowsNetworkAccess)"
     }
 
     private func pixelSize(for size: CGSize) -> CGSize {
@@ -413,15 +737,29 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                       height: bounds.height)
     }
 
-    private func store(_ image: UIImage, forKey key: String) {
-        let cost: Int
-        if let cgImage = image.cgImage {
-            cost = cgImage.bytesPerRow * cgImage.height
-        } else {
-            let width = image.size.width * image.scale
-            let height = image.size.height * image.scale
-            cost = Int(width * height * 4)
+    /// The pixel size a request is expected to deliver; `.aspectFit` shapes
+    /// the target box to the asset's aspect ratio.
+    private static func expectedSize(forAsset asset: PHAsset,
+                                     targetSize: CGSize,
+                                     contentMode: PHImageContentMode) -> CGSize {
+        guard contentMode == .aspectFit,
+              asset.pixelWidth > 0,
+              asset.pixelHeight > 0 else { return targetSize }
+        let aspect = CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
+        let boxAspect = targetSize.width / max(targetSize.height, 1)
+        if aspect >= boxAspect {
+            return CGSize(width: targetSize.width,
+                          height: max((targetSize.width / aspect).rounded(.up), 1))
         }
-        memoryCache.setObject(image, forKey: key as NSString, cost: cost)
+        return CGSize(width: max((targetSize.height * aspect).rounded(.up), 1),
+                      height: targetSize.height)
+    }
+
+    /// Whether a delivered frame already covers the expected size, so an
+    /// exact high-quality follow-up request can be skipped.
+    private static func frame(_ image: UIImage, covers expected: CGSize) -> Bool {
+        let width = image.size.width * image.scale
+        let height = image.size.height * image.scale
+        return width >= expected.width * 0.95 && height >= expected.height * 0.95
     }
 }
