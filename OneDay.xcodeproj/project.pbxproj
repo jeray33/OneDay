@@ -251,11 +251,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OneDay/OneDay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H92U3R82R8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "OneDay 读取你的步数和当天心情，用来丰富这一天的回顾。";
 				INFOPLIST_KEY_NSMotionUsageDescription = "OneDay 使用设备姿态，让纵深隧道中的照片随手机倾斜自然移动。";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OneDay 需要相册权限，才能把照片收藏或加入相簿。";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "OneDay 需要访问你的照片，才能回顾你某一天的照片和视频。";
@@ -287,11 +289,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OneDay/OneDay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = H92U3R82R8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "OneDay 读取你的步数和当天心情，用来丰富这一天的回顾。";
 				INFOPLIST_KEY_NSMotionUsageDescription = "OneDay 使用设备姿态，让纵深隧道中的照片随手机倾斜自然移动。";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OneDay 需要相册权限，才能把照片收藏或加入相簿。";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "OneDay 需要访问你的照片，才能回顾你某一天的照片和视频。";

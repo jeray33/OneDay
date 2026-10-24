@@ -39,6 +39,10 @@ struct DaySettingsMenu: View {
                 get: { model.showPhotoCaptions },
                 set: { model.showPhotoCaptions = $0 }
             ))
+            Toggle("健康与天气", isOn: Binding(
+                get: { model.showDayInsights },
+                set: { model.showDayInsights = $0 }
+            ))
             Menu("背景") {
                 optionPicker("内容",
                              binding: Binding(get: { model.background },

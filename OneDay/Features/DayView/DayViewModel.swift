@@ -81,6 +81,7 @@ final class DayViewModel {
     private static let scrubberTickHapticsKey = "OneDay.scrubberTickHaptics"
     private static let sectionTitleSizeKey = "OneDay.sectionTitleSize"
     private static let photoCaptionsKey  = "OneDay.photoCaptions"
+    private static let showDayInsightsKey = "OneDay.showDayInsights"
 private static let albumTagBarKey    = "OneDay.albumTagBar"
     private static let disabledAlbumIDsKey = "OneDay.disabledAlbumIDs"
     private static let albumTagOrderKey  = "OneDay.albumTagOrder"
@@ -217,6 +218,14 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var showPhotoCaptions: Bool {
         didSet { UserDefaults.standard.set(showPhotoCaptions, forKey: Self.photoCaptionsKey) }
     }
+    /// Whether the insights strip (steps / weather / mood) appears under the
+    /// route map. Turning it back on kicks off a load if nothing is cached.
+    var showDayInsights: Bool {
+        didSet {
+            UserDefaults.standard.set(showDayInsights, forKey: Self.showDayInsightsKey)
+            if showDayInsights, insights == nil { loadInsights() }
+        }
+    }
     /// Whether the album quick-tag bar is shown at the bottom of photo preview.
     var showAlbumTagBar: Bool {
         didSet { UserDefaults.standard.set(showAlbumTagBar, forKey: Self.albumTagBarKey) }
@@ -339,6 +348,7 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             savedValue: UserDefaults.standard.string(forKey: RouteMapStyle.storageKey))
 self.showPhotoCaptions = UserDefaults.standard.object(forKey: Self.photoCaptionsKey) as? Bool ?? false
 self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey) as? Bool ?? true
+        self.showDayInsights = UserDefaults.standard.object(forKey: Self.showDayInsightsKey) as? Bool ?? true
         let savedDisabled = UserDefaults.standard.stringArray(forKey: Self.disabledAlbumIDsKey) ?? []
         self.disabledAlbumIDs = Set(savedDisabled)
         self.albumTagOrder = UserDefaults.standard.stringArray(forKey: Self.albumTagOrderKey) ?? []
@@ -530,6 +540,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     // MARK: Preparation (places, pastel color, and captions)
 
     func prepare() async {
+        loadInsights()
         // This task has its own lifetime, so body-filter changes cannot abort it.
         Task { await prepareEditorial() }
         classifyDayImages()
@@ -1110,6 +1121,80 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             meters += locations[i].distance(from: locations[i - 1])
         }
         return meters / 1000
+    }
+
+    // MARK: Day insights (steps / weather / mood)
+
+    /// Extras shown in the strip under the route map. Each entry is nil when
+    /// its source has no data (or access was denied); the strip hides itself
+    /// when everything is nil.
+    struct DayInsights: Equatable {
+        var steps: Int?
+        var moodTitle: String?
+        var weather: DayWeather?
+
+        var isEmpty: Bool { steps == nil && moodTitle == nil && weather == nil }
+    }
+
+    private(set) var insights: DayInsights?
+    @ObservationIgnored private var insightsTask: Task<Void, Never>?
+
+    /// Where the day was mostly spent: the route stop with the longest dwell,
+    /// measured from its first photo to the next stop's first photo (the last
+    /// stop extends to its own last photo). Falls back to the first located
+    /// photo when there is no route. Purely local — segments are already
+    /// computed for the map, so this costs one array pass.
+    private func dominantRouteCoordinate() -> CLLocationCoordinate2D? {
+        let segments = routeSegments
+        guard !segments.isEmpty else { return routeLocations.first?.coordinate }
+        let timesByID = Dictionary(allItems.map { ($0.id, $0.creationDate) },
+                                   uniquingKeysWith: { first, _ in first })
+        func startTime(of segment: RouteSegment) -> Date {
+            segment.itemIDs.lazy.compactMap { timesByID[$0] ?? nil }.min() ?? .distantPast
+        }
+        var best: RouteSegment = segments[0]
+        var bestDwell: TimeInterval = -1
+        for (index, segment) in segments.enumerated() {
+            let start = startTime(of: segment)
+            let end: Date
+            if index + 1 < segments.count {
+                end = startTime(of: segments[index + 1])
+            } else {
+                end = segment.itemIDs.lazy.compactMap { timesByID[$0] ?? nil }.max() ?? start
+            }
+            let dwell = end.timeIntervalSince(start)
+            if dwell > bestDwell {
+                bestDwell = dwell
+                best = segment
+            }
+        }
+        return best.coordinate
+    }
+
+    /// Loads the day's health/weather extras in parallel. Runs on its own
+    /// lifetime so body-filter changes never cancel it; one load per model.
+    func loadInsights() {
+        guard showDayInsights, insightsTask == nil else { return }
+        insightsTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.insightsTask = nil }
+            let date = self.date
+            let coordinate = self.dominantRouteCoordinate()
+            async let steps = HealthService.shared.steps(on: date)
+            async let mood = HealthService.shared.mood(on: date)
+            let weather: DayWeather? = if let coordinate {
+                await DayWeatherService.shared.weather(on: date, at: coordinate)
+            } else {
+                nil
+            }
+            guard !Task.isCancelled else { return }
+            var next = DayInsights()
+            next.steps = await steps
+            next.moodTitle = (await mood)?.title
+            next.weather = weather
+            guard !next.isEmpty else { return }
+            self.insights = next
+        }
     }
 
     // MARK: Favorites

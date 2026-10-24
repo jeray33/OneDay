@@ -129,6 +129,15 @@ struct DayMagazineView: View {
                                     coverHeight: coverHeight, travel: coverSpace))
                         }
 
+                        // Insights belong to the day itself, so they only
+                        // accompany the photo/video tab — not screenshots or
+                        // other images.
+                        if model.showDayInsights, let insights = model.insights,
+                           (model.selectedMediaCategory ?? .photoVideo) == .photoVideo {
+                            DayInsightsStrip(insights: insights)
+                                .padding(.top, model.hasAnyLocation ? 0 : 8)
+                        }
+
                         if usesContinuousPlaceCards {
                             grid(
                                 model.sections.flatMap { gridEntries($0.blocks, placeCard: $0.placeCard) },
