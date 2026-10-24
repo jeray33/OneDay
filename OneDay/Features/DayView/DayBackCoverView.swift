@@ -25,7 +25,14 @@ struct DayBackCoverView: View {
         GeometryReader { geometry in
             let topInset = topSafeAreaInset()
             ZStack {
-                model.backCoverBackgroundColor.ignoresSafeArea()
+                Group {
+                    if let gradient = model.backCoverGradient {
+                        LinearGradient(gradient: gradient, startPoint: .top, endPoint: .bottom)
+                    } else {
+                        model.backCoverBackgroundColor
+                    }
+                }
+                .ignoresSafeArea()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {

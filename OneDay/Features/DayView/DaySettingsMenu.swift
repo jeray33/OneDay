@@ -37,6 +37,16 @@ struct DaySettingsMenu: View {
             optionPicker("封面",
                        binding: Binding(get: { model.coverStyle }, set: { model.coverStyle = $0 }),
                        labelOf: { $0.label })
+            Menu("封底") {
+                optionPicker("翻页",
+                           binding: Binding(get: { model.backCoverTransition },
+                                            set: { model.backCoverTransition = $0 }),
+                           labelOf: { $0.label })
+                optionPicker("背景",
+                           binding: Binding(get: { model.backCoverBackground },
+                                            set: { model.backCoverBackground = $0 }),
+                           labelOf: { $0.label })
+            }
             Menu("背景") {
                 Picker("", selection: Binding(
                     get: { model.background },

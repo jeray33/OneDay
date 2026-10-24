@@ -125,6 +125,16 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
             UserDefaults.standard.set(placeCardRatio.rawValue, forKey: PlaceCardRatio.storageKey)
         }
     }
+    var backCoverBackground: BackCoverBackground {
+        didSet {
+            UserDefaults.standard.set(backCoverBackground.rawValue, forKey: BackCoverBackground.storageKey)
+        }
+    }
+    var backCoverTransition: BackCoverTransition {
+        didSet {
+            UserDefaults.standard.set(backCoverTransition.rawValue, forKey: BackCoverTransition.storageKey)
+        }
+    }
     var placeCardFlow: PlaceCardFlow {
         didSet {
             UserDefaults.standard.set(placeCardFlow.rawValue, forKey: PlaceCardFlow.storageKey)
@@ -289,7 +299,8 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     private(set) var coverPhotos: [PhotoItem] = []
     private(set) var tunnelCoverPhoto: PhotoItem?
     private(set) var coverBackgroundColor: Color = .white
-    private(set) var backCoverBackgroundColor: Color = .white
+    private var backCoverTintColor: Color = .white
+    private var heroHue: (hue: CGFloat, saturation: CGFloat)?
     private(set) var coverPlaces: [String] = []
 
     var coverPhotoCount: Int { editorialItems.filter { !$0.isVideo }.count }
@@ -321,8 +332,22 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var coverForegroundColor: Color {
         Color(white: 0.14)
     }
+    var backCoverBackgroundColor: Color {
+        if let gradient = backCoverGradient { return gradient.stops.last?.color ?? .black }
+        return backCoverBackground.whiteLevel.map { Color(white: $0) } ?? backCoverTintColor
+    }
+    /// Non-nil when the back cover uses the immersive gradient.
+    var backCoverGradient: Gradient? {
+        guard backCoverBackground == .immersive else { return nil }
+        let stops = BackCoverBackground.immersiveStops(
+            hue: heroHue.map { Double($0.hue) }, saturation: Double(heroHue?.saturation ?? 0))
+        return Gradient(stops: stops.map {
+            .init(color: Color(hue: $0.hue, saturation: $0.saturation, brightness: $0.brightness),
+                  location: $0.location)
+        })
+    }
     var backCoverColorScheme: ColorScheme {
-        .light
+        backCoverBackground.isDark ? .dark : .light
     }
 
     /// Editorial summary for the back cover.
@@ -393,6 +418,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         )
         self.placeCardRatio = PlaceCardRatio(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardRatio.storageKey)
+        )
+        self.backCoverBackground = BackCoverBackground(
+            savedValue: UserDefaults.standard.string(forKey: BackCoverBackground.storageKey)
+        )
+        self.backCoverTransition = BackCoverTransition(
+            savedValue: UserDefaults.standard.string(forKey: BackCoverTransition.storageKey)
         )
         self.placeCardFlow = PlaceCardFlow(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardFlow.storageKey)
@@ -775,7 +806,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             guard isCurrentEditorialPreparation(generation) else { return }
             withAnimation(.easeInOut(duration: 0.3)) {
                 coverBackgroundColor = .white
-                backCoverBackgroundColor = .white
+                backCoverTintColor = .white
+                heroHue = nil
             }
             return
         }
@@ -785,7 +817,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
         withAnimation(.easeInOut(duration: 0.3)) {
             coverBackgroundColor = brightTint(h: shiftedHue(h, by: 30.0 / 360.0), s: s)
-            backCoverBackgroundColor = brightTint(h: shiftedHue(h, by: 0.5), s: s)
+            backCoverTintColor = brightTint(h: shiftedHue(h, by: 0.5), s: s)
+            heroHue = (h, s)
         }
     }
 

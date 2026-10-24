@@ -242,6 +242,13 @@ struct DayPagedStackView: View {
     /// Computes the transform for a given layer based on `current` and a flip
     /// offset (normally `dragOffset`).
     private func layerProgress(_ layer: Layer, h: CGFloat, dragOffset: CGFloat) -> LayerTransform {
+        if layer != .cover, let placement = backCoverPlacement(h: h, dragOffset: dragOffset) {
+            return LayerTransform(
+                offsetY: layer == .content ? placement.contentOffset : placement.backOffset,
+                opacity: 1
+            )
+        }
+
         if layer == current {
             // While flipping backward, the page above drops over the current
             // page. Keep this lower page parked.
@@ -274,6 +281,27 @@ struct DayPagedStackView: View {
         } else {
             return LayerTransform(offsetY: h * 2, opacity: 0)
         }
+    }
+
+    /// Placement of the day page and back cover while the flip runs between
+    /// them; nil for flips involving the paper cover.
+    private func backCoverPlacement(h: CGFloat, dragOffset: CGFloat) -> BackCoverFlipPlacement? {
+        switch current {
+        case .content where dragOffset <= 0:
+            return .make(transition: model.backCoverTransition, fromBack: false,
+                         offset: dragOffset, height: h)
+        case .back:
+            return .make(transition: model.backCoverTransition, fromBack: true,
+                         offset: rubber(dragOffset, h: h), height: h)
+        default:
+            return nil
+        }
+    }
+
+    /// Attached pages must not overshoot: a bounce would open a gap between them.
+    private func flipAnimation(involvesBackCover: Bool, dampingFraction: Double) -> Animation {
+        let critical = involvesBackCover && model.backCoverTransition == .sync
+        return .spring(response: 0.4, dampingFraction: critical ? 1 : dampingFraction)
     }
 
     /// Rubber-band resistance when dragging past an edge that has no layer.
@@ -355,7 +383,9 @@ struct DayPagedStackView: View {
         flipGeneration += 1
         let generation = flipGeneration
         pendingLayer = layer
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.84), completionCriteria: .removed) {
+        let animation = flipAnimation(involvesBackCover: layer == .back || current == .back,
+                                      dampingFraction: 0.84)
+        withAnimation(animation, completionCriteria: .removed) {
             dragOffset = target
         } completion: {
             guard generation == flipGeneration else { return }
@@ -379,7 +409,8 @@ struct DayPagedStackView: View {
     }
 
     private func cancelDrag() {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) {
+        let involvesBackCover = current == .back || (current == .content && dragOffset < 0)
+        withAnimation(flipAnimation(involvesBackCover: involvesBackCover, dampingFraction: 0.86)) {
             dragOffset = 0
         }
         isDragging = false
