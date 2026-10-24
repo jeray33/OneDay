@@ -28,6 +28,9 @@ struct DayMagazineView: View {
     var showsTopButtons: Bool = true
     /// Whether the photo cover's date joins the shared date transition.
     var coverDateMatched: Bool = true
+    /// Shared across day models by RootView: after the first entrance the
+    /// bottom toolbar no longer fades in on day-to-day navigation.
+    var chromeRevealed: Binding<Bool>? = nil
     /// Set once the day page card, not the photo cover, lies under the
     /// fixed top buttons.
     var photoCardUnderTopBar: Binding<Bool>? = nil
@@ -263,7 +266,8 @@ struct DayMagazineView: View {
                         bottomBarHeight = $0
                     }
                     .onDisappear { bottomBarHeight = 0 }
-                    .revealFade(shouldRevealContent, delay: 0.5)
+                    .revealFade(shouldRevealContent || (chromeRevealed?.wrappedValue ?? false),
+                                delay: 0.5)
                 }
                 .scrollEdgeEffectStyle(.soft, for: .bottom)
                 .coordinateSpace(name: "dayScroll")
@@ -420,6 +424,7 @@ struct DayMagazineView: View {
             withAnimation(.spring(response: 0.82, dampingFraction: 0.90)) {
                 shouldRevealContent = true
             }
+            chromeRevealed?.wrappedValue = true
             await model.prepare()
         }
         .onDisappear {

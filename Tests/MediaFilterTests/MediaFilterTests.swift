@@ -91,6 +91,63 @@ final class MediaFilterTests: XCTestCase {
         )
     }
 
+    func testPlainVideosFollowCaptureMetadataClassification() {
+        func category(_ result: ImageClassification, _ choice: ImageCategoryOverride = .automatic) -> MediaCategory? {
+            MediaFilter.category(
+                mediaType: .video, subtypes: [], pixelWidth: 1920, pixelHeight: 1080,
+                imageClassification: result, override: choice
+            )
+        }
+        // Unreadable metadata stays 照片和视频; only positive evidence demotes.
+        XCTAssertEqual(category(.unknown), .photoVideo)
+        XCTAssertEqual(category(.photo), .photoVideo)
+        XCTAssertEqual(category(.otherImage), .otherImage)
+        XCTAssertEqual(category(.otherImage, .photo), .photoVideo)
+        XCTAssertEqual(category(.unknown, .otherImage), .otherImage)
+        // Timelapse and slo-mo are always camera footage unless corrected.
+        for subtype: PHAssetMediaSubtype in [.videoTimelapse, .videoHighFrameRate] {
+            XCTAssertEqual(
+                MediaFilter.category(
+                    mediaType: .video, subtypes: subtype, pixelWidth: 1920, pixelHeight: 1080,
+                    imageClassification: .otherImage
+                ),
+                .photoVideo
+            )
+            XCTAssertEqual(
+                MediaFilter.category(
+                    mediaType: .video, subtypes: subtype, pixelWidth: 1920, pixelHeight: 1080,
+                    imageClassification: .otherImage, override: .otherImage
+                ),
+                .otherImage
+            )
+        }
+        // Screen recordings stay screenshots whatever the metadata says.
+        XCTAssertEqual(
+            MediaFilter.category(
+                mediaType: .video, subtypes: .videoScreenRecording,
+                pixelWidth: 1920, pixelHeight: 1080,
+                imageClassification: .photo, override: .photo
+            ),
+            .screenshot
+        )
+    }
+
+    func testVideoMetadataClassifierNeedsRecordingDevice() {
+        XCTAssertEqual(
+            CameraMetadataClassifier.classifyVideo(make: "Apple", model: "iPhone 15 Pro"),
+            .photo
+        )
+        XCTAssertEqual(CameraMetadataClassifier.classifyVideo(make: " ", model: "iPhone"), .otherImage)
+        XCTAssertEqual(CameraMetadataClassifier.classifyVideo(make: "Apple", model: nil), .otherImage)
+        XCTAssertEqual(CameraMetadataClassifier.classifyVideo(make: nil, model: nil), .otherImage)
+    }
+
+    func testOtherCategoryLabelsCoverMetadataLessVideos() {
+        XCTAssertEqual(MediaCategory.otherImage.tabLabel, "其它")
+        XCTAssertEqual(MediaCategory.otherImage.label, "其它（包括长图和无拍摄信息的视频）")
+        XCTAssertEqual(ImageCategoryOverride.otherImage.label, "归为其它")
+    }
+
     func testTunnelStorageEnforcesPrimaryAndDoesNotOverwriteOldDayPreferences() {
         let suiteName = "MediaCategorySelectionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -216,9 +273,9 @@ final class MediaFilterTests: XCTestCase {
         )
         XCTAssertEqual(
             MediaFilter.category(
-                mediaType: .video, subtypes: [], pixelWidth: 1920, pixelHeight: 1080,
+                mediaType: .video, subtypes: .videoScreenRecording, pixelWidth: 1920, pixelHeight: 1080,
                 imageClassification: .otherImage, override: .otherImage
-            ), .photoVideo
+            ), .screenshot
         )
     }
 
@@ -264,14 +321,16 @@ final class MediaFilterTests: XCTestCase {
         }
     }
 
-    func testClassificationMenuDoesNotBecomeAvailableForVideosOrSystemPanoramas() {
+    func testClassificationIsAvailableForPlainImagesAndVideosOnly() {
         XCTAssertTrue(MediaFilter.supportsImageClassification(mediaType: .image, subtypes: []))
         for subtypes: PHAssetMediaSubtype in [.photoScreenshot, .photoPanorama] {
             XCTAssertFalse(MediaFilter.supportsImageClassification(mediaType: .image, subtypes: subtypes))
         }
-        for subtypes: PHAssetMediaSubtype in [[], .videoScreenRecording, .videoTimelapse] {
-            XCTAssertFalse(MediaFilter.supportsImageClassification(mediaType: .video, subtypes: subtypes))
-        }
+        // Plain videos are classified so metadata-less downloads join 其它;
+        // screen recordings already have their system category.
+        XCTAssertTrue(MediaFilter.supportsImageClassification(mediaType: .video, subtypes: []))
+        XCTAssertTrue(MediaFilter.supportsImageClassification(mediaType: .video, subtypes: .videoTimelapse))
+        XCTAssertFalse(MediaFilter.supportsImageClassification(mediaType: .video, subtypes: .videoScreenRecording))
         XCTAssertNil(MediaFilter.category(mediaType: .audio, subtypes: [], pixelWidth: 0, pixelHeight: 0))
     }
 

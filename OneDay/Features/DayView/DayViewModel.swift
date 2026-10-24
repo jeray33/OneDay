@@ -58,6 +58,7 @@ final class DayViewModel {
         if let pendingSourceItems { self.pendingSourceItems = replacing(pendingSourceItems) }
         if selected?.id == id { selected = replacement }
         coverPhotos = replacing(coverPhotos)
+        coverCandidates = replacing(coverCandidates)
         if tunnelCoverPhoto?.id == id { tunnelCoverPhoto = replacement }
         sourceRevision = UUID()
         recomputeRouteDerived()
@@ -279,15 +280,19 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
 
     // MARK: Cover / back cover state
     private(set) var coverPhotos: [PhotoItem] = []
+    /// Highest-priority category's items in chronological order. Stills from
+    /// it are ranked into coverPhotos; a still-free tier covers with its
+    /// first video frame.
+    private(set) var coverCandidates: [PhotoItem] = []
     private(set) var tunnelCoverPhoto: PhotoItem?
     private var heroHue: (hue: CGFloat, saturation: CGFloat)?
 
-    /// Nil while the sharpest still is still being ranked. Video-only days
-    /// use their first video's still frame.
+    /// Nil while the sharpest still is still being ranked. Tiers without
+    /// stills use their first video's still frame.
     var photoCoverItem: PhotoItem? {
         if let photo = tunnelCoverPhoto ?? coverPhotos.first { return photo }
-        guard !editorialItems.contains(where: { !$0.isVideo }) else { return nil }
-        return editorialItems.first
+        guard !coverCandidates.contains(where: { !$0.isVideo }) else { return nil }
+        return coverCandidates.first
     }
 
     var backCoverGradient: Gradient {
@@ -541,9 +546,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     func prepare() async {
         loadInsights()
+        // Start classification first so the cover can await its results.
+        classifyDayImages()
         // This task has its own lifetime, so body-filter changes cannot abort it.
         Task { await prepareEditorial() }
-        classifyDayImages()
         let generation = filterPreparationID
         guard isCurrentFilterPreparation(generation) else { return }
         rebuildSections(animated: false)
@@ -633,6 +639,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         editorialPreparationTask = nil
         let sourceIDs = Set(editorialItems.map(\.id))
         coverPhotos.removeAll { !sourceIDs.contains($0.id) }
+        coverCandidates.removeAll { !sourceIDs.contains($0.id) }
         if let tunnelCoverPhoto, !sourceIDs.contains(tunnelCoverPhoto.id) {
             self.tunnelCoverPhoto = nil
         }
@@ -751,22 +758,69 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     // MARK: Cover
 
-    /// Picks the 2 sharpest/best-composed non-video photos for the cover.
+    /// Picks the 2 sharpest/best-composed stills of the preferred category:
+    /// camera photos and videos first, then other images, then screenshots
+    /// and recordings.
     private func computeCoverPhotos(generation: UUID) async {
         guard isCurrentEditorialPreparation(generation) else { return }
-        let photos = editorialItems.filter { !$0.isVideo }
-        guard !photos.isEmpty else { coverPhotos = []; return }
+        let items = editorialItems
+        guard !items.isEmpty else { coverPhotos = []; coverCandidates = []; return }
         guard coverPhotos.isEmpty else { return }
-        if photos.count <= 2 { coverPhotos = photos; return }
-        let candidates = CoverSelectionPolicy.sampleIndices(count: photos.count).map { photos[$0] }
-        let ranked = await PhotoSharpnessRanker.shared.rank(assets: candidates.map(\.asset), top: 2)
+        await awaitDayClassificationIfDecisive(items: items, generation: generation)
         guard isCurrentEditorialPreparation(generation) else { return }
-        coverPhotos = ranked.map { candidates[$0] }
+        let tier = CoverSelectionPolicy.coverCategory(
+            among: items.lazy.compactMap { MediaFilter.category(for: $0.asset) })
+        let candidates = items.filter { MediaFilter.category(for: $0.asset) == tier }
+        coverCandidates = candidates
+        let photos = candidates.filter { !$0.isVideo }
+        guard photos.count > 2 else { coverPhotos = photos; return }
+        let sample = CoverSelectionPolicy.sampleIndices(count: photos.count).map { photos[$0] }
+        let ranked = await PhotoSharpnessRanker.shared.rank(assets: sample.map(\.asset), top: 2)
+        guard isCurrentEditorialPreparation(generation) else { return }
+        coverPhotos = ranked.map { sample[$0] }
+    }
+
+    /// Unknown classifications default to 照片和视频, so the cover tier is
+    /// only misjudged when nothing on the day is provably camera media. Wait
+    /// briefly for the day's own classification in that case, so a screenshot
+    /// or download cannot win the cover merely because it was read first.
+    private func awaitDayClassificationIfDecisive(items: [PhotoItem], generation: UUID) async {
+        let store = ImageClassificationStore.shared
+        func hasPending() -> Bool {
+            items.contains { item in
+                let asset = item.asset
+                return MediaFilter.needsAutomaticClassification(asset)
+                    && store.override(for: asset.localIdentifier) == .automatic
+                    && store.classification(
+                        for: asset.localIdentifier,
+                        modificationDate: asset.modificationDate
+                    ) == .unknown
+            }
+        }
+        func hasGuaranteedCameraMedia() -> Bool {
+            items.contains { item in
+                let asset = item.asset
+                if asset.representsBurst || MediaFilter.hasPhotoSubtype(asset.mediaSubtypes)
+                    || MediaFilter.hasCameraVideoSubtype(asset.mediaSubtypes) { return true }
+                return store.classification(
+                    for: asset.localIdentifier,
+                    modificationDate: asset.modificationDate
+                ) == .photo
+            }
+        }
+        guard !hasGuaranteedCameraMedia(), hasPending() else { return }
+        if dayClassificationTask == nil { classifyDayImages() }
+        // Bounded: unreachable (cloud-only) assets never finish classifying.
+        let deadline = Date().addingTimeInterval(4)
+        while hasPending(), !hasGuaranteedCameraMedia(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard isCurrentEditorialPreparation(generation) else { return }
+        }
     }
 
     /// Keeps the existing hero-photo source for the immersive back cover.
     private func computeHeroHue(generation: UUID) async {
-        guard let hero = coverPhotos.first ?? editorialItems.first,
+        guard let hero = coverPhotos.first ?? coverCandidates.first ?? editorialItems.first,
               let image = await ImageLoader.shared.thumbnail(
                 asset: hero.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else {

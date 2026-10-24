@@ -1,6 +1,7 @@
 import Photos
 import ImageIO
 import UniformTypeIdentifiers
+import AVFoundation
 
 /// Local-only, bounded background work. Unknown/cloud-only assets remain photos.
 actor OtherImageClassificationService {
@@ -30,8 +31,10 @@ actor OtherImageClassificationService {
                 var assets: [PHAsset] = []
                 let options = PHFetchOptions()
                 options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                PHAsset.fetchAssets(with: .image, options: options).enumerateObjects { asset, _, _ in
-                    assets.append(asset)
+                for type in [PHAssetMediaType.image, .video] {
+                    PHAsset.fetchAssets(with: type, options: options).enumerateObjects { asset, _, _ in
+                        assets.append(asset)
+                    }
                 }
                 return assets
             }.value
@@ -39,7 +42,7 @@ actor OtherImageClassificationService {
                 let shared = await SharedAlbumCache.shared.current()
                 var seen = Set(assets.map(\.localIdentifier))
                 let sharedImages = shared.sharedAssets.filter {
-                    $0.mediaType == .image && seen.insert($0.localIdentifier).inserted
+                    MediaFilter.isEligible($0) && seen.insert($0.localIdentifier).inserted
                 }
                 await classify(assets + sharedImages)
             }
@@ -173,6 +176,7 @@ actor OtherImageClassificationService {
     nonisolated private static func classifyLocalAsset(_ asset: PHAsset) async -> ImageClassification {
         guard !Task.isCancelled else { return .unknown }
         if asset.representsBurst || MediaFilter.hasPhotoSubtype(asset.mediaSubtypes) { return .photo }
+        if asset.mediaType == .video { return await classifyVideo(asset) }
         let resources = PHAssetResource.assetResources(for: asset)
         if resources.contains(where: { resource in
             MediaFilter.isPhotoResourceType(resource.uniformTypeIdentifier)
@@ -199,5 +203,33 @@ actor OtherImageClassificationService {
         }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
         return CameraMetadataClassifier.classify(properties: properties)
+    }
+
+    /// Videos have no EXIF; camera footage is recognized by the recording
+    /// device make/model in the QuickTime container metadata. Unreadable or
+    /// cloud-only assets stay unknown so they are never demoted by a guess.
+    nonisolated private static func classifyVideo(_ asset: PHAsset) async -> ImageClassification {
+        if MediaFilter.hasCameraVideoSubtype(asset.mediaSubtypes) { return .photo }
+        let input: PHContentEditingInput? = await withCheckedContinuation { continuation in
+            let options = PHContentEditingInputRequestOptions()
+            options.isNetworkAccessAllowed = false
+            options.canHandleAdjustmentData = { _ in true }
+            asset.requestContentEditingInput(with: options) { input, _ in
+                continuation.resume(returning: input)
+            }
+        }
+        guard !Task.isCancelled, let avAsset = input?.audiovisualAsset,
+              let metadata = try? await avAsset.load(.metadata)
+        else { return .unknown }
+        func value(_ key: AVMetadataKey) async -> String? {
+            guard let item = AVMetadataItem.metadataItems(
+                from: metadata, withKey: key.rawValue, keySpace: nil
+            ).first else { return nil }
+            return try? await item.load(.stringValue)
+        }
+        return await CameraMetadataClassifier.classifyVideo(
+            make: value(.quickTimeMetadataKeyMake),
+            model: value(.quickTimeMetadataKeyModel)
+        )
     }
 }

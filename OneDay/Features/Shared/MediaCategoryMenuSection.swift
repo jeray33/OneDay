@@ -26,7 +26,7 @@ struct MediaCategoryMenuSection: View {
                 }
             }
             if selection.needsImageClassification {
-                Text(isIndexing ? "正在识别其它图片…" : "自动近似分类，无法判断的暂按照片显示")
+                Text(isIndexing ? "正在识别其它内容…" : "自动近似分类，无法判断的暂按照片或视频显示")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

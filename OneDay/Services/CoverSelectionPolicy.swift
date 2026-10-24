@@ -1,6 +1,17 @@
 import Foundation
 
 nonisolated enum CoverSelectionPolicy {
+    /// Cover candidates come from the highest-priority non-empty category:
+    /// camera photos and videos first, then other images, then screenshots
+    /// and screen recordings.
+    static let coverCategoryPriority: [MediaCategory] = [.photoVideo, .otherImage, .screenshot]
+
+    static func coverCategory<S: Sequence>(among available: S) -> MediaCategory?
+    where S.Element == MediaCategory {
+        let present = Set(available)
+        return coverCategoryPriority.first { present.contains($0) }
+    }
+
     static func sampleIndices(count: Int, limit: Int = 24) -> [Int] {
         guard count > 0, limit > 0 else { return [] }
         let size = min(count, limit)

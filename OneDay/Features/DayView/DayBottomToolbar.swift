@@ -116,6 +116,11 @@ struct DayBottomToolbar: View {
     @State private var lastScrubTarget: CGFloat?
     /// Index into the current marks of the section tick holding the finger.
     @State private var detent: Int?
+    /// Touches ignored for this stroke: started on the bottom strip nearest
+    /// the home indicator, or moved steeply upward like a home gesture.
+    @State private var touchIgnored = false
+    /// True once the stroke proved horizontal intent and owns the scrubber.
+    @State private var touchEngaged = false
     @State private var lastTickHapticAt = Date.distantPast
     // Reused and prepared on touch-down so each tick fires without delay.
     @State private var tickHaptic = UIImpactFeedbackGenerator(style: .light)
@@ -124,6 +129,11 @@ struct DayBottomToolbar: View {
     private let trackInset: CGFloat = 18
     private let tickSpacing: CGFloat = 6
     private let trackHeight: CGFloat = 44
+    /// Bottom strip of the track where touches are treated as the start of a
+    /// home gesture and never scrub.
+    private let bottomDeadZone: CGFloat = 12
+    /// Horizontal travel that proves a scrub before the track takes over.
+    private let engagementSlop: CGFloat = 4
     private let buttonSize: CGFloat = 44
     private let markHapticIntensity: CGFloat = 0.8
     // Slightly below a selection tick; `.soft` at 0.15 was imperceptible.
@@ -159,7 +169,9 @@ struct DayBottomToolbar: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .padding(.bottom, bottomSafeAreaInset() + 6)
+        // Extra clearance above the home indicator, so swiping up to leave
+        // the app is less likely to land on the scrubber track.
+        .padding(.bottom, bottomSafeAreaInset() + 12)
     }
 
     // MARK: Day buttons
@@ -219,8 +231,27 @@ struct DayBottomToolbar: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard trackUsable else { return }
-                let firstTouch = !state.isScrubbing
-                if firstTouch {
+                if !touchEngaged {
+                    guard !touchIgnored else { return }
+                    // Touches starting on the lowest strip are usually the
+                    // beginning of a home gesture; never scrub from them.
+                    if value.startLocation.y > trackHeight - bottomDeadZone {
+                        touchIgnored = true
+                        return
+                    }
+                    // Wait for clear horizontal intent. A steep climb belongs
+                    // to the home gesture or the page flip, not the scrubber.
+                    let translation = value.translation
+                    guard abs(translation.width) >= engagementSlop,
+                          abs(translation.width) > abs(translation.height)
+                    else {
+                        if translation.height < -8,
+                           abs(translation.height) > abs(translation.width) * 1.2 {
+                            touchIgnored = true
+                        }
+                        return
+                    }
+                    touchEngaged = true
                     state.isScrubbing = true
                     lastFingerProgress = nil
                     lastScrubTarget = nil
@@ -228,6 +259,7 @@ struct DayBottomToolbar: View {
                     tickHaptic.prepare()
                     markHaptic.prepare()
                 }
+                let firstTouch = lastFingerProgress == nil
                 let count = tickCount(for: width)
                 let usable = usableWidth(width)
                 let marks = sectionMarks(tickCount: count)
@@ -256,12 +288,24 @@ struct DayBottomToolbar: View {
                 onScrub(target, firstTouch)
                 lastScrubTarget = target
             }
-            .onEnded { _ in
-                guard state.isScrubbing else { return }
-                state.isScrubbing = false
-                lastFingerProgress = nil
-                lastScrubTarget = nil
-                detent = nil
+            .onEnded { value in
+                defer { touchIgnored = false; touchEngaged = false }
+                if state.isScrubbing {
+                    state.isScrubbing = false
+                    lastFingerProgress = nil
+                    lastScrubTarget = nil
+                    detent = nil
+                    return
+                }
+                // A stroke that never moved horizontally was a tap: jump on
+                // release. Taps on the bottom dead strip do nothing.
+                guard trackUsable, !touchIgnored else { return }
+                let translation = value.translation
+                guard abs(translation.width) < 6, abs(translation.height) < 6 else { return }
+                let finger = DayScrubberPolicy.progress(forLocationX: value.location.x,
+                                                        width: width,
+                                                        inset: trackInset)
+                onScrub(finger, true)
             }
     }
 

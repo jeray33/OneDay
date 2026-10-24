@@ -8,6 +8,9 @@ struct DayPagedStackView: View {
     var dateNamespace: Namespace.ID
     var dateIsSource: Bool
     var coverDateMatched: Bool = true
+    /// Owned by RootView so day-to-day navigation keeps the bottom toolbar
+    /// on screen instead of replaying its first-entrance fade.
+    var chromeRevealed: Binding<Bool>
     var onClose: () -> Void
     var historyEntries: [TodayInHistoryEntry]
     var historyLoading: Bool
@@ -174,6 +177,7 @@ struct DayPagedStackView: View {
             scrollFrozen: current == .content && flipOwnsDrag,
             showsTopButtons: previewOwnsTopButtons,
             coverDateMatched: coverDateMatched,
+            chromeRevealed: chromeRevealed,
             photoCardUnderTopBar: $photoCardUnderTopBar
         )
         .offset(y: layerOffset(.content, h: h, dragOffset: dragOffset))

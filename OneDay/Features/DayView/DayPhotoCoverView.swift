@@ -72,19 +72,20 @@ struct PhotoCardSnapBehavior: ScrollTargetBehavior {
 /// A damped spring run frame by frame on the UIKit scroll view, so a snap
 /// starts at the finger's velocity and stops the moment the page is touched
 /// again. Returning to the photo overshoots into a small zoom bounce; rising
-/// to the top lands without overshoot, because bouncing there would wobble
-/// the content under the top bar's title and blur. It taps like a page flip
-/// when the card first reaches its rest.
+/// to the top is slightly underdamped so the throw keeps its punch, while the
+/// clamp below still prevents a visual overshoot that would wobble the
+/// content under the top bar's title and blur. Both rests tap with the same
+/// full-strength haptic as a flip to the back cover.
 @MainActor
 final class PhotoCardSpring: NSObject {
     /// ≈0.41 s response; the damping leaves about 40 pt of overshoot.
     static let stiffness: CGFloat = 235
     static let dampingRatio: CGFloat = 0.57
-    /// Critical damping for the rise to the top.
-    static let risingDampingRatio: CGFloat = 1
+    /// Slightly underdamped rise: faster, forceful arrival, no overshoot.
+    static let risingDampingRatio: CGFloat = 0.85
     private static let maxVelocity: CGFloat = 4000
-    /// Lighter than a page flip's full-strength tap.
-    static let hapticIntensity: CGFloat = 0.55
+    /// Same full-strength tap as a page flip.
+    static let hapticIntensity: CGFloat = 1
 
     private var link: CADisplayLink?
     private weak var scrollView: UIScrollView?

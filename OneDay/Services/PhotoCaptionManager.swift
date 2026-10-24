@@ -15,7 +15,7 @@ final class PhotoCaptionManager {
     static let shared = PhotoCaptionManager()
 
     private init() {
-        Self.purgeLegacyEmptyEntries()
+        Self.purgeLegacyEntries()
     }
 
     /// Positive-only cache. Absent captions are never cached, so a caption added later in
@@ -96,11 +96,14 @@ final class PhotoCaptionManager {
     }
 
     /// Earlier builds persisted an empty string when no caption was found, which permanently
-    /// masked captions added later. Remove those poisoned entries once at startup.
-    private static func purgeLegacyEmptyEntries() {
+    /// masked captions added later; they also cached the system placeholders ("Screenshot",
+    /// "Screen Recording") iOS generates for captures without a user caption. Remove those
+    /// poisoned entries once at startup.
+    private static func purgeLegacyEntries() {
         let defaults = UserDefaults.standard
-        for (key, value) in defaults.dictionaryRepresentation()
-        where key.hasPrefix(userDefaultsPrefix) && (value as? String)?.isEmpty == true {
+        for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix(userDefaultsPrefix) {
+            guard let caption = value as? String,
+                  GenericCaptionFilter.userCaption(caption) == nil else { continue }
             defaults.removeObject(forKey: key)
         }
     }
@@ -114,10 +117,11 @@ final class PhotoCaptionManager {
         guard asset.responds(to: descriptionPropertiesSelector),
               let properties = asset.perform(descriptionPropertiesSelector)?.takeUnretainedValue() as? NSObject,
               properties.responds(to: assetDescriptionSelector),
-              let value = properties.perform(assetDescriptionSelector)?.takeUnretainedValue() as? String,
-              !value.isEmpty
+              let value = properties.perform(assetDescriptionSelector)?.takeUnretainedValue() as? String
         else { return nil }
-        return value
+        // iOS labels captures that have no user caption ("Screenshot",
+        // "Screen Recording"); those placeholders are not 说明文字.
+        return GenericCaptionFilter.userCaption(value)
     }
 
     // MARK: - Private: embedded metadata fallback
@@ -147,14 +151,14 @@ final class PhotoCaptionManager {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
         else { return nil }
 
-        if let iptc = properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any] {
-            if let caption = iptc[kCGImagePropertyIPTCCaptionAbstract as String] as? String, !caption.isEmpty {
-                return caption
-            }
+        if let iptc = properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any],
+           let caption = GenericCaptionFilter.userCaption(
+            iptc[kCGImagePropertyIPTCCaptionAbstract as String] as? String) {
+            return caption
         }
         if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
-           let description = tiff[kCGImagePropertyTIFFImageDescription as String] as? String,
-           !description.isEmpty {
+           let description = GenericCaptionFilter.userCaption(
+            tiff[kCGImagePropertyTIFFImageDescription as String] as? String) {
             return description
         }
         return nil

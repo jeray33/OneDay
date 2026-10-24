@@ -12,7 +12,7 @@ nonisolated enum MediaCategory: String, CaseIterable, Hashable, Identifiable, Se
         switch self {
         case .photoVideo: return "照片和视频（包括全景）"
         case .screenshot: return "截图和录屏"
-        case .otherImage: return "其它图片（包括长图）"
+        case .otherImage: return "其它（包括长图和无拍摄信息的视频）"
         }
     }
 
@@ -20,7 +20,7 @@ nonisolated enum MediaCategory: String, CaseIterable, Hashable, Identifiable, Se
         switch self {
         case .photoVideo: return "照片和视频"
         case .screenshot: return "截图和录屏"
-        case .otherImage: return "其它图片"
+        case .otherImage: return "其它"
         }
     }
 
@@ -178,7 +178,12 @@ nonisolated enum MediaFilter {
 
         case .video:
             if subtypes.contains(.videoScreenRecording) { return .screenshot }
-            return .photoVideo
+            if override == .photo { return .photoVideo }
+            if override == .screenshot { return .screenshot }
+            if override == .otherImage { return .otherImage }
+            // Timelapse and slo-mo only come from the Camera app.
+            if hasCameraVideoSubtype(subtypes) { return .photoVideo }
+            return imageClassification == .otherImage ? .otherImage : .photoVideo
 
         default:
             return nil
@@ -196,15 +201,27 @@ nonisolated enum MediaFilter {
     static func supportsImageClassification(
         mediaType: PHAssetMediaType, subtypes: PHAssetMediaSubtype
     ) -> Bool {
-        mediaType == .image
-            && subtypes.intersection([.photoScreenshot, .photoPanorama]).isEmpty
+        switch mediaType {
+        case .image:
+            return subtypes.intersection([.photoScreenshot, .photoPanorama]).isEmpty
+        case .video:
+            return !subtypes.contains(.videoScreenRecording)
+        default:
+            return false
+        }
     }
 
     static func needsAutomaticClassification(_ asset: PHAsset) -> Bool {
         guard supportsImageClassification(asset) else { return false }
+        if asset.mediaType == .video { return !hasCameraVideoSubtype(asset.mediaSubtypes) }
         let shortSide = min(asset.pixelWidth, asset.pixelHeight)
         let longSide = max(asset.pixelWidth, asset.pixelHeight)
         return shortSide <= 0 || Double(longSide) / Double(shortSide) < 3
+    }
+
+    /// Subtypes only the Camera app produces, so no metadata read is needed.
+    static func hasCameraVideoSubtype(_ subtypes: PHAssetMediaSubtype) -> Bool {
+        !subtypes.intersection([.videoTimelapse, .videoHighFrameRate]).isEmpty
     }
 
     static func hasPhotoSubtype(_ subtypes: PHAssetMediaSubtype) -> Bool {

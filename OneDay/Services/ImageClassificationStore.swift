@@ -18,7 +18,7 @@ nonisolated enum ImageCategoryOverride: String, CaseIterable, Sendable {
         case .automatic: return "自动判断"
         case .photo: return "归为照片"
         case .screenshot: return "归为截图"
-        case .otherImage: return "归为其它图片"
+        case .otherImage: return "归为其它"
         }
     }
 }
@@ -32,10 +32,6 @@ nonisolated enum CameraMetadataClassifier {
 
         let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
         let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
-        func hasText(_ value: Any?) -> Bool {
-            guard let text = value as? String else { return false }
-            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
         let hasCamera = hasText(tiff[kCGImagePropertyTIFFMake as String])
             && hasText(tiff[kCGImagePropertyTIFFModel as String])
         let hasLens = hasText(exif[kCGImagePropertyExifLensModel as String])
@@ -45,6 +41,17 @@ nonisolated enum CameraMetadataClassifier {
             .contains { $0.doubleValue > 0 } ?? false
         let exposureCount = [exposure > 0, aperture > 0, iso].filter { $0 }.count
         return hasCamera || exposureCount == 3 || (hasLens && exposureCount >= 2) ? .photo : .otherImage
+    }
+
+    /// Camera footage carries the recording device in its container metadata
+    /// (QuickTime make/model); downloads and re-exports do not.
+    static func classifyVideo(make: String?, model: String?) -> ImageClassification {
+        hasText(make) && hasText(model) ? .photo : .otherImage
+    }
+
+    private static func hasText(_ value: Any?) -> Bool {
+        guard let text = value as? String else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

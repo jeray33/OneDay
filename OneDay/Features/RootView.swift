@@ -29,6 +29,9 @@ struct RootView: View {
     @State private var tunnelOpeningProgress = 0.0
     @State private var tunnelOpeningActive = true
     @State private var navLoading = false
+    /// True once a day's chrome has faded in; day-to-day navigation reuses it
+    /// so the bottom toolbar stays put instead of replaying its entrance.
+    @State private var dayChromeRevealed = false
     @State private var historyEntries: [TodayInHistoryEntry] = []
     @State private var historyLoading = false
     @State private var historyReferenceDay: Date?
@@ -122,6 +125,7 @@ struct RootView: View {
                         dateNamespace: dateNamespace,
                         dateIsSource: false,
                         coverDateMatched: !dayFromTunnel,
+                        chromeRevealed: $dayChromeRevealed,
                         onClose: { closeDay() },
                         historyEntries: historyEntries,
                         historyLoading: historyLoading,
@@ -776,6 +780,7 @@ struct RootView: View {
     private func closeDay() {
         tunnelStartDate = dayModel?.date
         rewindHomeID = UUID()
+        dayChromeRevealed = false
         withAnimation(.easeInOut(duration: 0.4)) {
             phase = .home
         }
