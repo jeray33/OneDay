@@ -748,10 +748,12 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         guard isCurrentEditorialPreparation(generation) else { return }
         let photos = editorialItems.filter { !$0.isVideo }
         guard !photos.isEmpty else { coverPhotos = []; return }
+        guard coverPhotos.isEmpty else { return }
         if photos.count <= 2 { coverPhotos = photos; return }
-        let ranked = await PhotoSharpnessRanker.shared.rank(photos, top: 2)
+        let candidates = CoverSelectionPolicy.sampleIndices(count: photos.count).map { photos[$0] }
+        let ranked = await PhotoSharpnessRanker.shared.rank(assets: candidates.map(\.asset), top: 2)
         guard isCurrentEditorialPreparation(generation) else { return }
-        coverPhotos = ranked
+        coverPhotos = ranked.map { candidates[$0] }
     }
 
     /// Keeps the existing hero-photo source for the immersive back cover.

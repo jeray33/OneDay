@@ -377,7 +377,8 @@ private struct PhotoCoverContent: View {
             if let item = model.photoCoverItem {
                 PHImageView(asset: item.asset,
                             displaySize: CGSize(width: width, height: photoHeight),
-                            highQuality: true)
+                            highQuality: true,
+                            progressive: true)
                     .id(item.id)
                     .transition(.opacity)
             }

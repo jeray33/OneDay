@@ -6,6 +6,7 @@ struct PHImageView: View {
     var displaySize: CGSize
     var fill: Bool = true
     var highQuality: Bool = false
+    var progressive: Bool = false
     var kenBurns: Bool = false
 
     @State private var image: UIImage?
@@ -46,7 +47,8 @@ struct PHImageView: View {
                 asset: asset,
                 targetSize: targetSize,
                 contentMode: fill ? .aspectFill : .aspectFit,
-                highQuality: highQuality
+                highQuality: highQuality,
+                progressive: progressive
             ) {
                 guard !Task.isCancelled else { return }
                 image = frame
