@@ -46,24 +46,31 @@ nonisolated final class SimilarityFeatureStore: @unchecked Sendable {
 
     func distance(_ a: PhotoItem, _ b: PhotoItem) -> Float? {
         guard a.isVideo == b.isVideo else { return nil }
+        if a.isVideo { return videoFrameDistances(a, b).flatMap(VideoSimilarityPolicy.distance) }
         return lock.withLock {
-            if a.isVideo {
-                guard VideoSimilarityPolicy.compatibleDurations(a.duration, b.duration),
-                      let lhs = videoPrints(a), let rhs = videoPrints(b),
-                      lhs.count == rhs.count else { return nil }
-                var distances: [Float] = []
-                for (left, right) in zip(lhs, rhs) {
-                    var distance: Float = 0
-                    do { try left.computeDistance(&distance, to: right) }
-                    catch { return nil }
-                    distances.append(distance)
-                }
-                return VideoSimilarityPolicy.distance(distances)
-            }
             guard let lhs = observation(a), let rhs = observation(b) else { return nil }
             var distance: Float = 0
             do { try lhs.computeDistance(&distance, to: rhs); return distance }
             catch { return nil }
+        }
+    }
+
+    /// Per-frame distances at matching sample positions, or nil when either
+    /// video has not been analyzed.
+    func videoFrameDistances(_ a: PhotoItem, _ b: PhotoItem) -> [Float]? {
+        guard a.isVideo, b.isVideo else { return nil }
+        return lock.withLock {
+            guard VideoSimilarityPolicy.compatibleDurations(a.duration, b.duration),
+                  let lhs = videoPrints(a), let rhs = videoPrints(b),
+                  lhs.count == rhs.count else { return nil }
+            var distances: [Float] = []
+            for (left, right) in zip(lhs, rhs) {
+                var distance: Float = 0
+                do { try left.computeDistance(&distance, to: right) }
+                catch { return nil }
+                distances.append(distance)
+            }
+            return distances
         }
     }
 

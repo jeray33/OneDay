@@ -189,6 +189,7 @@ final class DayViewModel {
         coverPhotos = replacing(coverPhotos)
         coverCandidates = replacing(coverCandidates)
         if tunnelCoverPhoto?.id == id { tunnelCoverPhoto = replacement }
+        if manualCoverPhoto?.id == id { manualCoverPhoto = replacement }
         prepareSimilarity()
         sourceRevision = UUID()
         recomputeRouteDerived()
@@ -197,7 +198,6 @@ final class DayViewModel {
 
     private var favoriteIDs: Set<String>
     private var hiddenIDs: Set<String>
-    var albumPickerItem: PhotoItem?
 
     // MARK: Page appearance
     private static let backgroundKey   = "OneDay.pageBackground"
@@ -448,12 +448,16 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     /// first video frame.
     private(set) var coverCandidates: [PhotoItem] = []
     private(set) var tunnelCoverPhoto: PhotoItem?
+    /// The user's manually chosen cover for this day (persisted per calendar
+    /// day). Takes priority over the tunnel landing photo and the automatic
+    /// ranking; nil when unset or when the saved asset is no longer on the day.
+    private(set) var manualCoverPhoto: PhotoItem?
     private var heroHue: (hue: CGFloat, saturation: CGFloat)?
 
     /// Nil while the sharpest still is still being ranked. Tiers without
-    /// stills use their first video's still frame.
+    /// stills use their first video's still frame; a manual cover wins over both.
     var photoCoverItem: PhotoItem? {
-        if let photo = tunnelCoverPhoto ?? coverPhotos.first { return photo }
+        if let photo = manualCoverPhoto ?? tunnelCoverPhoto ?? coverPhotos.first { return photo }
         guard !coverCandidates.contains(where: { !$0.isVideo }) else { return nil }
         return coverCandidates.first
     }
@@ -563,6 +567,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let composedSections = DaySectionComposer.compose(composedItems, policy: segmentation)
         self.titleSegmentation = segmentation
         self.allItemsUnfiltered = sortedItems
+        self.manualCoverPhoto = Self.resolveManualCover(in: sortedItems, date: date)
         self.allItems = composedItems
         self.gridItemIDs = composedItems.map(\.id)
         self.gridCaptions = composedItems.map(\.caption)
@@ -790,6 +795,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
                     && new.captureTimeZone == old.captureTimeZone
             }
         allItemsUnfiltered = sorted
+        manualCoverPhoto = Self.resolveManualCover(in: sorted, date: date)
         // Old content versions must never suppress newly edited/replaced media.
         if !unchanged { sharedVideoDuplicateIDs.removeAll() }
         prepareSharedVideoDuplicates()
@@ -991,7 +997,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
 
     /// Keeps the existing hero-photo source for the immersive back cover.
     private func computeHeroHue(generation: UUID) async {
-        guard let hero = coverPhotos.first ?? coverCandidates.first ?? editorialItems.first,
+        guard let hero = manualCoverPhoto ?? coverPhotos.first ?? coverCandidates.first ?? editorialItems.first,
               let image = await ImageLoader.shared.thumbnail(
                 asset: hero.asset, size: CGSize(width: 48, height: 48)),
               let base = image.averageColor else {
@@ -1015,6 +1021,28 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let itemsByID = Dictionary(editorialItems.map { ($0.id, $0) },
                                    uniquingKeysWith: { first, _ in first })
         tunnelCoverPhoto = layer.photos.lazy.compactMap { itemsByID[$0.assetIdentifier] }.first
+    }
+
+    /// Resolves the persisted manual cover against the day's source items.
+    /// The saved asset no longer being on the day simply yields nil, so the
+    /// automatic selection takes over again.
+    private static func resolveManualCover(in items: [PhotoItem], date: Date) -> PhotoItem? {
+        guard let id = ManualCoverStore.shared.coverID(for: date) else { return nil }
+        return items.first { $0.id == id }
+    }
+
+    /// Persists the user's cover choice for this day and refreshes the hero
+    /// hue off the new cover. Returns false when the item already is the cover.
+    @discardableResult
+    func setCover(_ item: PhotoItem) -> Bool {
+        guard manualCoverPhoto?.id != item.id else { return false }
+        ManualCoverStore.shared.setCover(item.asset.localIdentifier, for: date)
+        manualCoverPhoto = allItemsUnfiltered.first { $0.id == item.id } ?? item
+        let generation = editorialPreparationID
+        Task { [weak self] in
+            await self?.computeHeroHue(generation: generation)
+        }
+        return true
     }
 
     /// True when at least one located photo/video exists (map is worth showing).
@@ -1519,11 +1547,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         )
     }
 
-    func createAlbum(named name: String, item: PhotoItem) async {
-        guard item.sharedCapabilities.canEditAlbums else { return }
-        try? await PhotoActionService.shared.addToAlbum(named: name, assets: [item.asset])
-    }
-
     /// Creates an empty album for configuration; does not add a photo.
     @discardableResult
     func createEmptyAlbum(named name: String) async -> AlbumInfo? {
@@ -1559,12 +1582,6 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
                 try await PhotoActionService.shared.delete([item.asset])
                 remove(item)
             } catch { }
-        case .addToAlbum(let name):
-            guard caps.canEditAlbums else { return }
-            try? await PhotoActionService.shared.addToAlbum(named: name, assets: [item.asset])
-        case .pickAlbum:
-            guard caps.canEditAlbums else { return }
-            albumPickerItem = item
         }
     }
 
@@ -1577,6 +1594,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         prepareSharedVideoDuplicates()
         pendingSourceItems?.removeAll { ids.contains($0.id) }
         allItems.removeAll { ids.contains($0.id) }
+        if let manualCoverPhoto, ids.contains(manualCoverPhoto.id) {
+            ManualCoverStore.shared.clear(for: date)
+            self.manualCoverPhoto = nil
+        }
         recomputeRouteDerived()
         favoriteIDs.subtract(ids)
         hiddenIDs.subtract(ids)

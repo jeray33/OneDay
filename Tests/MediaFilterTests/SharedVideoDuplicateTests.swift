@@ -12,6 +12,21 @@ final class SharedVideoDuplicateTests: XCTestCase {
         XCTAssertFalse(SharedVideoDuplicatePolicy.contentMatches(digestA: "", digestB: ""))
     }
 
+    func testReencodedPicturesMatchButDifferentClipsDoNot() {
+        // Measured: shared-album re-encodes 0.035...0.126, unrelated clips >= 0.384.
+        XCTAssertTrue(SharedVideoDuplicatePolicy.perceptualMatch([0, 0, 0]))
+        XCTAssertTrue(SharedVideoDuplicatePolicy.perceptualMatch([0.065, 0.101, 0.126]))
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([0.384]))
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([0.05, 0.05, 0.3]))
+    }
+
+    func testMissingOrInvalidPictureDistancesNeverMatch() {
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([]))
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([.nan]))
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([-0.1]))
+        XCTAssertFalse(SharedVideoDuplicatePolicy.perceptualMatch([0.01, .infinity]))
+    }
+
     func testCaptureTimeNeverConfirmsVideoOwnership() {
         XCTAssertFalse(SharedCopyMatch.isOwnCopy(
             sharedTime: 100, isVideo: true, sharedNames: { ["IMG_1.MOV"] },

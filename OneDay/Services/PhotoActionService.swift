@@ -5,8 +5,6 @@ import Photos
 enum LibraryAction {
     case toggleFavorite
     case delete
-    case addToAlbum(named: String)
-    case pickAlbum
 }
 
 struct AlbumInfo: Identifiable, Hashable {
@@ -44,11 +42,6 @@ final class PhotoActionService {
         try await PHPhotoLibrary.shared().performChanges {
             PHAssetChangeRequest.deleteAssets(assets as NSArray)
         }
-    }
-
-    func addToAlbum(named name: String, assets: [PHAsset]) async throws {
-        let collection = try await albumCollection(named: name)
-        try await add(assets, to: collection)
     }
 
     func addToAlbum(identifier: String, assets: [PHAsset]) async throws {

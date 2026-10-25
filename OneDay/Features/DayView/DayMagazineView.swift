@@ -449,9 +449,6 @@ struct DayMagazineView: View {
             scrollPerformance.setScrolling(false)
             model.stopPlaceUpdates()
         }
-        .sheet(item: albumPickerBinding) { item in
-            AlbumPickerSheet(item: item, model: model, onFinish: {})
-        }
     }
 
     /// Same style as the tunnel page's bottom hint.
@@ -503,13 +500,6 @@ struct DayMagazineView: View {
             }
     }
 
-    private var albumPickerBinding: Binding<PhotoItem?> {
-        Binding(
-            get: { model.albumPickerItem },
-            set: { model.albumPickerItem = $0 }
-        )
-    }
-
     // MARK: Top bar
 
     private var fixedHeader: some View {
@@ -527,6 +517,9 @@ struct DayMagazineView: View {
     private var mediaTabs: some View {
         HStack(spacing: 0) {
             ForEach(model.availableMediaTabs) { category in
+                if category != model.availableMediaTabs.first {
+                    Spacer(minLength: 0)
+                }
                 let isSelected = model.selectedMediaTab == category
                 Button {
                     model.selectMediaTab(category)
@@ -543,7 +536,7 @@ struct DayMagazineView: View {
                                 .frame(height: 2)
                         }
                         .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, minHeight: 28, alignment: .bottom)
+                        .frame(minHeight: 44, alignment: .bottom)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -554,6 +547,7 @@ struct DayMagazineView: View {
             }
         }
         .padding(.horizontal, 20)
+        .zIndex(1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("当天内容类别")
         .revealFade(shouldRevealContent, delay: 0.32)
@@ -817,12 +811,34 @@ struct DayMagazineView: View {
                       systemImage: model.isFavorite(item) ? "heart.slash" : "heart")
             }
             .disabled(!item.sharedCapabilities.canFavorite)
-            Button {
-                Task { await model.perform(.pickAlbum, on: item) }
-            } label: {
-                Label("加入相簿…", systemImage: "rectangle.stack.badge.plus")
+            if MediaFilter.supportsImageClassification(item.asset) {
+                Menu {
+                    Picker("图片分类", selection: Binding(
+                        get: { ImageClassificationStore.shared.override(for: item.asset.localIdentifier) },
+                        set: { choice in
+                            ImageClassificationStore.shared.setOverride(choice, for: item.asset.localIdentifier)
+                            model.refreshMediaClassifications()
+                            if choice == .automatic {
+                                Task { await OtherImageClassificationService.shared.classify([item.asset]) }
+                            }
+                        }
+                    )) {
+                        ForEach(ImageCategoryOverride.allCases, id: \.rawValue) { choice in
+                            Text(choice.label).tag(choice)
+                        }
+                    }
+                } label: {
+                    Label("图片分类", systemImage: "tag")
+                }
             }
-            .disabled(!item.sharedCapabilities.canEditAlbums)
+            Button {
+                if model.setCover(item) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            } label: {
+                Label("设为封面", systemImage: "photo.on.rectangle")
+            }
+            .disabled(model.photoCoverItem?.id == item.id)
             Button(role: .destructive) {
                 Task { await model.perform(.delete, on: item) }
             } label: {

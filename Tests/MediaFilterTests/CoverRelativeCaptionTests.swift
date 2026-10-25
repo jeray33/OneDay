@@ -25,19 +25,26 @@ final class CoverRelativeCaptionTests: XCTestCase {
     }
 
     func testDaysBeforeOneMonth() {
-        XCTAssertEqual(caption(date(2026, 10, 22), now: date(2026, 10, 24)), "2天前的一天")
-        XCTAssertEqual(caption(date(2026, 9, 25), now: date(2026, 10, 24)), "29天前的一天")
+        XCTAssertEqual(caption(date(2026, 10, 22), now: date(2026, 10, 24)), "2天前")
+        XCTAssertEqual(caption(date(2026, 10, 18), now: date(2026, 10, 24)), "6天前")
+        XCTAssertEqual(caption(date(2026, 9, 25), now: date(2026, 10, 24)), "4周前")
+    }
+
+    func testWeeksDoNotRoundUp() {
+        XCTAssertEqual(caption(date(2026, 10, 17), now: date(2026, 10, 24)), "1周前")
+        XCTAssertEqual(caption(date(2026, 10, 11), now: date(2026, 10, 24)), "1周前")
+        XCTAssertEqual(caption(date(2026, 10, 10), now: date(2026, 10, 24)), "2周前")
     }
 
     func testMonthsBeforeOneYear() {
-        XCTAssertEqual(caption(date(2026, 9, 24), now: date(2026, 10, 24)), "1个月前的一天")
-        XCTAssertEqual(caption(date(2025, 10, 25), now: date(2026, 10, 24)), "11个月前的一天")
+        XCTAssertEqual(caption(date(2026, 9, 24), now: date(2026, 10, 24)), "1个月前")
+        XCTAssertEqual(caption(date(2025, 10, 25), now: date(2026, 10, 24)), "11个月前")
     }
 
     func testYearsDoNotRoundUp() {
-        XCTAssertEqual(caption(date(2025, 10, 24), now: date(2026, 10, 24)), "1年前的一天")
-        XCTAssertEqual(caption(date(2024, 3, 31), now: date(2026, 3, 30)), "1年前的一天")
-        XCTAssertEqual(caption(date(2024, 3, 31), now: date(2026, 10, 24)), "2年前的一天")
+        XCTAssertEqual(caption(date(2025, 10, 24), now: date(2026, 10, 24)), "1年前")
+        XCTAssertEqual(caption(date(2024, 3, 31), now: date(2026, 3, 30)), "1年前")
+        XCTAssertEqual(caption(date(2024, 3, 31), now: date(2026, 10, 24)), "2年前")
     }
 
 }

@@ -36,6 +36,7 @@ struct PHImageView: View {
         }
         .frame(width: displaySize.width, height: displaySize.height)
         .clipped()
+        .contentShape(Rectangle())
         .onAppear {
             guard kenBurns else { return }
             withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) {

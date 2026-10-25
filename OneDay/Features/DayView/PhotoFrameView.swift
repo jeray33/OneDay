@@ -49,6 +49,8 @@ struct PhotoFrameView: View {
             }
         }
         .frame(width: width)
+        // Clipping the pixels does not restrict a scaled image's hit region.
+        .contentShape(Rectangle())
     }
 
     private var framedImage: some View {

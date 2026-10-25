@@ -1,10 +1,22 @@
 import Foundation
 
-/// Metadata only selects candidates. It never proves that two videos are copies.
+/// Metadata only selects candidates. Matching pictures or verified bytes confirm them.
 nonisolated enum SharedVideoDuplicatePolicy {
     static func contentMatches(digestA: String?, digestB: String?) -> Bool {
         guard let digestA, !digestA.isEmpty, let digestB else { return false }
         return digestA == digestB
+    }
+
+    /// Shared albums re-encode each upload, so copies keep the picture but not
+    /// the bytes. Measured Vision distances: re-encoded copies <= 0.13 per
+    /// frame, unrelated clips >= 0.38.
+    static let perceptualDistanceLimit: Float = 0.2
+
+    /// Every sampled frame must match; one differing frame means other content.
+    static func perceptualMatch(_ distances: [Float]) -> Bool {
+        !distances.isEmpty && distances.allSatisfy {
+            $0.isFinite && $0 >= 0 && $0 <= perceptualDistanceLimit
+        }
     }
 
     struct Candidate: Sendable {
