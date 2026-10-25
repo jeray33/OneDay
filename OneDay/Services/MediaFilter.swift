@@ -145,7 +145,8 @@ nonisolated enum MediaFilter {
                 for: asset.localIdentifier, modificationDate: asset.modificationDate
             ),
             override: ImageClassificationStore.shared.override(for: asset.localIdentifier),
-            isBurst: asset.representsBurst
+            isBurst: asset.representsBurst,
+            isSharedVideo: isSharedVideo(asset)
         )
     }
 
@@ -156,7 +157,8 @@ nonisolated enum MediaFilter {
         pixelHeight: Int,
         imageClassification: ImageClassification = .unknown,
         override: ImageCategoryOverride = .automatic,
-        isBurst: Bool = false
+        isBurst: Bool = false,
+        isSharedVideo: Bool = false
     ) -> MediaCategory? {
         switch mediaType {
         case .image:
@@ -182,7 +184,9 @@ nonisolated enum MediaFilter {
             if override == .screenshot { return .screenshot }
             if override == .otherImage { return .otherImage }
             // Timelapse and slo-mo only come from the Camera app.
-            if hasCameraVideoSubtype(subtypes) { return .photoVideo }
+            // Shared exports can strip make/model. Ignore an old automatic
+            // "other" result immediately, even before cache repair finishes.
+            if isSharedVideo || hasCameraVideoSubtype(subtypes) { return .photoVideo }
             return imageClassification == .otherImage ? .otherImage : .photoVideo
 
         default:
@@ -213,10 +217,21 @@ nonisolated enum MediaFilter {
 
     static func needsAutomaticClassification(_ asset: PHAsset) -> Bool {
         guard supportsImageClassification(asset) else { return false }
+        if isSharedVideo(asset) { return false }
         if asset.mediaType == .video { return !hasCameraVideoSubtype(asset.mediaSubtypes) }
         let shortSide = min(asset.pixelWidth, asset.pixelHeight)
         let longSide = max(asset.pixelWidth, asset.pixelHeight)
         return shortSide <= 0 || Double(longSide) / Double(shortSide) < 3
+    }
+
+    static func isSharedVideo(_ asset: PHAsset) -> Bool {
+        isSharedVideo(mediaType: asset.mediaType, subtypes: asset.mediaSubtypes, sourceType: asset.sourceType)
+    }
+
+    static func isSharedVideo(
+        mediaType: PHAssetMediaType, subtypes: PHAssetMediaSubtype, sourceType: PHAssetSourceType
+    ) -> Bool {
+        mediaType == .video && (sourceType.contains(.typeCloudShared) || subtypes.contains(.videoStreamed))
     }
 
     /// Subtypes only the Camera app produces, so no metadata read is needed.

@@ -36,6 +36,8 @@ struct DayMagazineView: View {
     var photoCardUnderTopBar: Binding<Bool>? = nil
 
     @Namespace private var previewNamespace
+    @Namespace private var similarPhotoNamespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var coverScroll = PhotoCoverScrollState()
     @State private var scrollPerformance = DayScrollPerformanceProbe()
 
@@ -111,12 +113,27 @@ struct DayMagazineView: View {
                         Color.clear.frame(height: model.hasAnyLocation ? 0 : 24)
 
                         if model.allItems.isEmpty {
-                            Text("这一天没有可显示内容")
-                                .font(Theme.serif(17))
-                                .foregroundStyle(Theme.ink.opacity(0.65))
-                                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
-                                .padding(.horizontal, 20)
-                                .padding(.top, 40)
+                            VStack(alignment: .leading, spacing: 12) {
+                                if model.selectedMediaTab == .featured {
+                                    if model.isPreparingFeatured {
+                                        HStack(spacing: 10) {
+                                            ProgressView().tint(Theme.ink)
+                                            Text("正在精选本地照片和视频")
+                                        }
+                                    } else {
+                                        Text("暂无可评估的精选内容")
+                                    }
+                                    Text("先每组择优，再分别保留照片和视频前 \(model.featuredAmount.rawValue)%。未取得本地评分的素材暂不入选，原有内容仍保留。")
+                                        .font(.footnote)
+                                } else {
+                                    Text("这一天没有可显示内容")
+                                }
+                            }
+                            .font(Theme.serif(17))
+                            .foregroundStyle(Theme.ink.opacity(0.65))
+                            .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 40)
                         }
 
                         if model.hasAnyLocation {
@@ -136,7 +153,7 @@ struct DayMagazineView: View {
                         // accompany the photo/video tab — not screenshots or
                         // other images.
                         if model.showDayInsights, let insights = model.insights,
-                           (model.selectedMediaCategory ?? .photoVideo) == .photoVideo {
+                           (model.selectedMediaTab ?? .photoVideo) == .photoVideo {
                             DayInsightsStrip(insights: insights)
                                 .padding(.top, model.hasAnyLocation ? 0 : 8)
                         }
@@ -274,7 +291,7 @@ struct DayMagazineView: View {
                 .onChange(of: model.instanceID) {
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo("scroll_top") }
                 }
-                .onChange(of: model.selectedMediaCategory) { _, _ in
+                .onChange(of: model.selectedMediaTab) { _, _ in
                     // With the photo cover, the tabs stay where they are if
                     // the card has not reached the top yet.
                     if coverScroll.scrolled <= coverSpace { return }
@@ -309,10 +326,11 @@ struct DayMagazineView: View {
                 }
                 .onChange(of: model.previewCurrentID) { _, id in
                     guard model.selected != nil, let id else { return }
+                    let cellID = model.gridCellID(forItemID: id)
                     // Only scroll when the target cell is off screen, so
                     // closing the preview preserves a visible cell's position.
                     // Cell frames are content-space; convert before testing.
-                    if let cell = frameStore.cells[id] {
+                    if let cell = frameStore.cells[cellID] {
                         let midY = frameStore.screenRect(for: cell.rect).midY
                         if midY >= fixedHeaderHeight, midY <= geo.size.height {
                             return
@@ -321,7 +339,7 @@ struct DayMagazineView: View {
                     var t = Transaction()
                     t.disablesAnimations = true
                     withTransaction(t) {
-                        if model.gridArrangement == .waterfall, let cell = frameStore.cells[id] {
+                        if model.gridArrangement == .waterfall, let cell = frameStore.cells[cellID] {
                             scrollToGridFrame(cell.rect, viewportSize: geo.size, anchor: 0.5)
                         } else if let blockID = model.blockID(forItemID: id) {
                             proxy.scrollTo(blockID, anchor: .center)
@@ -508,10 +526,10 @@ struct DayMagazineView: View {
 
     private var mediaTabs: some View {
         HStack(spacing: 0) {
-            ForEach(model.availableMediaCategories) { category in
-                let isSelected = model.selectedMediaCategory == category
+            ForEach(model.availableMediaTabs) { category in
+                let isSelected = model.selectedMediaTab == category
                 Button {
-                    model.selectMediaCategory(category)
+                    model.selectMediaTab(category)
                 } label: {
                     Text(category.tabLabel)
                         .font(Theme.serif(15, weight: isSelected ? .semibold : .regular))
@@ -551,7 +569,7 @@ struct DayMagazineView: View {
     private func gridLayoutRevision(viewportWidth: CGFloat) -> DayGridLayoutRevision {
         DayGridLayoutRevision(
             instanceID: model.instanceID,
-            category: model.selectedMediaCategory?.rawValue,
+            category: model.selectedMediaTab?.rawValue,
             arrangement: model.gridArrangement,
             columns: model.gridColumnCount,
             width: viewportWidth,
@@ -579,8 +597,15 @@ struct DayMagazineView: View {
 
     private func gridEntries(_ blocks: [MagazineBlock], placeCard: PlaceSectionCard?) -> [DayGridEntry] {
         let photos = blocks.flatMap { block in
-            block.items.enumerated().map { index, item in
-                DayGridEntry.photo(PhotoGridEntry(item: item, blockID: block.id, startsBlock: index == 0))
+            let expanded = block.groupID.map { model.expandedGroupIDs.contains($0) } ?? false
+            let visible = block.groupID != nil && !expanded
+                ? block.items.filter { $0.id == block.representativeID } : block.items
+            return visible.enumerated().map { index, item in
+                DayGridEntry.photo(PhotoGridEntry(
+                    item: item, blockID: block.id, startsBlock: index == 0,
+                    groupID: index == 0 ? block.groupID : nil,
+                    hiddenCount: expanded ? 0 : max(block.items.count - 1, 0),
+                    expanded: expanded))
             }
         }
         return (placeCard.map { [DayGridEntry.placeCard($0)] } ?? []) + photos
@@ -633,16 +658,16 @@ struct DayMagazineView: View {
             ) { entry, metrics in
                 switch entry {
                 case .photo(let photo):
-                    photoGridCell(photo.item, width: finalCellWidth, virtualMetrics: metrics)
+                    groupedPhotoCell(photo, width: finalCellWidth, virtualMetrics: metrics)
                 case .placeCard(let card):
                     placeCardCell(card, width: finalCellWidth)
                 }
             }
             .padding(.horizontal, horizontalInset)
             .frame(maxWidth: .infinity, alignment: frameAlignment)
-            // Repacking is immediate; don't animate hundreds of cards through
-            // each other when a column, caption or filter changes.
-            .transaction { $0.animation = nil }
+            // Ordinary repacking stays atomic; only an explicit fold action
+            // animates the buffered, visible cells.
+            .transaction { if !$0.similarPhotoReflow { $0.animation = nil } }
         } else if model.gridLazyEnabled {
             let columns = Array(
                 repeating: GridItem(.fixed(finalCellWidth), spacing: horizontalSpacing, alignment: .top),
@@ -688,8 +713,9 @@ struct DayMagazineView: View {
                 viewportSize: viewportSize,
                 forceLoad: heroHiddenID == photo.id || heroRequest?.id == photo.id
             ) { loadsImage in
-                photoGridCell(photo.item, width: width, loadsImage: loadsImage)
+                groupedPhotoCell(photo, width: width, loadsImage: loadsImage)
             }
+            .matchedGeometryEffect(id: photo.id, in: similarPhotoNamespace, properties: .position)
             if photo.startsBlock {
                 cell.id(photo.blockID)
             } else {
@@ -718,6 +744,43 @@ struct DayMagazineView: View {
             card: card, width: width, ratio: model.placeCardRatio, font: model.coverDateFont,
             titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
             shadowLevel: model.photoShadow)
+    }
+
+    private func groupedPhotoCell(
+        _ photo: PhotoGridEntry, width: CGFloat, loadsImage: Bool = true,
+        virtualMetrics: WaterfallLayoutPolicy.CellMetrics? = nil
+    ) -> some View {
+        photoGridCell(photo.item, width: width, loadsImage: loadsImage,
+                      virtualMetrics: virtualMetrics)
+            .overlay(alignment: .bottomTrailing) {
+                if let groupID = photo.groupID {
+                    Button {
+                        var transaction = Transaction(animation: reduceMotion ? nil : .easeInOut(duration: 0.32))
+                        transaction.similarPhotoReflow = true
+                        withTransaction(transaction) {
+                            model.toggleSimilarGroup(groupID)
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: photo.expanded ? "chevron.up" : "square.on.square")
+                            if !photo.expanded {
+                                Text("+\(photo.hiddenCount)").monospacedDigit()
+                            }
+                        }
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7).frame(height: 24)
+                            .background(.black.opacity(0.65), in: Capsule())
+                            // Keep the visible badge small without shrinking
+                            // its accessible touch target.
+                            .frame(minWidth: 44, minHeight: 44, alignment: .bottomTrailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(photo.expanded ? "收起相似照片" : "展开 \(photo.hiddenCount + 1) 张相似照片")
+                    .padding(6)
+                }
+            }
     }
 
     private func photoGridCell(
@@ -1086,7 +1149,7 @@ struct DayMagazineView: View {
     /// The grid cell to hide while its photo is presented (empties its slot so
     /// the fly-back lands into a real gap).
     private var heroHiddenID: String? {
-        model.selected != nil ? model.previewCurrentID : nil
+        model.selected != nil ? model.previewCurrentID.map { model.gridCellID(forItemID: $0) } : nil
     }
 
 }
@@ -1103,6 +1166,9 @@ private struct PhotoGridEntry: Identifiable {
     let item: PhotoItem
     let blockID: UUID
     let startsBlock: Bool
+    var groupID: String? = nil
+    var hiddenCount: Int = 0
+    var expanded = false
 
     var id: String { item.id }
 }

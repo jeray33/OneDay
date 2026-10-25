@@ -58,13 +58,17 @@ actor PhotoSharpnessRanker {
     private nonisolated func sharpnessScore(_ asset: PHAsset) async -> Double? {
         guard let image = await ImageLoader.shared.thumbnail(
                 asset: asset, size: CGSize(width: 128, height: 128), allowsNetworkAccess: false),
-              !Task.isCancelled,
-              let gray = grayscaleBytes(image, size: Self.sampleSize) else { return nil }
-        return laplacianVariance(gray, edge: Self.sampleSize)
+              !Task.isCancelled else { return nil }
+        return Self.score(image)
+    }
+
+    nonisolated static func score(_ image: UIImage) -> Double? {
+        guard let gray = grayscaleBytes(image, size: sampleSize) else { return nil }
+        return laplacianVariance(gray, edge: sampleSize)
     }
 
     /// Renders a thumbnail to an 8-bit grayscale byte array.
-    private nonisolated func grayscaleBytes(_ image: UIImage, size: Int) -> [UInt8]? {
+    private nonisolated static func grayscaleBytes(_ image: UIImage, size: Int) -> [UInt8]? {
         let cs = CGColorSpaceCreateDeviceGray()
         guard let ctx = CGContext(
                 data: nil, width: size, height: size,
@@ -81,7 +85,7 @@ actor PhotoSharpnessRanker {
     }
 
     /// Laplacian (4-neighbour) variance over the interior pixels.
-    private nonisolated func laplacianVariance(_ px: [UInt8], edge n: Int) -> Double {
+    private nonisolated static func laplacianVariance(_ px: [UInt8], edge n: Int) -> Double {
         var sum: Double = 0
         var sumSq: Double = 0
         var count: Double = 0

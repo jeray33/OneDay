@@ -4,6 +4,18 @@ import os
 
 private let waterfallLogger = Logger(subsystem: "OneDay", category: "WaterfallPerformance")
 
+private struct SimilarPhotoReflowKey: TransactionKey {
+    static let defaultValue = false
+}
+
+extension Transaction {
+    /// Only explicit fold actions may animate the virtual grid's positions.
+    var similarPhotoReflow: Bool {
+        get { self[SimilarPhotoReflowKey.self] }
+        set { self[SimilarPhotoReflowKey.self] = newValue }
+    }
+}
+
 /// Preserve the aligned grid's existing animation, but make waterfall reflows
 /// atomic so scroll-anchor corrections use final, not interpolated geometry.
 func withDayGridLayoutChange(_ arrangement: DayGridArrangement, _ changes: () -> Void) {
@@ -253,7 +265,7 @@ private struct WaterfallVisibleCells<Entry: Identifiable, Content: View>: View w
             }
         }
         .frame(width: prepared.plan.size.width, height: prepared.plan.size.height, alignment: .topLeading)
-        .transaction { $0.animation = nil }
+        .transaction { if !$0.similarPhotoReflow { $0.animation = nil } }
         .onChange(of: indices, initial: true) { _, indices in
             if ProcessInfo.processInfo.arguments.contains("-OneDayPerformanceTrace") {
                 waterfallLogger.debug("Rendered \(indices.count) / \(prepared.items.count) waterfall cells")

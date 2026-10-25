@@ -77,6 +77,19 @@ actor OtherImageClassificationService {
     }
 
     func classify(_ assets: [PHAsset]) async {
+        guard !Task.isCancelled else { return }
+        let repairGeneration = store.currentGeneration
+        var repaired = false
+        for asset in assets where MediaFilter.isSharedVideo(asset) {
+            if store.repairSharedVideoClassification(
+                for: asset.localIdentifier, modificationDate: asset.modificationDate,
+                generation: repairGeneration
+            ) { repaired = true }
+        }
+        if repaired {
+            await store.persist()
+            ImageClassificationStore.notify(changed: true, finished: !store.isIndexing)
+        }
         let now = Date()
         var seen = Set<String>()
         var candidates = assets.filter { asset in
@@ -209,6 +222,7 @@ actor OtherImageClassificationService {
     /// device make/model in the QuickTime container metadata. Unreadable or
     /// cloud-only assets stay unknown so they are never demoted by a guess.
     nonisolated private static func classifyVideo(_ asset: PHAsset) async -> ImageClassification {
+        if MediaFilter.isSharedVideo(asset) { return .photo }
         if MediaFilter.hasCameraVideoSubtype(asset.mediaSubtypes) { return .photo }
         let input: PHContentEditingInput? = await withCheckedContinuation { continuation in
             let options = PHContentEditingInputRequestOptions()

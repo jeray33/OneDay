@@ -118,6 +118,7 @@ final class PhotoLibraryService {
                 guard let time = asset.creationDate?.timeIntervalSince1970,
                       SharedCopyMatch.isOwnCopy(
                         sharedTime: time,
+                        isVideo: asset.mediaType == .video,
                         sharedNames: { Self.fileNames(of: asset) },
                         ownSeconds: seconds,
                         ownSortedTimes: times,

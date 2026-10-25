@@ -5,6 +5,8 @@ import CoreLocation
 struct MagazineBlock: Identifiable {
     var id = UUID()
     var items: [PhotoItem]
+    var representativeID: String? = nil
+    var groupID: String? = nil
 }
 
 enum TimeBand: Int, CaseIterable {

@@ -32,11 +32,15 @@ nonisolated enum SharedCopyMatch {
     /// File names are read lazily: only near, non-identical captures need them.
     static func isOwnCopy(
         sharedTime: TimeInterval,
+        isVideo: Bool = false,
         sharedNames: () -> [String],
         ownSeconds: Set<Int>,
         ownSortedTimes: [TimeInterval],
         ownNames: (Int) -> [String]
     ) -> Bool {
+        // A capture-second collision is not evidence of video ownership.
+        // Videos use complete-file verification instead of this photo heuristic.
+        guard !isVideo else { return false }
         if ownSeconds.contains(captureSecond(sharedTime)) { return true }
         let nearby = nearbyIndices(of: sharedTime, in: ownSortedTimes)
         guard !nearby.isEmpty else { return false }

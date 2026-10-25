@@ -53,6 +53,58 @@ struct DaySettingsMenu: View {
                                               set: { model.backCoverBackground = $0 }),
                              labelOf: { $0.label })
             }
+            Toggle("显示精选", isOn: Binding(
+                get: { model.showsFeaturedTab },
+                set: { model.showsFeaturedTab = $0 }
+            ))
+            if model.showsFeaturedTab {
+                optionPicker("精选程度",
+                             binding: Binding(get: { model.featuredAmount },
+                                              set: { model.featuredAmount = $0 }),
+                             labelOf: { $0.label })
+            }
+            Menu("相似折叠") {
+                Toggle("开启", isOn: Binding(
+                    get: { model.similarFoldingEnabled },
+                    set: { model.similarFoldingEnabled = $0 }
+                ))
+                if model.similarFoldingEnabled {
+                    Picker("档位", selection: Binding(
+                        get: { model.similarFolding },
+                        set: { model.similarFolding = $0 }
+                    )) {
+                        ForEach(SimilarPhotoFolding.enabledCases) { level in
+                            Text(level == .custom ? level.label : "\(level.label) · \(level.parameters.summary)")
+                                .tag(level)
+                        }
+                    }
+                    Menu("距离阈值（\(String(format: "%.2f", model.similarFoldingThreshold))）") {
+                        Picker("距离阈值", selection: Binding(
+                            get: { model.similarFoldingThreshold },
+                            set: { model.similarFoldingThreshold = $0 }
+                        )) {
+                            ForEach(SimilarPhotoFoldingParameters.thresholdOptions, id: \.self) { threshold in
+                                Text(String(format: "%.2f", threshold)).tag(threshold)
+                            }
+                        }
+                    }
+                    Menu("拍摄时间窗口（\(SimilarPhotoFoldingParameters.windowLabel(model.similarFoldingWindow))）") {
+                        Picker("拍摄时间窗口", selection: Binding(
+                            get: { model.similarFoldingWindow },
+                            set: { model.similarFoldingWindow = $0 }
+                        )) {
+                            ForEach(SimilarPhotoFoldingParameters.windowOptions, id: \.self) { window in
+                                Text(SimilarPhotoFoldingParameters.windowLabel(window)).tag(window)
+                            }
+                        }
+                    }
+                    Section {
+                        Text("阈值越大，折叠越宽松")
+                        Text("时间窗口是拍摄间隔，不是等待时间")
+                        Text("仅折叠展示，不删除照片")
+                    }
+                }
+            }
             Menu("布局") {
                 Menu("排列") {
                     Picker("排列", selection: Binding(

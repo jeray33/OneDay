@@ -97,4 +97,76 @@ final class DayMediaTabsTests: XCTestCase {
         XCTAssertEqual(screenshotsOnly.selection(preserving: nil), .screenshot)
         XCTAssertFalse(screenshotsOnly.showsTabBar)
     }
+
+    func testFeaturedIsAnAdditionalTabWithoutChangingOriginalInventory() {
+        let source = [
+            Item(id: "best", category: .photoVideo),
+            Item(id: "other-photo", category: .photoVideo),
+            Item(id: "screen", category: .screenshot),
+            Item(id: "long-image", category: .otherImage)
+        ]
+        let state = DayMediaTabs(items: source, featuredEnabled: true,
+                                 featured: { ["best", "screen", "long-image"].contains($0.id) },
+                                 category: \.category)
+        XCTAssertEqual(state.availableTabs, [.photoVideo, .screenshot, .otherImage, .featured])
+        XCTAssertEqual(state.items(inTab: .featured).map(\.id), ["best"])
+        XCTAssertEqual(state.items(inTab: .photoVideo).map(\.id), ["best", "other-photo"])
+        XCTAssertEqual(state.items(inTab: .screenshot).map(\.id), ["screen"])
+        XCTAssertEqual(state.items(inTab: .otherImage).map(\.id), ["long-image"])
+        XCTAssertEqual(state.tabSelection(preserving: nil), .photoVideo)
+        XCTAssertEqual(state.tabSelection(preserving: .screenshot), .screenshot)
+    }
+
+    func testFeaturedRemainsAvailableWhileScoresArePending() {
+        let state = DayMediaTabs(items: [Item(id: "pending", category: .photoVideo)],
+                                 featuredEnabled: true, category: \.category)
+        XCTAssertEqual(state.availableTabs, [.photoVideo, .featured])
+        XCTAssertTrue(state.items(inTab: .featured).isEmpty)
+        XCTAssertEqual(state.tabSelection(preserving: .featured), .featured)
+        XCTAssertTrue(state.showsTabBar)
+    }
+
+    func testDisablingFeaturedFallsBackWithoutRemovingAnyOriginals() {
+        let source = [Item(id: "a", category: .photoVideo)]
+        let state = DayMediaTabs(items: source, featuredEnabled: false,
+                                 featured: { _ in true }, category: \.category)
+        XCTAssertEqual(state.availableTabs, [.photoVideo])
+        XCTAssertEqual(state.tabSelection(preserving: .featured), .photoVideo)
+        XCTAssertEqual(state.items(inTab: .photoVideo).map(\.id), ["a"])
+        XCTAssertTrue(state.items(inTab: .featured).isEmpty)
+    }
+
+    func testDaysWithoutCameraMediaDoNotShowAnEmptyFeaturedTab() {
+        let state = DayMediaTabs(items: [Item(id: "screen", category: .screenshot)],
+                                 featuredEnabled: true, featured: { _ in true }, category: \.category)
+        XCTAssertEqual(state.availableTabs, [.screenshot])
+        XCTAssertEqual(state.tabSelection(preserving: .featured), .screenshot)
+        XCTAssertTrue(state.items(inTab: nil).isEmpty)
+    }
+
+    func testFeaturedCannotReintroduceItemsRemovedBySharedSourceControls() {
+        let source = [
+            Item(id: "own", category: .photoVideo),
+            Item(id: "shared", category: .photoVideo, shared: true),
+            Item(id: "own-copy", category: .photoVideo, shared: true, ownContribution: true)
+        ]
+        for includeShared in [false, true] {
+            let body = DayMediaScope.bodyItems(
+                from: source, includeShared: includeShared,
+                isShared: \.shared, isOwnSharedContribution: \.ownContribution)
+            let state = DayMediaTabs(items: body, featuredEnabled: true,
+                                     featured: { _ in true }, category: \.category)
+            XCTAssertEqual(state.items(inTab: .featured).map(\.id), includeShared ? ["own", "shared"] : ["own"])
+        }
+    }
+
+    func testNewScoresDoNotStealTheCurrentTabSelection() {
+        let source = [Item(id: "a", category: .photoVideo)]
+        let before = DayMediaTabs(items: source, featuredEnabled: true, category: \.category)
+        let after = DayMediaTabs(items: source, featuredEnabled: true,
+                                 featured: { _ in true }, category: \.category)
+        XCTAssertEqual(after.tabSelection(preserving: before.tabSelection(preserving: .photoVideo)), .photoVideo)
+        XCTAssertEqual(after.tabSelection(preserving: .featured), .featured)
+        XCTAssertEqual(after.items(inTab: .featured).map(\.id), ["a"])
+    }
 }

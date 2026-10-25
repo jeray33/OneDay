@@ -18,9 +18,136 @@ final class DayViewModel {
     private(set) var gridItemIDs: [String] = []
     private(set) var gridCaptions: [String?] = []
     private(set) var itemsRevision = UUID()
+    private var similaritySettingsRevision = 0
+    private var similarFoldingPreferences: SimilarPhotoFoldingPreferences {
+        _ = similaritySettingsRevision
+        return SimilarPhotoFoldingPreferences()
+    }
+    var similarFolding: SimilarPhotoFolding {
+        get { similarFoldingPreferences.level }
+        set { updateSimilarFolding { $0.select(newValue) } }
+    }
+    var similarFoldingEnabled: Bool {
+        get { similarFoldingPreferences.isEnabled }
+        set { updateSimilarFolding { $0.isEnabled = newValue } }
+    }
+    var similarFoldingThreshold: Float {
+        get { similarFoldingPreferences.parameters.threshold }
+        set { updateSimilarFolding { $0.setThreshold(newValue) } }
+    }
+    var similarFoldingWindow: TimeInterval {
+        get { similarFoldingPreferences.parameters.window }
+        set { updateSimilarFolding { $0.setWindow(newValue) } }
+    }
+
+    private func updateSimilarFolding(_ update: (inout SimilarPhotoFoldingPreferences) -> Void) {
+        let previous = similarFoldingPreferences
+        var settings = previous
+        update(&settings)
+        guard settings != previous else { return }
+        settings.save()
+        similaritySettingsRevision &+= 1
+        expandedGroupIDs.removeAll()
+        refreshVisualPresentation()
+        // Parameter changes regroup cached features; do not restart inference.
+        if settings.isEnabled != previous.isEnabled { prepareSimilarity() }
+    }
+    private(set) var expandedGroupIDs: Set<String> = []
+    private var similarityTask: Task<Void, Never>?
+    private var similarityGeneration = UUID()
+    private var pendingSimilarityRefresh = false
+    private var sharedVideoDuplicateTask: Task<Void, Never>?
+    private var sharedVideoDuplicateGeneration = UUID()
+    private var sharedVideoDuplicateIDs: Set<String> = []
+
+    isolated deinit {
+        sharedVideoDuplicateTask?.cancel()
+        similarityTask?.cancel()
+    }
+
+    private func prepareSharedVideoDuplicates() {
+        sharedVideoDuplicateTask?.cancel()
+        let generation = UUID()
+        sharedVideoDuplicateGeneration = generation
+        guard includeSharedAlbums else { return }
+        let items = allItemsUnfiltered
+        sharedVideoDuplicateTask = Task { [weak self] in
+            let ids = await SharedVideoDuplicateService.shared.duplicateIDs(in: items) { [weak self] ids in
+                await self?.acceptSharedVideoDuplicates(ids, generation: generation)
+            }
+            guard !Task.isCancelled else { return }
+            self?.acceptSharedVideoDuplicates(ids, generation: generation)
+        }
+    }
+
+    private func acceptSharedVideoDuplicates(_ ids: Set<String>, generation: UUID) {
+        guard !Task.isCancelled, sharedVideoDuplicateGeneration == generation,
+              ids != sharedVideoDuplicateIDs else { return }
+        sharedVideoDuplicateIDs = ids
+        // The existing filter defers changes until preview dismissal.
+        applySharedFilter(animated: false)
+        if selected == nil { scheduleReprepareAfterFilterChange() }
+    }
+
+    func toggleSimilarGroup(_ id: String) {
+        if !expandedGroupIDs.insert(id).inserted { expandedGroupIDs.remove(id) }
+    }
+
+    func gridCellID(forItemID id: String) -> String {
+        for section in sections {
+            for block in section.blocks where block.items.contains(where: { $0.id == id }) {
+                if let groupID = block.groupID, !expandedGroupIDs.contains(groupID) {
+                    return block.representativeID ?? id
+                }
+            }
+        }
+        return id
+    }
+
+    private func prepareSimilarity() {
+        similarityTask?.cancel()
+        let generation = UUID()
+        similarityGeneration = generation
+        isPreparingFeatured = showsFeaturedTab
+        guard similarFolding != .off || showsFeaturedTab else { return }
+        let items = similarFolding == .off
+            ? Self.filterShared(allItemsUnfiltered, includeShared: includeSharedAlbums).filter {
+                MediaFilter.category(for: $0.asset) == .photoVideo && !sharedVideoDuplicateIDs.contains($0.id)
+            }
+            : allItemsUnfiltered
+        similarityTask = Task { [weak self] in
+            await SimilarityFeatureService.shared.prepare(items) { [weak self] in
+                await self?.acceptVisualAnalysis(generation: generation, finished: false)
+            }
+            guard !Task.isCancelled, let self, self.similarityGeneration == generation else { return }
+            self.acceptVisualAnalysis(generation: generation, finished: true)
+        }
+    }
+
+    private func acceptVisualAnalysis(generation: UUID, finished: Bool) {
+        guard !Task.isCancelled, similarityGeneration == generation else { return }
+        if finished { isPreparingFeatured = false }
+        refreshVisualPresentation()
+    }
+
+    private func refreshVisualPresentation() {
+        let previousIDs = allItems.map(\.id)
+        applySharedFilter(animated: false)
+        if selected != nil {
+            pendingSimilarityRefresh = true
+        } else if previousIDs != allItems.map(\.id) {
+            scheduleReprepareAfterFilterChange()
+        } else {
+            rebuildSections(animated: false)
+        }
+    }
     var selected: PhotoItem? {
         didSet {
             schedulePlacePresentation()
+            if selected == nil, pendingSimilarityRefresh {
+                pendingSimilarityRefresh = false
+                rebuildSections(animated: false)
+            }
             guard selected == nil,
                   pendingClassificationRefresh || pendingSourceItems != nil else { return }
             // Let the hero flight finish restoring its source cell first.
@@ -54,12 +181,15 @@ final class DayViewModel {
             items.map { $0.id == id ? replacement : $0 }
         }
         allItemsUnfiltered = replacing(allItemsUnfiltered)
+        sharedVideoDuplicateIDs.removeAll()
+        prepareSharedVideoDuplicates()
         allItems = replacing(allItems)
         if let pendingSourceItems { self.pendingSourceItems = replacing(pendingSourceItems) }
         if selected?.id == id { selected = replacement }
         coverPhotos = replacing(coverPhotos)
         coverCandidates = replacing(coverCandidates)
         if tunnelCoverPhoto?.id == id { tunnelCoverPhoto = replacement }
+        prepareSimilarity()
         sourceRevision = UUID()
         recomputeRouteDerived()
         rebuildSections(animated: false)
@@ -250,13 +380,46 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
         didSet {
             UserDefaults.standard.set(includeSharedAlbums, forKey: Self.includeSharedAlbumsKey)
             applySharedFilter(animated: true)
+            prepareSharedVideoDuplicates()
+            if showsFeaturedTab { prepareSimilarity() }
             scheduleReprepareAfterFilterChange()
         }
     }
     private var mediaTabs: DayMediaTabs<PhotoItem>
-    private(set) var selectedMediaCategory: MediaCategory?
-    var availableMediaCategories: [MediaCategory] { mediaTabs.availableCategories }
+    private(set) var selectedMediaTab: DayMediaTab?
+    var availableMediaTabs: [DayMediaTab] { mediaTabs.availableTabs }
     var showsMediaTabs: Bool { mediaTabs.showsTabBar }
+    var showsFeaturedTab = FeaturedMediaPolicy.isEnabled() {
+        didSet {
+            guard oldValue != showsFeaturedTab else { return }
+            UserDefaults.standard.set(showsFeaturedTab, forKey: FeaturedMediaPolicy.enabledKey)
+            refreshVisualPresentation()
+            prepareSimilarity()
+        }
+    }
+    var featuredAmount = FeaturedMediaAmount.saved() {
+        didSet {
+            guard oldValue != featuredAmount else { return }
+            featuredAmount.save()
+            // Scores and feature prints are reused; no additional image reads.
+            refreshVisualPresentation()
+        }
+    }
+    private(set) var isPreparingFeatured = false
+
+    private static func makeMediaTabs(_ items: [PhotoItem], featuredEnabled: Bool) -> DayMediaTabs<PhotoItem> {
+        var featuredIDs = Set<String>()
+        if featuredEnabled {
+            let candidates = items.filter { MediaFilter.category(for: $0.asset) == .photoVideo }
+            let groups = DaySectionComposer.similarGroups(candidates, ignoringOffSwitch: true)
+            let best = FeaturedMediaPolicy.curatedItems(
+                in: groups, amount: FeaturedMediaAmount.saved(), isVideo: \.isVideo
+            ) { SimilarityFeatureStore.shared.score($0) }
+            featuredIDs = Set(best.map(\.id))
+        }
+        return DayMediaTabs(items: items, featuredEnabled: featuredEnabled,
+                            featured: { featuredIDs.contains($0.id) }) { MediaFilter.category(for: $0.asset) }
+    }
 
     /// Complete source, independent from both tunnel toggles and the active Tab.
     private var allItemsUnfiltered: [PhotoItem] = []
@@ -332,7 +495,9 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     init(date: Date, items: [PhotoItem]) {
         DayAppearancePreferences.migrateLegacySettings()
         self.date = date
-        let sortedItems = items.sorted { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+        let sortedItems = SharedVideoDuplicatePolicy.unique(items, id: \.id).sorted {
+            ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
+        }
         self.favoriteIDs = Set(items.filter { $0.isFavorite }.map(\.id))
         self.hiddenIDs = Set(items.filter { $0.isHidden }.map(\.id))
         let saved = UserDefaults.standard.string(forKey: Self.backgroundKey)
@@ -391,9 +556,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         let savedShared = UserDefaults.standard.object(forKey: Self.includeSharedAlbumsKey) as? Bool ?? true
         let sharedItems = Self.filterShared(
             sortedItems, includeShared: savedShared)
-        let tabs = DayMediaTabs(items: sharedItems) { MediaFilter.category(for: $0.asset) }
-        let selectedCategory = tabs.selection(preserving: nil)
-        let composedItems = tabs.items(in: selectedCategory)
+        let tabs = Self.makeMediaTabs(sharedItems, featuredEnabled: FeaturedMediaPolicy.isEnabled())
+        let selectedCategory = tabs.tabSelection(preserving: nil)
+        let composedItems = tabs.items(inTab: selectedCategory)
         let segmentation = TitleSegmentationPolicy()
         let composedSections = DaySectionComposer.compose(composedItems, policy: segmentation)
         self.titleSegmentation = segmentation
@@ -403,7 +568,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.gridCaptions = composedItems.map(\.caption)
         self.includeSharedAlbums = savedShared
         self.mediaTabs = tabs
-        self.selectedMediaCategory = selectedCategory
+        self.selectedMediaTab = selectedCategory
         self.sections = composedSections
         recomputeRouteDerived()
         // Old multi-select choices no longer control the day body.
@@ -473,10 +638,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             isOwnSharedContribution: { $0.isOwnSharedContribution })
     }
 
-    func selectMediaCategory(_ category: MediaCategory) {
-        guard selected == nil, category != selectedMediaCategory,
-              availableMediaCategories.contains(category) else { return }
-        selectedMediaCategory = category
+    func selectMediaTab(_ category: DayMediaTab) {
+        guard selected == nil, category != selectedMediaTab,
+              availableMediaTabs.contains(category) else { return }
+        selectedMediaTab = category
         applySharedFilter(animated: false)
         scheduleReprepareAfterFilterChange()
     }
@@ -501,10 +666,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
         let sharedItems = Self.filterShared(
             allItemsUnfiltered,
-            includeShared: includeSharedAlbums)
-        mediaTabs = DayMediaTabs(items: sharedItems) { MediaFilter.category(for: $0.asset) }
-        selectedMediaCategory = mediaTabs.selection(preserving: selectedMediaCategory)
-        let filtered = mediaTabs.items(in: selectedMediaCategory)
+            includeShared: includeSharedAlbums).filter { !sharedVideoDuplicateIDs.contains($0.id) }
+        mediaTabs = Self.makeMediaTabs(sharedItems, featuredEnabled: showsFeaturedTab)
+        selectedMediaTab = mediaTabs.tabSelection(preserving: selectedMediaTab)
+        let filtered = mediaTabs.items(inTab: selectedMediaTab)
         guard force || filtered.map(\.id) != allItems.map(\.id) else { return }
         filterPreparationID = UUID()
         bodyPreparationTask?.cancel()
@@ -545,6 +710,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     // MARK: Preparation (places, pastel color, and captions)
 
     func prepare() async {
+        prepareSharedVideoDuplicates()
+        prepareSimilarity()
         loadInsights()
         // Start classification first so the cover can await its results.
         classifyDayImages()
@@ -604,7 +771,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             pendingSourceItems = items
             return
         }
-        var sorted = items.sorted {
+        var sorted = SharedVideoDuplicatePolicy.unique(items, id: \.id).sorted {
             ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
         }
         let previousByID = Dictionary(allItemsUnfiltered.map { ($0.id, $0) },
@@ -623,6 +790,10 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
                     && new.captureTimeZone == old.captureTimeZone
             }
         allItemsUnfiltered = sorted
+        // Old content versions must never suppress newly edited/replaced media.
+        if !unchanged { sharedVideoDuplicateIDs.removeAll() }
+        prepareSharedVideoDuplicates()
+        prepareSimilarity()
         favoriteIDs = Set(sorted.filter(\.isFavorite).map(\.id))
         hiddenIDs = Set(sorted.filter(\.isHidden).map(\.id))
         guard !unchanged else { return }
@@ -1401,6 +1572,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         guard allItemsUnfiltered.contains(where: { ids.contains($0.id) }) else { return }
         sourceRevision = UUID()
         allItemsUnfiltered.removeAll { ids.contains($0.id) }
+        // A removed representative may have a previously suppressed copy.
+        sharedVideoDuplicateIDs.removeAll()
+        prepareSharedVideoDuplicates()
         pendingSourceItems?.removeAll { ids.contains($0.id) }
         allItems.removeAll { ids.contains($0.id) }
         recomputeRouteDerived()

@@ -329,8 +329,9 @@ struct HeroOverlayView: View {
             return
         }
         let rest = cardFrames[id]
-        let version = model.allItems.first(where: { $0.id == id })?.contentVersion
-        let dest = frameStore.cells[id].flatMap { $0.contentVersion == version ? $0 : nil }
+        let landingID = model.gridCellID(forItemID: id)
+        let version = model.allItems.first(where: { $0.id == landingID })?.contentVersion
+        let dest = frameStore.cells[landingID].flatMap { $0.contentVersion == version ? $0 : nil }
 
         // Plain fade when we have no card geometry or no landing cell (e.g. the
         // photo was just deleted): degrade gracefully to A.

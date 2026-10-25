@@ -127,6 +127,21 @@ nonisolated final class ImageClassificationStore: @unchecked Sendable {
         lock.withLock { overrides[id] ?? .automatic }
     }
 
+    /// Targeted repair: only an identified shared video's matching automatic
+    /// result changes. Manual choices and unrelated photo/video caches survive.
+    @discardableResult
+    func repairSharedVideoClassification(
+        for id: String, modificationDate: Date?, generation: Int
+    ) -> Bool {
+        lock.withLock {
+            guard self.generation == generation,
+                  let entry = entries[id], entry.classification == .otherImage,
+                  entry.matches(modificationDate) else { return false }
+            entries[id] = Entry(modificationTime: entry.modificationTime, classification: .photo)
+            return true
+        }
+    }
+
     func setOverride(_ choice: ImageCategoryOverride, for id: String) {
         let changed = lock.withLock {
             guard (overrides[id] ?? .automatic) != choice else { return false }

@@ -33,7 +33,7 @@ enum DaySectionComposer {
                 placeName: planned.placeName,
                 placeStopID: planned.placeID,
                 anchorLocation: group.first(where: { $0.location != nil })?.location,
-                blocks: group.map { MagazineBlock(items: [$0]) },
+                blocks: photoBlocks(group),
                 placeHeading: planned.showsPlaceHeading ? planned.placeName : nil,
                 placeHeadingPending: planned.showsPlaceHeading && planned.placeName == nil,
                 showsTimeHeading: planned.timeBand != nil,
@@ -41,6 +41,44 @@ enum DaySectionComposer {
                 placeCard: card
             )
         }
+    }
+
+    private static func photoBlocks(_ items: [PhotoItem]) -> [MagazineBlock] {
+        let store = SimilarityFeatureStore.shared
+        return similarGroups(items).map { group in
+            guard group.count > 1 else { return MagazineBlock(items: group) }
+            let representative = group.enumerated().max { a, b in
+                if a.element.isFavorite != b.element.isFavorite { return !a.element.isFavorite }
+                let lhs = store.score(a.element) ?? -.infinity
+                let rhs = store.score(b.element) ?? -.infinity
+                if lhs != rhs { return lhs < rhs }
+                return abs(a.offset - group.count / 2) > abs(b.offset - group.count / 2)
+            }?.element
+            return MagazineBlock(items: group, representativeID: representative?.id,
+                                 groupID: group.first?.id)
+        }
+    }
+
+    /// Featured selection shares scene boundaries but works independently of
+    /// whether the user currently collapses similar cards in the normal tabs.
+    static func similarGroups(_ items: [PhotoItem], ignoringOffSwitch: Bool = false) -> [[PhotoItem]] {
+        let folding = SimilarPhotoFoldingPreferences()
+        let level = ignoringOffSwitch && !folding.isEnabled ? folding.lastEnabledLevel : folding.level
+        let store = SimilarityFeatureStore.shared
+        return SimilarPhotoGrouping.groups(
+            items, level: level, parameters: folding.parameters, date: { $0.creationDate },
+            eligible: { $0.creationDate != nil },
+            distance: { store.distance($0, $1) },
+            compatible: { a, b in
+                a.isVideo == b.isVideo
+                    && (!a.isVideo || VideoSimilarityPolicy.compatibleDurations(a.duration, b.duration))
+            },
+            nearby: { a, b in
+                guard let a = a.location, let b = b.location,
+                      a.horizontalAccuracy >= 0, b.horizontalAccuracy >= 0 else { return true }
+                return a.distance(from: b) <= 50 + a.horizontalAccuracy + b.horizontalAccuracy
+            }
+        )
     }
 
     /// Each end reads in its own capture's local zone.
