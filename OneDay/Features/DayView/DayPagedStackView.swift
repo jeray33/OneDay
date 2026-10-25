@@ -20,6 +20,9 @@ struct DayPagedStackView: View {
     var onPrevDay: (() -> Void)?
     var onNextDay: (() -> Void)?
     var navLoading: Bool = false
+    var startsOnBack: Bool = false
+    /// Days opened from a history page have no back cover of their own.
+    var historyEnabled: Bool = true
 
     enum Layer {
         case content, back
@@ -41,13 +44,14 @@ struct DayPagedStackView: View {
     /// `DayMagazineView`, so the fixed buttons line up with the header's
     /// stand-ins even after the preview hides the status bar.
     @State private var stableTopInset: CGFloat = 0
+    @State private var didApplyStartLayer = false
 
     private func above(_ layer: Layer) -> Layer? {
         layer == .back ? .content : nil
     }
 
     private func below(_ layer: Layer) -> Layer? {
-        layer == .content ? .back : nil
+        layer == .content && historyEnabled ? .back : nil
     }
 
     // Flip tuning: fraction of the screen height that commits a flip.
@@ -66,7 +70,7 @@ struct DayPagedStackView: View {
         GeometryReader { geo in
             let h = geo.size.height
             ZStack {
-                backLayer(h: h)
+                if historyEnabled { backLayer(h: h) }
                 contentLayer(h: h)
                 fixedTopBar(h: h)
             }
@@ -77,7 +81,11 @@ struct DayPagedStackView: View {
                                  including: model.selected == nil ? .all : .subviews)
         }
         .ignoresSafeArea()
-        .onAppear { stableTopInset = topSafeAreaInset() }
+        .onAppear {
+            stableTopInset = topSafeAreaInset()
+            if startsOnBack, !didApplyStartLayer { current = .back }
+            didApplyStartLayer = true
+        }
     }
 
     private var topInset: CGFloat {
@@ -172,6 +180,7 @@ struct DayPagedStackView: View {
             onPrevDay: onPrevDay,
             onNextDay: onNextDay,
             navLoading: navLoading,
+            showsBackCoverHint: historyEnabled,
             scrollEdgesBinding: $contentEdges,
             scrollDisabled: current != .content,
             scrollFrozen: current == .content && flipOwnsDrag,
@@ -190,7 +199,13 @@ struct DayPagedStackView: View {
             model: model,
             entries: historyEntries,
             isLoading: historyLoading,
-            onSelectHistoryDay: onSelectHistoryDay,
+            onSelectHistoryDay: { date in
+                if Calendar.current.isDate(date, inSameDayAs: model.date) {
+                    flipBackToContent(h: h)
+                } else {
+                    onSelectHistoryDay?(date)
+                }
+            },
             scrollEdgesBinding: $backEdges,
             scrollDisabled: current != .back || flipOwnsDrag
         )
@@ -285,6 +300,13 @@ struct DayPagedStackView: View {
         }
     }
 
+    /// Tapping this day on its own history page reverses the flip, landing on
+    /// the photo page's end where the flip started.
+    private func flipBackToContent(h: CGFloat) {
+        guard current == .back, pendingLayer == nil else { return }
+        commitFlip(to: .content, target: h)
+    }
+
     private func finishFlip(to layer: Layer) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -321,7 +343,7 @@ struct DayPagedStackView: View {
             return translation > 0 && backEdges.atTop
         case .content:
             // Downward pulls stay with the scroll view so the photo can zoom.
-            return translation < 0 && contentEdges.atBottom
+            return historyEnabled && translation < 0 && contentEdges.atBottom
         }
     }
 

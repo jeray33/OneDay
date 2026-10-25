@@ -475,18 +475,26 @@ private struct GeoNamesAttributionSheet: View {
 }
 
 /// Glass close button shared by the fixed top bar and the photo page header.
+extension EnvironmentValues {
+    /// The day was opened from another day's history page, so the close
+    /// button returns there instead of to the tunnel.
+    @Entry var dayCloseReturnsToHistory = false
+}
+
 struct DayCloseButton: View {
     var tint: Color = Theme.ink
     let action: () -> Void
+    @Environment(\.dayCloseReturnsToHistory) private var returnsToHistory
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "xmark")
+            Image(systemName: returnsToHistory ? "chevron.backward" : "xmark")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(tint)
                 .frame(width: DayTopBar.buttonSize, height: DayTopBar.buttonSize)
                 .glassEffect(.regular.interactive(), in: .circle)
         }
+        .accessibilityLabel(returnsToHistory ? "返回" : "关闭")
     }
 }
 

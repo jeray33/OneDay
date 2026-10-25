@@ -44,6 +44,15 @@ struct RootView: View {
     @State private var showPermissionAlert = false
     @State private var showEmptyAlert = false
     @State private var dayFromTunnel = false
+    @State private var dayEntersFromBottom = false
+    /// Vertical offset of the top day page as a fraction of the screen
+    /// height; 1 is fully below the screen.
+    @State private var dayOffset: CGFloat = 0
+    @State private var dayClosing = false
+    @State private var dayHistoryEnabled = true
+    /// Days the user left through a history page, newest last.
+    @State private var historyReturnStack: [DayViewModel] = []
+    @State private var dayStartsOnBack = false
     @State private var hapticEngine: CHHapticEngine?
     @Namespace private var dateNamespace
     @AppStorage("OneDay.tunnelPhotoScale") private var tunnelPhotoScaleRaw = TunnelPhotoScale.medium.rawValue
@@ -68,8 +77,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            switch phase {
-            case .home:
+            if phase == .home || dayClosing {
                 TunnelRewindView(
                     model: dayModel,
                     layers: tunnelLayers,
@@ -102,6 +110,10 @@ struct RootView: View {
                                 self.dayModel = model
                                 tunnelStartDate = model.date
                                 dayFromTunnel = true
+                                dayEntersFromBottom = true
+                                dayHistoryEnabled = true
+                                historyReturnStack = []
+                                dayStartsOnBack = false
                                 // Continuous buzz that tracks the cover's
                                 // slide-up speed (easeInOut over 0.5s).
                                 playEntranceHaptic(duration: 0.5)
@@ -116,34 +128,31 @@ struct RootView: View {
                     }
                 )
                 .id(rewindHomeID)
+                .zIndex(0)
                 .transition(.opacity)
+            }
 
-            case .day:
-                if let dayModel {
-                    DayPagedStackView(
-                        model: dayModel,
-                        dateNamespace: dateNamespace,
-                        dateIsSource: false,
-                        coverDateMatched: !dayFromTunnel,
-                        chromeRevealed: $dayChromeRevealed,
-                        onClose: { closeDay() },
-                        historyEntries: historyEntries,
-                        historyLoading: historyLoading,
-                        onSelectHistoryDay: { date in navigate(to: date) },
-                        prevDate: previousDate(for: dayModel.date),
-                        nextDate: nextDate(for: dayModel.date),
-                        onPrevDay: { if let date = previousDate(for: dayModel.date) { navigate(to: date) } },
-                        onNextDay: { if let date = nextDate(for: dayModel.date) { navigate(to: date) } },
-                        navLoading: navLoading
-                    )
-                    .id(dayModel.instanceID)
-                    .transition(dayFromTunnel
-                        ? .asymmetric(insertion: .move(edge: .bottom), removal: .opacity)
-                        : .opacity)
+            if phase == .day {
+                // The day a history page was opened from stays alive beneath
+                // the top day, so sliding over or off it never rebuilds it.
+                // One ForEach keeps each page's identity as it moves between
+                // the two slots.
+                ForEach(stackedDays, id: \.instanceID) { model in
+                    let isTop = model.instanceID == dayModel?.instanceID
+                    let offset = isTop ? dayOffset : 0
+                    dayStack(model, startsOnBack: isTop ? dayStartsOnBack : true,
+                             historyEnabled: isTop ? dayHistoryEnabled : true)
+                        .visualEffect { content, proxy in
+                            content.offset(y: offset * proxy.size.height)
+                        }
+                        .allowsHitTesting(isTop)
+                        .zIndex(isTop ? 2 : 1)
+                        .transition(dayEntersFromBottom
+                            ? .asymmetric(insertion: .move(edge: .bottom), removal: .identity)
+                            : .opacity)
                 }
             }
         }
-        .animation(.easeInOut(duration: 0.4), value: phase)
         .alert("无法访问相册", isPresented: $showPermissionAlert) {
             Button("好") {}
         } message: {
@@ -760,6 +769,9 @@ struct RootView: View {
             guard phase == .day, dayModel?.instanceID == origin else { return }
             if let model {
                 dayFromTunnel = false
+                dayEntersFromBottom = false
+                dayStartsOnBack = false
+                dayHistoryEnabled = true
                 withAnimation(.easeInOut(duration: 0.35)) {
                     dayModel = model
                     phase = .day
@@ -767,6 +779,103 @@ struct RootView: View {
             } else {
                 navigationDaysLoaded = false
                 loadNavigationDaysIfNeeded()
+            }
+        }
+    }
+
+    private var stackedDays: [DayViewModel] {
+        guard let dayModel else { return [] }
+        if let origin = historyReturnStack.last { return [origin, dayModel] }
+        return [dayModel]
+    }
+
+    private func dayStack(_ model: DayViewModel, startsOnBack: Bool, historyEnabled: Bool) -> some View {
+        DayPagedStackView(
+            model: model,
+            dateNamespace: dateNamespace,
+            dateIsSource: false,
+            coverDateMatched: !dayFromTunnel,
+            chromeRevealed: $dayChromeRevealed,
+            onClose: { historyReturnStack.isEmpty ? closeDay() : returnToHistory() },
+            // A page beneath the top day keeps its own history list, not the
+            // top day's, so it looks unchanged when uncovered.
+            historyEntries: model.instanceID == dayModel?.instanceID
+                ? historyEntries
+                : historyCache[Calendar.current.startOfDay(for: model.date)] ?? historyEntries,
+            historyLoading: model.instanceID == dayModel?.instanceID && historyLoading,
+            onSelectHistoryDay: { date in openHistoryDay(date) },
+            prevDate: previousDate(for: model.date),
+            nextDate: nextDate(for: model.date),
+            onPrevDay: { if let date = previousDate(for: model.date) { navigate(to: date) } },
+            onNextDay: { if let date = nextDate(for: model.date) { navigate(to: date) } },
+            navLoading: navLoading,
+            startsOnBack: startsOnBack,
+            historyEnabled: historyEnabled
+        )
+        .environment(\.dayCloseReturnsToHistory, !historyReturnStack.isEmpty)
+    }
+
+    private func withoutAnimation(_ body: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, body)
+    }
+
+    /// Slides a history day up over the current one, remembering where to
+    /// return.
+    private func openHistoryDay(_ date: Date) {
+        if let origin = historyReturnStack.last,
+           Calendar.current.isDate(origin.date, inSameDayAs: date) {
+            returnToHistory()
+            return
+        }
+        guard !navLoading, let current = dayModel else { return }
+        navLoading = true
+        Task {
+            defer { navLoading = false }
+            guard let model = await makeDayModel(for: date),
+                  phase == .day, dayModel?.instanceID == current.instanceID else { return }
+            // The history page stays put underneath; the new day starts
+            // just below the screen and rises over it.
+            withoutAnimation {
+                dayFromTunnel = false
+                dayEntersFromBottom = false
+                dayStartsOnBack = false
+                historyReturnStack.append(current)
+                dayHistoryEnabled = false
+                dayOffset = 1
+                dayModel = model
+            }
+            DispatchQueue.main.async {
+                playEntranceHaptic(duration: 0.5)
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    dayOffset = 0
+                } completion: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+            }
+        }
+    }
+
+    /// Slides the current day down, uncovering the history page it was
+    /// opened from.
+    private func returnToHistory() {
+        guard let origin = historyReturnStack.last, dayOffset == 0 else { return }
+        DispatchQueue.main.async {
+            playEntranceHaptic(duration: 0.5)
+            withAnimation(.easeInOut(duration: 0.5)) {
+                dayOffset = 1
+            } completion: {
+                withoutAnimation {
+                    historyReturnStack.removeLast()
+                    dayFromTunnel = false
+                    dayEntersFromBottom = false
+                    dayStartsOnBack = true
+                    dayHistoryEnabled = true
+                    dayModel = origin
+                    dayOffset = 0
+                }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
         }
     }
@@ -781,8 +890,21 @@ struct RootView: View {
         tunnelStartDate = dayModel?.date
         rewindHomeID = UUID()
         dayChromeRevealed = false
-        withAnimation(.easeInOut(duration: 0.4)) {
-            phase = .home
+        guard !dayClosing else { return }
+        // The tunnel appears underneath first; the day page then slides off.
+        withoutAnimation { dayClosing = true }
+        DispatchQueue.main.async {
+            playEntranceHaptic(duration: 0.5)
+            withAnimation(.easeInOut(duration: 0.5)) {
+                dayOffset = 1
+            } completion: {
+                withoutAnimation {
+                    historyReturnStack = []
+                    phase = .home
+                    dayClosing = false
+                    dayOffset = 0
+                }
+            }
         }
     }
 }

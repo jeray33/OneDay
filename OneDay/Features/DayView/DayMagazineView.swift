@@ -13,6 +13,7 @@ struct DayMagazineView: View {
     var onPrevDay: (() -> Void)? = nil
     var onNextDay: (() -> Void)? = nil
     var navLoading: Bool = false
+    var showsBackCoverHint: Bool = true
     var scrollEdgesBinding: Binding<ContentScrollEdges>? = nil
     var scrollDisabled: Bool = false
     /// Freezes the inner ScrollView while a page flip owns the drag, so the
@@ -173,7 +174,10 @@ struct DayMagazineView: View {
                         }
 
                         VStack(spacing: 0) {
+                            // Hidden rather than removed so the page keeps its bottom spacing.
                             backCoverHint
+                                .opacity(showsBackCoverHint ? 1 : 0)
+                                .accessibilityHidden(!showsBackCoverHint)
                                 .padding(.top, 96)
                             Color.clear.frame(height: 1).id("scroll_bottom")
                         }
@@ -453,7 +457,7 @@ struct DayMagazineView: View {
 
     /// Same style as the tunnel page's bottom hint.
     private var backCoverHint: some View {
-        Text("上滑查看历史上的这天")
+        Text("上滑查看往年今日")
             .font(Theme.serif(12))
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity)
