@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// One-line "day at a glance" strip under the route map: steps, weather,
-/// mood. Each entry appears only when its data exists; the caller skips the
-/// whole strip when `insights` is nil.
+/// Day facts under the map, wrapping between entries on narrow screens.
 struct DayInsightsStrip: View {
     let insights: DayViewModel.DayInsights
+    var friendSharedCount: Int = 0
 
     private static let stepsFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
@@ -13,7 +12,7 @@ struct DayInsightsStrip: View {
     }()
 
     var body: some View {
-        HStack(spacing: 16) {
+        PlaceTrackFlow(horizontalSpacing: 16, verticalSpacing: 8, maximumItemWidth: .infinity) {
             if let steps = insights.steps {
                 let count = Self.stepsFormatter.string(from: NSNumber(value: steps)) ?? "\(steps)"
                 item(icon: "figure.walk", text: "\(count) 步")
@@ -24,6 +23,9 @@ struct DayInsightsStrip: View {
             }
             if let mood = insights.moodTitle {
                 item(icon: "face.smiling", text: mood)
+            }
+            if friendSharedCount > 0 {
+                item(icon: "person.2", text: "好友 \(friendSharedCount) 项")
             }
         }
         .font(Theme.serif(12))

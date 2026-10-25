@@ -10,6 +10,7 @@ final class DayMediaScopeTests: XCTestCase {
         var category: MediaCategory
         var shared = false
         var ownContribution = false
+        var hidden = false
     }
 
     private var calendar: Calendar {
@@ -36,6 +37,49 @@ final class DayMediaScopeTests: XCTestCase {
             Item(id: "panorama", type: .image, category: .photoVideo),
             Item(id: "other", type: .image, category: .otherImage)
         ]
+    }
+
+    private func sharedCount(_ items: [Item], duplicates: Set<String> = []) -> Int {
+        DayMediaScope.friendSharedCount(
+            from: items, excluding: duplicates, id: \.id,
+            isForeignShared: { $0.shared && !$0.ownContribution }, isHidden: \.hidden)
+    }
+
+    func testFriendSharedCountExcludesOwnContributionsHiddenAssetsAndDuplicateIdentifiers() {
+        let friend = Item(id: "friend", type: .image, category: .photoVideo, shared: true)
+        let source = [
+            items[0], friend, friend,
+            Item(id: "own-upload", type: .image, category: .photoVideo,
+                 shared: true, ownContribution: true),
+            Item(id: "hidden", type: .image, category: .photoVideo,
+                 shared: true, hidden: true)
+        ]
+        XCTAssertEqual(sharedCount(source), 1)
+        XCTAssertEqual(sharedCount([]), 0)
+    }
+
+    func testFriendSharedCountUsesVerifiedVideoDuplicatesInsteadOfVideoMetadata() {
+        let source = [
+            Item(id: "original", type: .video, category: .photoVideo),
+            Item(id: "shared-copy", type: .video, category: .photoVideo, shared: true),
+            Item(id: "different-video", type: .video, category: .photoVideo, shared: true)
+        ]
+        XCTAssertEqual(sharedCount(source), 2)
+        XCTAssertEqual(sharedCount(source, duplicates: ["shared-copy"]), 1)
+        XCTAssertEqual(sharedCount(source, duplicates: ["original"]), 2)
+    }
+
+    func testFriendSharedCountDoesNotDependOnClassificationOrFolding() {
+        var source = items.map { item in
+            var shared = item
+            shared.shared = true
+            return shared
+        }
+        XCTAssertEqual(sharedCount(source), items.count)
+        source[0].category = .screenshot
+        source[1].category = .otherImage
+        XCTAssertEqual(sharedCount(source), items.count)
+        XCTAssertEqual(sharedCount(Array(source.dropFirst())), items.count - 1)
     }
 
     func testAllBodyTabsLeaveCompleteEditorialInventoryIntact() {

@@ -304,6 +304,11 @@ struct DaySettingsMenu: View {
                             }
                         }
                         if model.placeSegmentationForm == .card {
+                            optionPicker("卡片样式",
+                                       binding: Binding(
+                                        get: { model.placeCardStyle },
+                                        set: { model.placeCardStyle = $0 }),
+                                       labelOf: { $0.label })
                             optionPicker("比例",
                                        binding: Binding(
                                         get: { model.placeCardRatio },

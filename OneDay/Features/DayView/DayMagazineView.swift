@@ -66,6 +66,7 @@ struct DayMagazineView: View {
     @State private var scrubber = DayScrubberState()
     @State private var scrollPosition = ScrollPosition()
     @State private var bottomBarHeight: CGFloat = 0
+    @State private var mediaTabFrames: [DayMediaTab: CGRect] = [:]
 
     /// Uses the cached inset when available, falling back to a live read.
     private var stableTopInsetValue: CGFloat {
@@ -153,9 +154,11 @@ struct DayMagazineView: View {
                         // Insights belong to the day itself, so they only
                         // accompany the photo/video tab — not screenshots or
                         // other images.
-                        if model.showDayInsights, let insights = model.insights,
-                           (model.selectedMediaTab ?? .photoVideo) == .photoVideo {
-                            DayInsightsStrip(insights: insights)
+                        if model.showDayInsights,
+                           (model.selectedMediaTab ?? .photoVideo) == .photoVideo,
+                           model.insights != nil || model.friendSharedCount > 0 {
+                            DayInsightsStrip(insights: model.insights ?? .init(),
+                                             friendSharedCount: model.friendSharedCount)
                                 .padding(.top, model.hasAnyLocation ? 0 : 8)
                         }
 
@@ -519,11 +522,8 @@ struct DayMagazineView: View {
     }
 
     private var mediaTabs: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 24) {
             ForEach(model.availableMediaTabs) { category in
-                if category != model.availableMediaTabs.first {
-                    Spacer(minLength: 0)
-                }
                 let isSelected = model.selectedMediaTab == category
                 Button {
                     model.selectMediaTab(category)
@@ -534,11 +534,9 @@ struct DayMagazineView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .padding(.bottom, 6)
-                        .overlay(alignment: .bottom) {
-                            Rectangle()
-                                .fill(Theme.ink.opacity(isSelected ? 1 : 0))
-                                .frame(height: 2)
-                        }
+                        .onGeometryChange(for: CGRect.self) {
+                            $0.frame(in: .named("mediaTabs"))
+                        } action: { mediaTabFrames[category] = $0 }
                         .padding(.horizontal, 8)
                         .frame(minHeight: 44, alignment: .bottom)
                         .contentShape(Rectangle())
@@ -550,7 +548,22 @@ struct DayMagazineView: View {
                 .accessibilityIdentifier("day-media-tab-\(category.rawValue)")
             }
         }
+        .coordinateSpace(name: "mediaTabs")
+        .overlay(alignment: .topLeading) {
+            if let selected = model.selectedMediaTab, let frame = mediaTabFrames[selected] {
+                Rectangle()
+                    .fill(Theme.ink)
+                    .frame(width: frame.width, height: 2)
+                    .offset(x: frame.minX, y: frame.maxY - 2)
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: frame)
+                    // Grid rebuilds disable animations; the indicator has its own transaction.
+                    .transaction { $0.disablesAnimations = false }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .padding(.horizontal, 20)
+        .frame(maxWidth: .infinity, alignment: .center)
         .zIndex(1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("当天内容类别")
@@ -741,7 +754,7 @@ struct DayMagazineView: View {
         PlaceSectionCardView(
             card: card, width: width, ratio: model.placeCardRatio, font: model.coverDateFont,
             titleSize: model.sectionTitleSize.size, cornerRadius: model.photoCornerRadius.value,
-            shadowLevel: model.photoShadow)
+            shadowLevel: model.photoShadow, style: model.placeCardStyle)
     }
 
     private func groupedPhotoCell(

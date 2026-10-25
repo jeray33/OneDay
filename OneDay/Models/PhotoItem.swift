@@ -21,6 +21,9 @@ nonisolated struct PhotoItem: Identifiable, Hashable {
     }
 
     let asset: PHAsset
+    /// Capture the version with the asset snapshot. Identity alone cannot
+    /// tell SwiftUI that an existing photo has been edited.
+    let contentVersion: String
     var caption: String? = nil
     /// Set when this asset lives in an iCloud Shared Album or was contributed
     /// to an iCloud Shared Photo Library; `nil` for items that live only in
@@ -44,12 +47,12 @@ nonisolated struct PhotoItem: Identifiable, Hashable {
     /// no `PhotoItem` is ever silently left without its shared source.
     init(asset: PHAsset, sharedSource: SharedSource?, isOwnSharedContribution: Bool = false) {
         self.asset = asset
+        self.contentVersion = asset.contentVersion
         self.sharedSource = sharedSource
         self.isOwnSharedContribution = isOwnSharedContribution
     }
 
     var id: String { asset.localIdentifier }
-    var contentVersion: String { asset.contentVersion }
     var isVideo: Bool { asset.mediaType == .video }
     var isLivePhoto: Bool { asset.mediaType == .image && asset.mediaSubtypes.contains(.photoLive) }
     var duration: TimeInterval { asset.duration }
@@ -84,6 +87,12 @@ nonisolated struct PhotoItem: Identifiable, Hashable {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    static func == (lhs: PhotoItem, rhs: PhotoItem) -> Bool { lhs.id == rhs.id }
+    static func == (lhs: PhotoItem, rhs: PhotoItem) -> Bool {
+        lhs.id == rhs.id && lhs.contentVersion == rhs.contentVersion
+            && lhs.caption == rhs.caption && lhs.sharedSource == rhs.sharedSource
+            && lhs.isOwnSharedContribution == rhs.isOwnSharedContribution
+            && lhs.captureTimeZone == rhs.captureTimeZone
+            && lhs.isFavorite == rhs.isFavorite && lhs.isHidden == rhs.isHidden
+    }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }

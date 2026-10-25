@@ -1,6 +1,24 @@
 import Foundation
 import CoreGraphics
 
+nonisolated enum PlaceCardStyle: String, CaseIterable, Identifiable {
+    case solid, diffuse, glowEdge
+
+    static let storageKey = "OneDay.placeCardStyle"
+    var id: Self { self }
+    var label: String {
+        switch self {
+        case .solid: "纯色"
+        case .diffuse: "弥散渐变"
+        case .glowEdge: "柔边"
+        }
+    }
+
+    init(savedValue: String?) {
+        self = savedValue.flatMap(Self.init(rawValue:)) ?? .solid
+    }
+}
+
 nonisolated enum PlaceCardRatio: String, CaseIterable, Identifiable {
     case portrait, square
 
@@ -52,20 +70,101 @@ nonisolated struct PlaceSectionCard: Identifiable, Equatable {
         self.firstPhotoID = firstPhotoID
         self.placeName = placeName
         self.timeText = timeText
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in stopID.utf8 {
-            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
-        }
+        let hash = Self.stableHash(stopID)
         let index = Int(hash % UInt64(Self.palette.count))
         paletteIndex = index == previousPaletteIndex ? (index + 1) % Self.palette.count : index
     }
 
     static func identifier(for stopID: String) -> String { "place-card:\(stopID)" }
 
+    private static func stableHash(_ value: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return hash
+    }
+
     struct Pastel: Equatable {
         let red: Double
         let green: Double
         let blue: Double
+
+        /// Scaling distance from white preserves the card's single hue.
+        func tinted(strength: Double) -> Pastel {
+            Pastel(red: 1 - (1 - red) * strength,
+                   green: 1 - (1 - green) * strength,
+                   blue: 1 - (1 - blue) * strength)
+        }
+    }
+
+    struct DiffuseGradient: Equatable {
+        struct Blob: Equatable {
+            /// Center and size are fractions of the card; rotation is in degrees.
+            let x: Double
+            let y: Double
+            let width: Double
+            let height: Double
+            let rotation: Double
+            let color: Pastel
+            let opacity: Double
+        }
+        let base: Pastel
+        let blobs: [Blob]
+        var colors: [Pastel] { [base] + blobs.map(\.color) }
+    }
+
+    /// A pale tint of the card's hue with one saturated glow near the middle,
+    /// softened by a broader mid-tone halo so the falloff has no visible edge.
+    /// Seeded randomness keeps the composition stable while a stop is geocoded.
+    var diffuseGradient: DiffuseGradient {
+        var random = GradientRandom(seed: Self.stableHash(stopID))
+        let deepest = maximumStrength
+        let base = color.tinted(strength: random.value(in: 0.9...1.1))
+        let halo = color.tinted(strength: deepest * random.value(in: 0.6...0.7))
+        let core = color.tinted(strength: deepest * random.value(in: 0.92...1))
+        let x = random.value(in: 0.42...0.58), y = random.value(in: 0.42...0.6)
+        let blobs: [DiffuseGradient.Blob] = [
+            .init(x: x, y: y, width: random.value(in: 0.95...1.1), height: random.value(in: 0.8...0.95),
+                  rotation: random.value(in: -20...20), color: halo, opacity: 0.9),
+            .init(x: x, y: y, width: random.value(in: 0.55...0.7), height: random.value(in: 0.45...0.6),
+                  rotation: random.value(in: -30...30), color: core, opacity: 1)
+        ]
+        return DiffuseGradient(base: base, blobs: blobs)
+    }
+
+    struct EdgeGlow: Equatable {
+        let centerTop: Pastel
+        let centerBottom: Pastel
+        let edge: Pastel
+    }
+
+    /// A bright center in the card's own hue, framed by a thick, blurred band
+    /// of the same hue at its deepest legible tone.
+    var edgeGlow: EdgeGlow {
+        var random = GradientRandom(seed: Self.stableHash(stopID) ^ 0xED6E)
+        return EdgeGlow(
+            centerTop: color.tinted(strength: random.value(in: 0.35...0.5)),
+            centerBottom: color.tinted(strength: random.value(in: 0.8...1)),
+            edge: color.tinted(strength: maximumStrength))
+    }
+    /// Deepest tint that keeps every channel at or above 0.44, so dark text stays legible.
+    private var maximumStrength: Double {
+        let channels = [color.red, color.green, color.blue].filter { $0 < 1 }
+        return min(3, channels.map { 0.56 / (1 - $0) }.min() ?? 1)
+    }
+    private struct GradientRandom {
+        var seed: UInt64
+
+        mutating func value(in range: ClosedRange<Double>) -> Double {
+            seed &+= 0x9E3779B97F4A7C15
+            var value = seed
+            value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
+            value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
+            value ^= value >> 31
+            let fraction = Double(value >> 11) / 9_007_199_254_740_992
+            return range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+        }
     }
 
     static let palette: [Pastel] = [

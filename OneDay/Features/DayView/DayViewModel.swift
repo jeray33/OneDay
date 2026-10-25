@@ -157,7 +157,11 @@ final class DayViewModel {
                     self.pendingSourceItems = nil
                     self.replaceSourceItems(items)
                 }
-                if self.pendingClassificationRefresh { self.refreshMediaClassifications() }
+                if self.pendingClassificationRefresh {
+                    self.pendingClassificationRefresh = false
+                    self.applySharedFilter(animated: false, force: true)
+                    self.scheduleReprepareAfterFilterChange()
+                }
             }
         }
     }
@@ -192,8 +196,10 @@ final class DayViewModel {
         if manualCoverPhoto?.id == id { manualCoverPhoto = replacement }
         prepareSimilarity()
         sourceRevision = UUID()
+        invalidateEditorialPreparation()
         recomputeRouteDerived()
         rebuildSections(animated: false)
+        scheduleReprepareAfterFilterChange()
     }
 
     private var favoriteIDs: Set<String>
@@ -257,6 +263,11 @@ private static let albumTagBarKey    = "OneDay.albumTagBar"
     var placeCardRatio: PlaceCardRatio {
         didSet {
             UserDefaults.standard.set(placeCardRatio.rawValue, forKey: PlaceCardRatio.storageKey)
+        }
+    }
+    var placeCardStyle: PlaceCardStyle {
+        didSet {
+            UserDefaults.standard.set(placeCardStyle.rawValue, forKey: PlaceCardStyle.storageKey)
         }
     }
     var placeCardFlow: PlaceCardFlow {
@@ -536,6 +547,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         self.placeCardRatio = PlaceCardRatio(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardRatio.storageKey)
         )
+        self.placeCardStyle = PlaceCardStyle(
+            savedValue: UserDefaults.standard.string(forKey: PlaceCardStyle.storageKey)
+        )
         self.placeCardFlow = PlaceCardFlow(
             savedValue: UserDefaults.standard.string(forKey: PlaceCardFlow.storageKey)
         )
@@ -588,6 +602,14 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     var photoCount: Int { allItems.filter { !$0.isVideo }.count }
     var videoCount: Int { allItems.filter(\.isVideo).count }
 
+    var friendSharedCount: Int {
+        guard includeSharedAlbums else { return 0 }
+        return DayMediaScope.friendSharedCount(
+            from: allItemsUnfiltered, excluding: sharedVideoDuplicateIDs, id: \.id,
+            isForeignShared: { $0.isForeignShared && DayMediaScope.isSupported($0.asset.mediaType) },
+            isHidden: \.isHidden)
+    }
+
     /// Ordered place groups covering every item. Located items define the stop
     /// boundaries; non-located items attach to the current stop chronologically
     /// so nothing is dropped. A stop whose title has not resolved yet passes no
@@ -613,11 +635,38 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         }
     }
 
+    /// Composed sections and blocks get fresh UUIDs; reusing the previous IDs
+    /// (matched by first photo) keeps SwiftUI from recreating every grid cell,
+    /// which would blank and reload the whole page on each rebuild.
+    private func preservingIdentities(_ composed: [MagazineSection]) -> [MagazineSection] {
+        var newSections = composed
+        let oldSections = Dictionary(sections.compactMap { section in
+            section.blocks.first?.items.first.map { ($0.id, section.id) }
+        }, uniquingKeysWith: { first, _ in first })
+        let oldBlocks = Dictionary(sections.flatMap(\.blocks).compactMap { block in
+            block.items.first.map { ($0.id, block.id) }
+        }, uniquingKeysWith: { first, _ in first })
+        var usedSections = Set<UUID>(), usedBlocks = Set<UUID>()
+        for section in newSections.indices {
+            if let first = newSections[section].blocks.first?.items.first,
+               let id = oldSections[first.id], usedSections.insert(id).inserted {
+                newSections[section].id = id
+            }
+            for block in newSections[section].blocks.indices {
+                if let first = newSections[section].blocks[block].items.first,
+                   let id = oldBlocks[first.id], usedBlocks.insert(id).inserted {
+                    newSections[section].blocks[block].id = id
+                }
+            }
+        }
+        return newSections
+    }
+
     /// Rebuilds the body using the saved place/time segmentation choices.
     private func rebuildSections(animated: Bool = true) {
-        let newSections = DaySectionComposer.compose(
+        let newSections = preservingIdentities(DaySectionComposer.compose(
             allItems,
-            policy: titleSegmentation, places: placeGroups())
+            policy: titleSegmentation, places: placeGroups()))
         if gridArrangement == .waterfall || titleSegmentation.form == .card {
             var transaction = Transaction()
             transaction.disablesAnimations = true
@@ -665,7 +714,8 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     }
 
     private func applySharedFilter(animated: Bool, force: Bool = false) {
-        guard selected == nil else {
+        // Explicit removals must update the grid behind the preview too.
+        guard selected == nil || force else {
             pendingClassificationRefresh = true
             return
         }
@@ -675,7 +725,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
         mediaTabs = Self.makeMediaTabs(sharedItems, featuredEnabled: showsFeaturedTab)
         selectedMediaTab = mediaTabs.tabSelection(preserving: selectedMediaTab)
         let filtered = mediaTabs.items(inTab: selectedMediaTab)
-        guard force || filtered.map(\.id) != allItems.map(\.id) else { return }
+        // Field-only changes (captions, favorites) must not rebuild the grid;
+        // repeated rebuilds re-request evicted thumbnails and flash the page.
+        guard force || filtered.map(\.contentVersion) != allItems.map(\.contentVersion) else { return }
         filterPreparationID = UUID()
         bodyPreparationTask?.cancel()
         if filtered.isEmpty {
@@ -776,7 +828,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             pendingSourceItems = items
             return
         }
-        var sorted = SharedVideoDuplicatePolicy.unique(items, id: \.id).sorted {
+        var sorted = SharedVideoDuplicatePolicy.unique(items.filter { !$0.isHidden }, id: \.id).sorted {
             ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast)
         }
         let previousByID = Dictionary(allItemsUnfiltered.map { ($0.id, $0) },
@@ -788,7 +840,7 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             && zip(sorted, allItemsUnfiltered).allSatisfy { pair in
                 let (new, old) = pair
                 return new.id == old.id
-                    && new.asset.modificationDate == old.asset.modificationDate
+                    && new.contentVersion == old.contentVersion
                     && new.creationDate == old.creationDate
                     && new.isFromSharedLibrary == old.isFromSharedLibrary
                     && new.isOwnSharedContribution == old.isOwnSharedContribution
@@ -1330,23 +1382,9 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
     /// rebuilt without animation; otherwise only the headings update in place
     /// so the layout and scroll position stay untouched.
     private func applyPlaceNames() {
-        var newSections = DaySectionComposer.compose(
+        let newSections = preservingIdentities(DaySectionComposer.compose(
             allItems,
-            policy: titleSegmentation, places: placeGroups())
-        let oldSections = Dictionary(uniqueKeysWithValues: sections.compactMap { section in
-            section.blocks.first?.items.first.map { ($0.id, section.id) }
-        })
-        let oldBlocks = Dictionary(uniqueKeysWithValues: sections.flatMap(\.blocks).compactMap { block in
-            block.items.first.map { ($0.id, block.id) }
-        })
-        for section in newSections.indices {
-            if let first = newSections[section].blocks.first?.items.first,
-               let id = oldSections[first.id] { newSections[section].id = id }
-            for block in newSections[section].blocks.indices {
-                if let first = newSections[section].blocks[block].items.first,
-                   let id = oldBlocks[first.id] { newSections[section].blocks[block].id = id }
-            }
-        }
+            policy: titleSegmentation, places: placeGroups()))
 
         guard newSections.count == sections.count,
               zip(newSections, sections).allSatisfy({ new, old in

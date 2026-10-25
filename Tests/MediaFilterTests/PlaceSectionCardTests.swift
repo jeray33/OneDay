@@ -60,6 +60,69 @@ final class PlaceSectionCardTests: XCTestCase {
         }
     }
 
+    func testStyleRestoresSavedSelectionWithoutChangingExistingDefault() {
+        XCTAssertEqual(PlaceCardStyle(savedValue: nil), .solid)
+        XCTAssertEqual(PlaceCardStyle(savedValue: "unknown"), .solid)
+        for style in PlaceCardStyle.allCases {
+            XCTAssertEqual(PlaceCardStyle(savedValue: style.rawValue), style)
+        }
+    }
+
+    func testDiffuseGradientIsStableAcrossNameResolutionAndTimeChanges() {
+        XCTAssertEqual(card().diffuseGradient, card(name: "西湖", time: "10:00").diffuseGradient)
+        XCTAssertEqual(card().diffuseGradient, card().diffuseGradient)
+        XCTAssertNotEqual(card("other-stop").diffuseGradient, card().diffuseGradient)
+    }
+
+    func testDiffuseGradientUsesOneHueWithoutWashingOutToWhite() {
+        for index in 0..<100 {
+            let card = card("stop-\(index)")
+            let base = [card.color.red, card.color.green, card.color.blue]
+            for color in card.diffuseGradient.colors {
+                let components = [color.red, color.green, color.blue]
+                // Constant distance ratios from white mean no new hue.
+                let strengths = zip(components, base).map { (1 - $0.0) / (1 - $0.1) }
+                XCTAssertEqual(strengths[0], strengths[1], accuracy: 0.0001)
+                XCTAssertEqual(strengths[1], strengths[2], accuracy: 0.0001)
+                XCTAssertGreaterThanOrEqual(strengths[0], 0.65)
+                XCTAssertTrue(components.allSatisfy { (0.44...1).contains($0) })
+            }
+        }
+    }
+
+    func testDiffuseGradientHasOneSaturatedCoreThatVariesBetweenCards() {
+        let gradients = (0..<100).map { card("random-\($0)").diffuseGradient }
+        for gradient in gradients {
+            XCTAssertEqual(gradient.blobs.count, 2)
+            let base = gradient.base, core = gradient.blobs[1].color
+            XCTAssertLessThan(core.red + core.green + core.blue, base.red + base.green + base.blue)
+            for blob in gradient.blobs {
+                XCTAssertTrue((0.4...0.6).contains(blob.x))
+                XCTAssertTrue((0.4...0.6).contains(blob.y))
+                XCTAssertGreaterThanOrEqual(min(blob.width, blob.height), 0.4)
+            }
+        }
+        XCTAssertGreaterThan(Set(gradients.map { $0.base.red }).count, 90)
+        XCTAssertGreaterThan(Set(gradients.map { $0.blobs[0].x }).count, 90)
+    }
+
+    func testEdgeGlowUsesBrighterTonesOfTheCardHueInTheCenter() {
+        for index in 0..<100 {
+            let card = card("edge-\(index)")
+            let glow = card.edgeGlow
+            for tone in [glow.centerTop, glow.centerBottom, glow.edge] {
+                let strengths = zip([tone.red, tone.green, tone.blue],
+                                    [card.color.red, card.color.green, card.color.blue])
+                    .map { (1 - $0.0) / (1 - $0.1) }
+                XCTAssertEqual(strengths[0], strengths[1], accuracy: 0.0001)
+                XCTAssertEqual(strengths[1], strengths[2], accuracy: 0.0001)
+            }
+            let sum = { (p: PlaceSectionCard.Pastel) in p.red + p.green + p.blue }
+            XCTAssertGreaterThan(sum(glow.centerTop), sum(glow.centerBottom))
+            XCTAssertGreaterThan(sum(glow.centerBottom), sum(glow.edge))
+            XCTAssertTrue([glow.edge.red, glow.edge.green, glow.edge.blue].allSatisfy { $0 >= 0.4399 })
+        }
+    }
     func testCardsOccupyOnePortraitCellAtEveryColumnCount() {
         for columns in 1...6 {
             let grid = DayPhotoGridSizing(

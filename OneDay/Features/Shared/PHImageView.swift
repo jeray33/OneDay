@@ -8,6 +8,25 @@ struct PHImageView: View {
     var highQuality: Bool = false
     var progressive: Bool = false
     var kenBurns: Bool = false
+    private let contentVersion: String
+
+    init(asset: PHAsset, displaySize: CGSize, fill: Bool = true,
+         highQuality: Bool = false, progressive: Bool = false, kenBurns: Bool = false) {
+        self.asset = asset
+        self.displaySize = displaySize
+        self.fill = fill
+        self.highQuality = highQuality
+        self.progressive = progressive
+        self.kenBurns = kenBurns
+        self.contentVersion = asset.contentVersion
+        let scale = UIScreen.main.scale
+        _image = State(initialValue: ImageLoader.shared.cachedFrame(
+            asset: asset,
+            targetSize: CGSize(width: max(displaySize.width, 1) * scale,
+                               height: max(displaySize.height, 1) * scale),
+            contentMode: fill ? .aspectFill : .aspectFit,
+            highQuality: highQuality, progressive: progressive))
+    }
 
     @State private var image: UIImage?
     @State private var animateKenBurns = false
@@ -43,7 +62,7 @@ struct PHImageView: View {
                 animateKenBurns = true
             }
         }
-        .task(id: "\(asset.localIdentifier)|\(asset.contentVersion)") {
+        .task(id: contentVersion) {
             for await frame in ImageLoader.shared.stream(
                 asset: asset,
                 targetSize: targetSize,

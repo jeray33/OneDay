@@ -27,6 +27,22 @@ nonisolated enum DayMediaScope {
         }
     }
 
+    /// Count the day's inventory, not a selected tab or its folded cards.
+    /// Use the same verified duplicate IDs as the body, never metadata guesses.
+    static func friendSharedCount<Item>(
+        from items: [Item], excluding duplicateIDs: Set<String>,
+        id: (Item) -> String, isForeignShared: (Item) -> Bool, isHidden: (Item) -> Bool
+    ) -> Int {
+        var seen = Set<String>()
+        return items.reduce(into: 0) { count, item in
+            let identifier = id(item)
+            if isForeignShared(item), !isHidden(item), !duplicateIDs.contains(identifier),
+               seen.insert(identifier).inserted {
+                count += 1
+            }
+        }
+    }
+
     static func navigationDay(
         for creationDate: Date?, today: Date = Date(), calendar: Calendar = .current
     ) -> Date? {

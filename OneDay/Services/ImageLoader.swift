@@ -147,6 +147,24 @@ nonisolated final class ImageLoader: @unchecked Sendable {
                             allowsNetworkAccess: true)
     }
 
+    /// Synchronous cache probe so a recreated cell can show its image on its
+    /// first frame instead of flashing its placeholder.
+    func cachedFrame(asset: PHAsset,
+                     targetSize: CGSize,
+                     contentMode: PHImageContentMode = .aspectFill,
+                     highQuality: Bool = false,
+                     progressive: Bool = false) -> UIImage? {
+        let qualities: [LoadQuality] = progressive
+            ? [.highQuality, .opportunistic]
+            : [highQuality ? .highQuality : .opportunistic]
+        for quality in qualities {
+            let key = requestKey(asset: asset, targetSize: targetSize, contentMode: contentMode,
+                                 quality: quality, allowsNetworkAccess: true)
+            if let image = cachedImage(forKey: key) { return image }
+        }
+        return nil
+    }
+
     private func progressiveStream(asset: PHAsset,
                                    targetSize: CGSize,
                                    contentMode: PHImageContentMode) -> AsyncStream<UIImage> {
