@@ -28,6 +28,46 @@ func withDayGridLayoutChange(_ arrangement: DayGridArrangement, _ changes: () ->
     }
 }
 
+/// Receives each virtual grid's current cell geometry directly. Preference
+/// delivery can drop an update when a grid's cells repack back and forth
+/// within a few frames, leaving hero flights and preview scrolling with
+/// another layout's frames.
+final class WaterfallGeometrySink {
+    private var grids: [UUID: [String: HeroCellInfo]] = [:]
+    private var publishedKeys: [UUID: String] = [:]
+    private(set) var cells: [String: HeroCellInfo] = [:]
+    private(set) var isActive = false
+
+    /// `key` identifies the plan and origin, so repeated body passes over an
+    /// unchanged layout skip the merge.
+    func update(_ id: UUID, key: String, cells next: [String: HeroCellInfo]?) {
+        guard publishedKeys[id] != key else { return }
+        publishedKeys[id] = key
+        if let next { grids[id] = next } else { grids[id] = [:] }
+        isActive = true
+        merge()
+    }
+
+    func remove(_ id: UUID) {
+        grids[id] = nil
+        publishedKeys[id] = nil
+        isActive = !grids.isEmpty
+        merge()
+    }
+
+    private func merge() {
+        if grids.count == 1, let only = grids.first?.value {
+            cells = only
+        } else {
+            cells = grids.values.reduce(into: [:]) { $0.merge($1) { _, new in new } }
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var waterfallGeometrySink: WaterfallGeometrySink? = nil
+}
+
 /// Shared by leaf grids only. Scroll frames never invalidate the day host.
 @MainActor @Observable
 final class WaterfallViewport {
@@ -71,6 +111,9 @@ private final class PreparedWaterfall {
     let visibility: WaterfallLayoutPolicy.VisibilityIndex
     let indicesByID: [String: Int]
     let configuration: WaterfallPlanCache.Configuration
+    /// Distinguishes plans whose layout revision compares equal but whose
+    /// cells differ, e.g. a list that briefly grows and shrinks back.
+    let token = UUID()
     private var geometryOrigin: CGPoint?
     private var geometryMarksCards = false
     private var cachedGeometry = WaterfallGeometry()
@@ -194,14 +237,27 @@ struct VirtualWaterfallGrid<Entry: Identifiable, Content: View>: View where Entr
     @ViewBuilder var content: (Entry, WaterfallLayoutPolicy.CellMetrics) -> Content
     @State private var cache = WaterfallPlanCache()
     @State private var measurement: MeasuredWaterfallOrigin?
+    @State private var sinkID = UUID()
+    @Environment(\.waterfallGeometrySink) private var geometrySink
 
     var body: some View {
         let prepared = cache.prepare(descriptors, configuration: .init(
             columns: columnCount, width: columnWidth, horizontal: horizontalSpacing,
             vertical: verticalSpacing, border: border, radius: cornerRadius,
             displayScale: max(displayScale, 1)))
+        let current: WaterfallGeometry? = measurement.flatMap {
+            $0.revision == layoutRevision && $0.token == prepared.token
+                ? prepared.geometry(at: $0.origin, marksCards: marksPlaceCards) : nil
+        }
+        // Published from the body: when cells repack without a revision
+        // change, SwiftUI can skip this view's change and preference callbacks
+        // even though the body has rendered the new plan.
+        let _ = publishGeometry(current, prepared: prepared)
         Color.clear
             .frame(width: prepared.plan.size.width, height: prepared.plan.size.height)
+            .onDisappear {
+                geometrySink?.remove(sinkID)
+            }
             .overlay(alignment: .topLeading) {
                 if let measurement {
                     WaterfallVisibleCells(
@@ -210,14 +266,14 @@ struct VirtualWaterfallGrid<Entry: Identifiable, Content: View>: View where Entr
                 }
             }
             .background {
-                if let measurement, measurement.revision == layoutRevision {
-                    WaterfallGeometryReporter(
-                        geometry: prepared.geometry(at: measurement.origin, marksCards: marksPlaceCards))
+                if let current {
+                    WaterfallGeometryReporter(geometry: current)
                 }
             }
             .onGeometryChange(for: MeasuredWaterfallOrigin.self) { geometry in
                 MeasuredWaterfallOrigin(
-                    revision: layoutRevision, origin: geometry.frame(in: .named(dayContentSpace)).origin)
+                    revision: layoutRevision, token: prepared.token,
+                    origin: geometry.frame(in: .named(dayContentSpace)).origin)
             } action: { next in
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
@@ -226,10 +282,18 @@ struct VirtualWaterfallGrid<Entry: Identifiable, Content: View>: View where Entr
     }
 }
 
+extension VirtualWaterfallGrid {
+    private func publishGeometry(_ geometry: WaterfallGeometry?, prepared: PreparedWaterfall) {
+        let key = geometry == nil ? "none" : "\(prepared.token)|\(measurement?.origin.x ?? 0)|\(measurement?.origin.y ?? 0)"
+        geometrySink?.update(sinkID, key: key, cells: geometry?.cells)
+    }
+}
+
 /// An earlier grid may have changed height even when this grid's own plan did
 /// not. Publish its index only after measuring the current global layout.
 nonisolated private struct MeasuredWaterfallOrigin: Equatable {
     let revision: DayGridLayoutRevision
+    let token: UUID
     let origin: CGPoint
 }
 

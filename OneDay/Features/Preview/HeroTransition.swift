@@ -40,7 +40,13 @@ struct HeroCellInfo: Equatable {
 /// reference type (not `@State`) so the very frequent updates during scrolling
 /// mutate it in place without invalidating the SwiftUI body.
 final class HeroFrameStore {
-    var cells: [String: HeroCellInfo] = [:]
+    /// Frames reported through preferences (non-virtual grid cells).
+    var preferenceCells: [String: HeroCellInfo] = [:]
+    let waterfall = WaterfallGeometrySink()
+    /// Virtual waterfall cells come straight from the grids that render them.
+    var cells: [String: HeroCellInfo] {
+        waterfall.isActive ? waterfall.cells : preferenceCells
+    }
     /// Writable-space scroll offset of the day page (contentOffset.y plus the
     /// top content inset), updated every scroll frame. Cells report their
     /// frames in the content coordinate space; these two values convert them
@@ -235,7 +241,16 @@ struct HeroOverlayView: View {
         .onChange(of: request) { _, item in
             guard let item else { return }
             request = nil
-            open(item)
+            guard frameStore.cells[item.id] == nil else { return open(item) }
+            // A waterfall repack publishes its new frames a frame or two after
+            // the plan changes. Wait briefly so the flight starts from the cell
+            // rather than from the screen-center fallback.
+            Task { @MainActor in
+                for _ in 0..<6 where frameStore.cells[item.id] == nil {
+                    try? await Task.sleep(for: .milliseconds(16))
+                }
+                open(item)
+            }
         }
     }
 

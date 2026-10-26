@@ -2,6 +2,35 @@ import XCTest
 @testable import MediaFilter
 
 final class SharedVideoDuplicateTests: XCTestCase {
+    func testPartialScanKeepsPreviouslyConfirmedDuplicatesHidden() {
+        let confirmed: Set<String> = ["copy-a", "copy-b"]
+        let progress: [Set<String>] = [[], ["copy-a"], ["copy-a", "copy-c"]]
+        for reported in progress {
+            XCTAssertEqual(SharedVideoDuplicatePolicy.updatedDuplicateIDs(
+                confirmed: confirmed, reported: reported, isFinal: false),
+                confirmed.union(reported))
+        }
+    }
+
+    func testFinalScanReplacesPreviouslyConfirmedDuplicates() {
+        XCTAssertEqual(SharedVideoDuplicatePolicy.updatedDuplicateIDs(
+            confirmed: ["old-copy", "still-copy"],
+            reported: ["still-copy", "new-copy"], isFinal: true),
+            ["still-copy", "new-copy"])
+        XCTAssertTrue(SharedVideoDuplicatePolicy.updatedDuplicateIDs(
+            confirmed: ["old-copy"], reported: [], isFinal: true).isEmpty)
+    }
+
+    func testRepeatedProgressDoesNotReintroduceDuplicatesBetweenScans() {
+        var hidden: Set<String> = ["copy-a", "copy-b", "copy-c"]
+        let progress: [Set<String>] = [["copy-a"], ["copy-a", "copy-b"], hidden]
+        for reported in progress {
+            hidden = SharedVideoDuplicatePolicy.updatedDuplicateIDs(
+                confirmed: hidden, reported: reported, isFinal: false)
+            XCTAssertEqual(hidden.count, 3)
+        }
+    }
+
     func testOnlyNonemptyEqualVerifiedDigestsConfirmCopies() {
         XCTAssertTrue(SharedVideoDuplicatePolicy.contentMatches(
             digestA: "same-file", digestB: "same-file"))

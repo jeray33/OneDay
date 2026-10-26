@@ -261,6 +261,7 @@ struct DayMagazineView: View {
                                   geometry: context.geometry, travel: coverSpace)
                 }
                 .environment(\.colorScheme, model.pageColorScheme)
+                .environment(\.waterfallGeometrySink, frameStore.waterfall)
                 .animation(.easeInOut(duration: 0.35), value: model.background)
                 // A safe-area bar lets content pass underneath the header.
                 // The system progressively blurs that backdrop, not the header.
@@ -331,8 +332,10 @@ struct DayMagazineView: View {
                     installPlaceAnchorCapture(viewportSize: geo.size)
                     recomputeScrollEdges(contentBounds: scrubber.contentBounds, viewportSize: geo.size)
                 }
-                .onChange(of: model.previewCurrentID) { _, id in
-                    guard model.selected != nil, let id else { return }
+                .onChange(of: model.previewCurrentID) { oldID, id in
+                    // Opening starts from a tapped, visible cell; only paging
+                    // inside the preview needs to bring the grid along.
+                    guard model.selected != nil, oldID != nil, let id else { return }
                     let cellID = model.gridCellID(forItemID: id)
                     // Only scroll when the target cell is off screen, so
                     // closing the preview preserves a visible cell's position.
@@ -378,7 +381,9 @@ struct DayMagazineView: View {
                       .preference(key: HeroCellFrameKey.self, value: geometry.cells)
                       .preference(key: PlaceCardFrameKey.self, value: geometry.cards)
               }
-              .onPreferenceChange(HeroCellFrameKey.self) { frameStore.cells = $0 }
+              .onPreferenceChange(HeroCellFrameKey.self) {
+                  frameStore.preferenceCells = $0
+              }
               .backgroundPreferenceValue(HeroCellFrameKey.self) { cells in
                   Color.clear.preference(
                       key: DayGridSnapshotKey.self,

@@ -73,14 +73,16 @@ final class DayViewModel {
         let items = allItemsUnfiltered
         sharedVideoDuplicateTask = Task { [weak self] in
             let ids = await SharedVideoDuplicateService.shared.duplicateIDs(in: items) { [weak self] ids in
-                await self?.acceptSharedVideoDuplicates(ids, generation: generation)
+                await self?.acceptSharedVideoDuplicates(ids, generation: generation, final: false)
             }
             guard !Task.isCancelled else { return }
-            self?.acceptSharedVideoDuplicates(ids, generation: generation)
+            self?.acceptSharedVideoDuplicates(ids, generation: generation, final: true)
         }
     }
 
-    private func acceptSharedVideoDuplicates(_ ids: Set<String>, generation: UUID) {
+    private func acceptSharedVideoDuplicates(_ ids: Set<String>, generation: UUID, final: Bool) {
+        let ids = SharedVideoDuplicatePolicy.updatedDuplicateIDs(
+            confirmed: sharedVideoDuplicateIDs, reported: ids, isFinal: final)
         guard !Task.isCancelled, sharedVideoDuplicateGeneration == generation,
               ids != sharedVideoDuplicateIDs else { return }
         sharedVideoDuplicateIDs = ids
@@ -848,13 +850,22 @@ self.showAlbumTagBar = UserDefaults.standard.object(forKey: Self.albumTagBarKey)
             }
         allItemsUnfiltered = sorted
         manualCoverPhoto = Self.resolveManualCover(in: sorted, date: date)
-        // Old content versions must never suppress newly edited/replaced media.
-        if !unchanged { sharedVideoDuplicateIDs.removeAll() }
-        prepareSharedVideoDuplicates()
-        prepareSimilarity()
+        // Old content versions must never suppress newly edited/replaced media,
+        // but untouched duplicates stay hidden: clearing them all would show
+        // every duplicate again until the service re-confirms them.
+        if !unchanged {
+            let versions = Dictionary(sorted.map { ($0.id, $0.contentVersion) },
+                                      uniquingKeysWith: { first, _ in first })
+            sharedVideoDuplicateIDs = sharedVideoDuplicateIDs.filter { id in
+                guard let version = versions[id] else { return false }
+                return previousByID[id]?.contentVersion == version
+            }
+        }
         favoriteIDs = Set(sorted.filter(\.isFavorite).map(\.id))
         hiddenIDs = Set(sorted.filter(\.isHidden).map(\.id))
         guard !unchanged else { return }
+        prepareSharedVideoDuplicates()
+        prepareSimilarity()
         sourceRevision = UUID()
         invalidateEditorialPreparation()
         applySharedFilter(animated: true, force: true)

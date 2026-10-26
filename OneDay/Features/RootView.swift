@@ -29,6 +29,12 @@ struct RootView: View {
     @State private var tunnelOpeningProgress = 0.0
     @State private var tunnelOpeningActive = true
     @State private var navLoading = false
+    /// Keep the live outgoing page mounted until its replacement is opaque.
+    /// A removal transition alone does not guarantee continuous coverage.
+    @State private var outgoingDayModel: DayViewModel?
+    @State private var outgoingDayHistoryEnabled = true
+    @State private var adjacentDayOpacity = 1.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// True once a day's chrome has faded in; day-to-day navigation reuses it
     /// so the bottom toolbar stays put instead of replaying its entrance.
     @State private var dayChromeRevealed = false
@@ -135,21 +141,25 @@ struct RootView: View {
             if phase == .day {
                 // The day a history page was opened from stays alive beneath
                 // the top day, so sliding over or off it never rebuilds it.
-                // One ForEach keeps each page's identity as it moves between
-                // the two slots.
+                // One ForEach preserves each page's identity, including the
+                // outgoing day while an adjacent day fades in above it.
                 ForEach(stackedDays, id: \.instanceID) { model in
                     let isTop = model.instanceID == dayModel?.instanceID
+                    let isOutgoing = model.instanceID == outgoingDayModel?.instanceID
                     let offset = isTop ? dayOffset : 0
-                    dayStack(model, startsOnBack: isTop ? dayStartsOnBack : true,
-                             historyEnabled: isTop ? dayHistoryEnabled : true)
+                    dayStack(model, startsOnBack: isTop ? dayStartsOnBack : !isOutgoing,
+                             historyEnabled: isTop ? dayHistoryEnabled
+                                : (isOutgoing ? outgoingDayHistoryEnabled : true))
+                        .background(model.pageBackgroundColor)
                         .visualEffect { content, proxy in
                             content.offset(y: offset * proxy.size.height)
                         }
-                        .allowsHitTesting(isTop)
-                        .zIndex(isTop ? 2 : 1)
+                        .opacity(isTop ? adjacentDayOpacity : 1)
+                        .allowsHitTesting(isTop && outgoingDayModel == nil)
+                        .zIndex(isTop ? 3 : (isOutgoing ? 2 : 1))
                         .transition(dayEntersFromBottom
                             ? .asymmetric(insertion: .move(edge: .bottom), removal: .identity)
-                            : .opacity)
+                            : .identity)
                 }
             }
         }
@@ -760,21 +770,40 @@ struct RootView: View {
     }
 
     private func navigate(to date: Date) {
-        guard !navLoading else { return }
-        let origin = dayModel?.instanceID
+        guard !navLoading, !dayClosing, dayOffset == 0,
+              outgoingDayModel == nil, let current = dayModel else { return }
         navLoading = true
         Task {
-            defer { navLoading = false }
+            // During the fade, completion owns unlocking navigation.
+            defer { if outgoingDayModel == nil { navLoading = false } }
             let model = await makeDayModel(for: date)
-            guard phase == .day, dayModel?.instanceID == origin else { return }
+            guard phase == .day, !dayClosing, dayOffset == 0,
+                  dayModel?.instanceID == current.instanceID else { return }
             if let model {
-                dayFromTunnel = false
-                dayEntersFromBottom = false
-                dayStartsOnBack = false
-                dayHistoryEnabled = true
-                withAnimation(.easeInOut(duration: 0.35)) {
+                // Mount the new page transparently above the unchanged old
+                // page. Neither page is removed during the fade.
+                withoutAnimation {
+                    outgoingDayModel = current
+                    outgoingDayHistoryEnabled = dayHistoryEnabled
+                    dayFromTunnel = false
+                    dayEntersFromBottom = false
+                    dayStartsOnBack = false
+                    dayHistoryEnabled = true
+                    adjacentDayOpacity = 0
                     dayModel = model
-                    phase = .day
+                }
+                DispatchQueue.main.async {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.35),
+                                  completionCriteria: .removed) {
+                        adjacentDayOpacity = 1
+                    } completion: {
+                        // Only discard the old page after the new page has
+                        // finished covering it, without another removal fade.
+                        withoutAnimation {
+                            outgoingDayModel = nil
+                            navLoading = false
+                        }
+                    }
                 }
             } else {
                 navigationDaysLoaded = false
@@ -785,8 +814,11 @@ struct RootView: View {
 
     private var stackedDays: [DayViewModel] {
         guard let dayModel else { return [] }
-        if let origin = historyReturnStack.last { return [origin, dayModel] }
-        return [dayModel]
+        var days: [DayViewModel] = []
+        if let origin = historyReturnStack.last { days.append(origin) }
+        if let outgoingDayModel { days.append(outgoingDayModel) }
+        days.append(dayModel)
+        return days
     }
 
     private func dayStack(_ model: DayViewModel, startsOnBack: Bool, historyEnabled: Bool) -> some View {

@@ -2,6 +2,14 @@ import Foundation
 
 /// Metadata only selects candidates. Matching pictures or verified bytes confirm them.
 nonisolated enum SharedVideoDuplicatePolicy {
+    /// Progress is incomplete. Keep confirmed copies hidden until the final
+    /// result can replace the previous scan without briefly expanding the grid.
+    static func updatedDuplicateIDs(
+        confirmed: Set<String>, reported: Set<String>, isFinal: Bool
+    ) -> Set<String> {
+        isFinal ? reported : confirmed.union(reported)
+    }
+
     static func contentMatches(digestA: String?, digestB: String?) -> Bool {
         guard let digestA, !digestA.isEmpty, let digestB else { return false }
         return digestA == digestB
